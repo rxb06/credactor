@@ -74,6 +74,16 @@ class AllowList:
                     else:
                         # treat as a value literal to suppress
                         self._value_literals.add(line)
+            if self._value_literals:
+                # Unlike file globs (warned only when overly broad), value
+                # literals had no signal at all — a contributor can hide their
+                # own secret everywhere with one line. Surface that they exist.
+                logger.warning(
+                    '.credactorignore defines %d value-literal suppression(s); '
+                    'these hide any matching value everywhere with no per-finding '
+                    'signal — review them for detection-bypass.',
+                    len(self._value_literals),
+                )
         except OSError:
             pass
 

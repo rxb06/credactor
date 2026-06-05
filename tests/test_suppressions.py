@@ -80,6 +80,23 @@ class TestAllowList:
         assert al.is_value_suppressed('test_fixture_value_abc123')
         assert not al.is_value_suppressed('real_secret')
 
+    # --- H9: value-literal suppressions must be visible (globs get no such
+    # general warning, so this is the parity fix the report asks for) ---
+    def test_value_literal_emits_load_warning(self, tmp_dir, credactor_caplog):
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('test_fixture_value_abc123\n')
+        AllowList(tmp_dir)
+        assert any('value-literal' in r.message for r in credactor_caplog.records)
+
+    def test_globs_and_file_lines_emit_no_value_literal_warning(self, tmp_dir,
+                                                                 credactor_caplog):
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('test_fixtures/*.py\nsrc/config.py:10\n')
+        AllowList(tmp_dir)
+        assert not any('value-literal' in r.message for r in credactor_caplog.records)
+
     def test_no_ignore_file(self, tmp_dir):
         al = AllowList(tmp_dir)
         fake_file = os.path.join(tmp_dir, 'anything.py')
