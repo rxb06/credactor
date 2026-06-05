@@ -279,7 +279,7 @@ Detects credentials in XML attributes regardless of attribute order:
 ```xml
 <configuration>
   <appSettings>
-    <add key="DatabasePassword" value="s3cretP@ssw0rd!!" />
+    <add key="DatabasePassword" value="s3cr3t-Db-P@ss-9XzQ" />
     <add value="my-ap1-k3y-secr3t" key="ApiKey" />
   </appSettings>
 </configuration>
