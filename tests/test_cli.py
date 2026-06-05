@@ -7,6 +7,7 @@ import pytest
 
 from credactor.cli import (
     _config_from_args,
+    _emit_report,
     _validate_invocation,
     _validate_replacement,
     build_parser,
@@ -354,3 +355,10 @@ class TestPhase1Fixes:
         with pytest.raises(SystemExit) as exc_info:
             main(['--dry-run', tmp_dir])
         assert exc_info.value.code == 2
+
+    # --- H7: the empty-result message is not an absolute guarantee ---
+    def test_clean_report_states_sensitivity_not_absolute(self, capsys):
+        _emit_report([], '/tmp', Config(no_color=True))
+        out = capsys.readouterr().out
+        assert 'Safe for commits' not in out
+        assert 'entropy floor' in out

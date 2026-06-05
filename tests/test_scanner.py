@@ -169,6 +169,28 @@ class TestTrueNegatives:
         assert len(findings) == 0
 
 
+class TestPasswordFamilyFloor:
+    """H7: password-family variables get a lower entropy floor (3.0) so memorable
+    weak passwords are caught, without lowering the floor for other variables."""
+
+    def test_weak_password_in_password_var_detected(self, config):
+        # entropy('Summer2024!') == 3.096: below 3.5, above the 3.0 password floor
+        findings = scan_line(1, 'password = "Summer2024!"', 'test.py', config=config)
+        assert len(findings) == 1
+        assert findings[0]['type'] == 'variable:password'
+
+    def test_carveout_is_scoped_to_password_family(self, config):
+        # api_key matches CRED_VAR_PATTERNS but is NOT password-family, so it
+        # keeps the 3.5 floor and the same weak value stays below threshold
+        findings = scan_line(1, 'api_key = "Summer2024!"', 'test.py', config=config)
+        assert len(findings) == 0
+
+    def test_low_entropy_password_value_still_filtered(self, config):
+        # below even the 3.0 password floor -> still filtered (precision guard)
+        findings = scan_line(1, 'password = "aaaaaaaaaa"', 'test.py', config=config)
+        assert len(findings) == 0
+
+
 # ---------------------------------------------------------------------------
 # File scanning
 # ---------------------------------------------------------------------------

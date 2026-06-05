@@ -19,10 +19,10 @@ from credactor.config import Config
 from credactor.walker import walk_and_scan
 from tests.benchmark.corpus import CASES
 
-# --- ratchet floors (measured 2026-06-05: recall 61.9%, precision 86.7%;
-#     set just below current so any single-case regression fails. Raise these as
-#     H7/M1/M2/M3/M4/L1 land and FN cases flip to TP). ---
-RECALL_FLOOR = 0.61
+# --- ratchet floors (recall 66.7%, precision 87.5% after H7's password-family
+#     entropy floor landed weak_pw_1; set just below current so any single-case
+#     regression fails. Raise these as M1/M2/M3/M4/L1 land and FN cases flip). ---
+RECALL_FLOOR = 0.66
 PRECISION_FLOOR = 0.86
 
 

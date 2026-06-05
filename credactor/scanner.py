@@ -31,6 +31,11 @@ from .utils import detect_encoding, entropy, log_verbose
 ENTROPY_THRESHOLD = 3.5
 MIN_VALUE_LENGTH = 8
 
+# Human-chosen password/secret variables hold memorable, lower-entropy values
+# that are still real credentials, so they get a lower entropy floor (H7).
+PASSWORD_ENTROPY_FLOOR = 3.0
+_PASSWORD_VAR_KEYWORDS = ('password', 'passwd', 'passphrase', 'private_key', 'secret_key')
+
 # Max lines to skip inside a PEM block before force-resetting
 # (increased from 100 to 500 to accommodate large RSA/EC keys without
 # false-resetting mid-block)
@@ -175,10 +180,17 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None) -> bool:
     return bool(_HASH_PREFIX_RE.match(cleaned))
 
 
+def _is_password_family(var_name: str) -> bool:
+    """True for variables whose name marks a human-chosen password/secret, where
+    a memorable (lower-entropy) value is still a real credential (H7)."""
+    low = var_name.lower()
+    return any(kw in low for kw in _PASSWORD_VAR_KEYWORDS)
+
+
 def _severity_for_variable(var_name: str) -> str:
     """Assign severity based on the variable name pattern."""
     low = var_name.lower()
-    if any(kw in low for kw in ('password', 'passwd', 'passphrase', 'private_key', 'secret_key')):
+    if any(kw in low for kw in _PASSWORD_VAR_KEYWORDS):
         return 'high'
     if any(kw in low for kw in ('token', 'api_key', 'apikey', 'access_key')):
         return 'high'
@@ -318,7 +330,11 @@ def scan_line(
         val_stripped = val.strip()
         if len(val_stripped) < min_len:
             continue
-        if entropy(val_stripped) < ent_threshold:
+        # H7: a password-family variable gets a lower entropy floor so memorable
+        # weak passwords (e.g. "Summer2024!") are not silently dropped.
+        floor = (min(ent_threshold, PASSWORD_ENTROPY_FLOOR)
+                 if _is_password_family(var) else ent_threshold)
+        if entropy(val_stripped) < floor:
             continue
         if allowlist and allowlist.is_suppressed(filepath, lineno, val_stripped):
             log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist')

@@ -91,9 +91,10 @@ CASES: list[Case] = [
     Case('strong_pw', 'heuristic', 'strongpw.py', f'db_password = "{_STRONG_PW}"\n', True),
     # ---- positives that are KNOWN GAPS today (should detect, currently missed) ----
     Case('weak_pw_1', 'weak-password', 'weakpw1.py', 'password = "Summer2024!"\n', True,
-         gap=True, note='H7: entropy 3.10 < 3.5 floor'),
+         note='H7 FIXED: password-family entropy floor 3.0 (entropy 3.10)'),
     Case('weak_pw_2', 'weak-password', 'weakpw2.py', 'api_secret = "Password123"\n', True,
-         gap=True, note='H7: entropy 3.28 < 3.5 floor'),
+         gap=True, note='H11: CRED_VAR_PATTERNS misses bare api_secret/secret '
+                        '(var-name gap, NOT entropy — entropy 3.28 passes the 3.0 floor)'),
     Case('jwt_compact', 'structural', 'jwtc.py', f'tok = "{_JWT_COMPACT}"\n', True,
          gap=True, note='L1: compact JWT misread as dotted access'),
     Case('pem_file', 'key-file', 'server.pem', _PEM + '\n', True,

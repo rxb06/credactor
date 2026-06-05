@@ -229,7 +229,11 @@ def _emit_report(findings: list[Finding], target: str, config: Config) -> None:
     inside _main_inner.
     """
     if not findings and config.output_format == 'text':
-        print('\n[OK] No hardcoded credentials detected. Safe for commits.\n')
+        print(
+            '\n[OK] No hardcoded credentials detected at the current sensitivity '
+            f'(entropy floor {config.entropy_threshold:g}). '
+            'Review weak or short secrets manually.\n'
+        )
         return
     if config.output_format == 'json':
         print(json_report(findings, target))
