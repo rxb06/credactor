@@ -293,16 +293,6 @@ def _validate_invocation(config: Config) -> None:
         if not config.dry_run:
             config.dry_run = True
 
-    if (config.replace_mode in ('sentinel', 'custom')
-            and _UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)):
-        logger.error(
-            'Replacement string contains potentially dangerous characters '
-            'that could enable code injection.\n  Value: %r\n'
-            '  Use only alphanumeric characters, underscores, and hyphens.',
-            config.custom_replacement,
-        )
-        sys.exit(2)
-
     if hasattr(os, 'getuid') and os.getuid() == 0:
         logger.warning(
             'Running as root — backup files may have restrictive ownership. '
@@ -314,6 +304,25 @@ def _validate_invocation(config: Config) -> None:
             '--replace-with env changes string literals to function calls. '
             'Ensure environment variables are set before running the modified code.',
         )
+
+
+def _validate_replacement(config: Config) -> None:
+    """Reject replacement strings containing code-injection metacharacters.
+
+    Run AFTER config load so a replacement supplied via ``.credactor.toml`` is
+    validated on the same footing as the ``--replacement`` CLI flag — the guard
+    previously ran only against the CLI value, letting a config-file replacement
+    slip dangerous characters into rewritten files.
+    """
+    if (config.replace_mode in ('sentinel', 'custom')
+            and _UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)):
+        logger.error(
+            'Replacement string contains potentially dangerous characters '
+            'that could enable code injection.\n  Value: %r\n'
+            '  Use only alphanumeric characters, underscores, and hyphens.',
+            config.custom_replacement,
+        )
+        sys.exit(2)
 
 
 def _validate_target(target: str) -> Path:
@@ -514,6 +523,10 @@ def _main_inner(argv: list[str] | None = None) -> None:
     file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
     if file_data:
         apply_config_file(config, file_data)
+
+    # Validate the EFFECTIVE replacement (after config load) so a
+    # .credactor.toml-supplied value can't bypass the injection guard (H5).
+    _validate_replacement(config)
 
     allowlist = AllowList(target)
     _print_banner(target_resolved_path)

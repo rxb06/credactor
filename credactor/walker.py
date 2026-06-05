@@ -203,16 +203,26 @@ def scan_staged_files(
     root_path = Path(root).resolve()
     try:
         result = subprocess.run(
-            ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACMR'],
+            ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
             capture_output=True, text=True, cwd=str(root_path), timeout=30,
         )
         if result.returncode != 0:
             logger.error('git diff failed: %s', result.stderr.strip())
             return [], []
+        # `git diff --cached` lists paths relative to the repo root; resolve them
+        # against the toplevel, not the scan root, which may be a subdirectory
+        # (resolving against a subdir doubled the path and defeated is_within_root).
+        top = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            capture_output=True, text=True, cwd=str(root_path), timeout=30,
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.error('Cannot run git: %s', exc)
         return [], []
-    raw_staged = result.stdout.strip().splitlines()
+    # -z yields NUL-separated, unquoted paths: a unicode/special-char filename
+    # would otherwise be octal-quoted and silently skipped (a staged-secret miss).
+    raw_staged = [p for p in result.stdout.split('\0') if p]
+    toplevel = Path(top.stdout.strip()) if top.returncode == 0 else root_path
 
     # Warn if suppression/config files are staged alongside code — a malicious
     # contributor could stage .credactor.toml or .credactorignore changes to
@@ -226,27 +236,53 @@ def scan_staged_files(
             ', '.join(staged_configs),
         )
 
-    staged = []
+    from .scanner import scan_line
+
+    findings: list[Finding] = []
+    errored: list[str] = []
     for line in raw_staged:
         # Reject paths with '..' path components (traversal guard,
         # consistent with the git-history scanner).  Uses component check,
         # not substring, so filenames like 'secret..py' are not falsely skipped.
         if any(part == '..' for part in Path(line).parts):
             continue
-        full_path = str(root_path / line)
+        full_path = str(toplevel / line)
         try:
             resolved = str(Path(full_path).resolve())
         except OSError:
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):
             continue
-        if os.path.isfile(full_path) and should_scan_file(line, config.extra_extensions):
-            staged.append(full_path)
+        if not should_scan_file(line, config.extra_extensions):
+            continue
 
-    if not staged:
-        return [], []
+        # Scan the STAGED index blob, not the working-tree file: the two can
+        # differ, and a pre-commit gate must see exactly what is being committed.
+        # Per-line scan mirrors scan_git_history; scan_file's multi-line passes
+        # (PEM blocks, and secrets spanning triple-quoted / template-literal
+        # strings) are NOT applied here. A PEM header line is still caught by
+        # scan_line, but a secret split across physical lines is not.
+        try:
+            blob = subprocess.run(
+                ['git', 'show', f':{line}'],
+                capture_output=True, cwd=str(root_path), timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning('Cannot read staged %s: %s', line, exc)
+            errored.append(full_path)
+            continue
+        if blob.returncode != 0:
+            logger.warning('Cannot read staged %s: %s', line,
+                           blob.stderr.decode('utf-8', 'replace').strip())
+            errored.append(full_path)
+            continue
 
-    return _parallel_scan(staged, config, allowlist)
+        content = blob.stdout.decode('utf-8', errors='surrogateescape')
+        for lineno, src in enumerate(content.splitlines(), start=1):
+            findings.extend(
+                scan_line(lineno, src, full_path, config=config, allowlist=allowlist))
+
+    return findings, errored
 
 
 # ---------------------------------------------------------------------------

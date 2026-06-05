@@ -8,6 +8,7 @@ import pytest
 from credactor.cli import (
     _config_from_args,
     _validate_invocation,
+    _validate_replacement,
     build_parser,
     main,
 )
@@ -52,7 +53,7 @@ class TestValidateInvocation:
     def test_dangerous_replacement_exits_2(self):
         config = Config(custom_replacement='$(rm -rf /)')
         with pytest.raises(SystemExit) as exc:
-            _validate_invocation(config)
+            _validate_replacement(config)   # H5: guard moved out of _validate_invocation
         assert exc.value.code == 2
 
 
@@ -342,3 +343,14 @@ class TestPhase1Fixes:
         from credactor.cli import _PROTECTED_DIRS_RESOLVED
         if Path('/etc').resolve() != Path('/etc'):   # only where /etc is a symlink
             assert str(Path('/etc').resolve()) in _PROTECTED_DIRS_RESOLVED
+
+    # --- H5: a dangerous replacement supplied via .credactor.toml is rejected ---
+    def test_config_file_replacement_is_validated(self, tmp_dir):
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('replacement = "x$(whoami)"\n')
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
