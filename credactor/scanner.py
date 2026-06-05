@@ -113,7 +113,7 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None) -> bool:
 
     # Environment variable / template references.
     # Require matching closing delimiters for brace syntax to prevent
-    # false negatives on values like "${AKIA1234567890123456" (unclosed).
+    # false negatives on values like "${AKIA..." (unclosed brace).
     # Bare $VAR and $VAR_NAME (no braces) are safe — they're env var names.
     if cleaned.startswith('${{') and '}}' in cleaned:
         return True
@@ -235,49 +235,55 @@ def scan_line(
     is_comment = stripped.startswith('#') or stripped.startswith('//')
 
     # --- 1. High-value VALUE_PATTERNS scan ---
-    if not is_comment:
-        for pattern, label, min_ent, severity in VALUE_PATTERNS:
-            for match in pattern.finditer(line):
-                val = match.group(0)
+    for pattern, label, min_ent, severity in VALUE_PATTERNS:
+        # M3: on comment lines, scan only the deterministic provider prefixes
+        # (critical severity — AWS/GCP/Stripe-live/GitHub/.../PEM, near-zero
+        # false positives) so a commented-out live key is still caught. The
+        # heuristic/structural patterns (hex, base64, JWT, connection string)
+        # stay code-only so example strings in prose comments don't false-flag.
+        if is_comment and severity != 'critical':
+            continue
+        for match in pattern.finditer(line):
+            val = match.group(0)
 
-                # high-entropy / hex credential: additional path/slash guard
-                if label in ('high-entropy string', 'hex credential'):
-                    if val.count('/') > 2:
-                        continue
-                    start = match.start()
-                    if start == 0 or line[start - 1] not in ('"', "'"):
-                        continue
-
-                # hex/high-entropy: skip if line contains hash/digest variable
-                is_hex_like = label in ('hex credential', 'high-entropy string')
-                if is_hex_like and _HASH_CONTEXT_RE.search(line):
-                    log_verbose(config, f'{filepath}:{lineno} suppressed by hash context')
+            # high-entropy / hex credential: additional path/slash guard
+            if label in ('high-entropy string', 'hex credential'):
+                if val.count('/') > 2:
+                    continue
+                start = match.start()
+                if start == 0 or line[start - 1] not in ('"', "'"):
                     continue
 
-                if _is_safe_value(val, extra_safe):
-                    log_verbose(config, f'{filepath}:{lineno} suppressed by safe value heuristic')
-                    continue
-                if len(val) < min_len and label != 'private key header':
-                    continue
-                if min_ent > 0 and entropy(val) < min_ent:
-                    continue
+            # hex/high-entropy: skip if line contains hash/digest variable
+            is_hex_like = label in ('hex credential', 'high-entropy string')
+            if is_hex_like and _HASH_CONTEXT_RE.search(line):
+                log_verbose(config, f'{filepath}:{lineno} suppressed by hash context')
+                continue
 
-                # Allowlist check
-                if allowlist and allowlist.is_suppressed(filepath, lineno, val):
-                    log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist')
-                    continue
+            if _is_safe_value(val, extra_safe):
+                log_verbose(config, f'{filepath}:{lineno} suppressed by safe value heuristic')
+                continue
+            if len(val) < min_len and label != 'private key header':
+                continue
+            if min_ent > 0 and entropy(val) < min_ent:
+                continue
 
-                findings.append({
-                    'file':          filepath,
-                    'line':          lineno,
-                    'type':          f'pattern:{label}',
-                    'severity':      severity,
-                    'full_value':    val,
-                    'value_preview': _preview(val),
-                    'raw':           line.rstrip(),
-                })
-            if findings:
-                return findings
+            # Allowlist check
+            if allowlist and allowlist.is_suppressed(filepath, lineno, val):
+                log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist')
+                continue
+
+            findings.append({
+                'file':          filepath,
+                'line':          lineno,
+                'type':          f'pattern:{label}',
+                'severity':      severity,
+                'full_value':    val,
+                'value_preview': _preview(val),
+                'raw':           line.rstrip(),
+            })
+        if findings:
+            return findings
 
     # --- 2. XML attribute check (#21) ---
     if not is_comment:

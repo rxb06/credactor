@@ -78,7 +78,9 @@ class TestBuildParser:
         assert args.fail_on_error is False
         assert args.output_format == 'text'
         assert args.replace_mode == 'sentinel'
-        assert args.replacement == 'REDACTED_BY_CREDACTOR'
+        # M10: default is None (not the literal) so an explicit --replacement is
+        # distinguishable from "flag not passed" and can win over a config value.
+        assert args.replacement is None
         assert args.config is None
 
 
@@ -362,9 +364,86 @@ class TestPhase1Fixes:
             _validate_replacement(Config(custom_replacement='SAFE\nimport os'))
         assert exc.value.code == 2
 
+    # --- M5: the replacement guard is an allowlist (markup/quote chars rejected) ---
+    def test_markup_replacement_rejected(self):
+        # <>"'/ passed the old shell-only denylist and could inject into XML/HTML
+        with pytest.raises(SystemExit) as exc:
+            _validate_replacement(Config(custom_replacement='"></secret><x>'))
+        assert exc.value.code == 2
+
+    def test_benign_replacement_accepted(self):
+        # alphanumeric + underscore + hyphen passes (no exit)
+        _validate_replacement(Config(custom_replacement='MY-REDACTION_1'))
+
+    def test_trailing_newline_replacement_rejected(self):
+        # fullmatch (not search) is required: the regex `$` matches before a
+        # trailing newline, so a search-based guard would let this inject a line
+        with pytest.raises(SystemExit) as exc:
+            _validate_replacement(Config(custom_replacement='REDACTED\n'))
+        assert exc.value.code == 2
+
     # --- H7: the empty-result message is not an absolute guarantee ---
     def test_clean_report_states_sensitivity_not_absolute(self, capsys):
         _emit_report([], '/tmp', Config(no_color=True))
         out = capsys.readouterr().out
         assert 'Safe for commits' not in out
         assert 'entropy floor' in out
+
+
+class TestStagedReadOnly:
+    """M7: --staged is read-only — it forces dry-run so a staged scan never
+    rewrites the working tree, even when --fix-all is also passed."""
+
+    def test_staged_forces_dry_run(self):
+        config = Config(staged_only=True, dry_run=False)
+        _validate_invocation(config)
+        assert config.dry_run is True
+
+    def test_staged_fix_all_warns_and_forces_dry_run(self, credactor_caplog):
+        config = Config(staged_only=True, fix_all=True, dry_run=False)
+        _validate_invocation(config)
+        assert config.dry_run is True
+        assert any('--staged is read-only' in r.message
+                   for r in credactor_caplog.records)
+
+
+class TestReplacementPrecedence:
+    """M10: an explicit --replacement overrides a config-file 'replacement'
+    (precedence CLI > config > default)."""
+
+    def test_config_from_args_resolves_none_to_default(self):
+        args = build_parser().parse_args([])
+        assert _config_from_args(args).custom_replacement == 'REDACTED_BY_CREDACTOR'
+
+    def test_config_from_args_keeps_explicit(self):
+        args = build_parser().parse_args(['--replacement', 'FROM_CLI'])
+        assert _config_from_args(args).custom_replacement == 'FROM_CLI'
+
+    def _make_repo(self, tmp_dir):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        src = os.path.join(tmp_dir, 'app.py')
+        with open(src, 'w') as f:
+            f.write(f'api_key = "{key}"\n')
+        return src, key
+
+    def test_cli_replacement_overrides_config(self, tmp_dir, monkeypatch):
+        src, key = self._make_repo(tmp_dir)
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('replacement = "FROM_CONFIG"\n')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--replace-with', 'custom',
+                  '--replacement', 'FROM_CLI', tmp_dir])
+        with open(src) as f:
+            out = f.read()
+        assert 'FROM_CLI' in out and 'FROM_CONFIG' not in out and key not in out
+
+    def test_config_replacement_applies_without_cli_flag(self, tmp_dir, monkeypatch):
+        src, key = self._make_repo(tmp_dir)
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('replacement = "FROM_CONFIG"\n')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--replace-with', 'custom', tmp_dir])
+        with open(src) as f:
+            assert 'FROM_CONFIG' in f.read()

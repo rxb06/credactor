@@ -361,3 +361,37 @@ class TestShouldScanFile:
         """MED-04: .environment or .envrc should NOT match."""
         assert not should_scan_file('.environment')
         assert not should_scan_file('.envrc')
+
+
+class TestCommentProviderScan:
+    """M3: deterministic provider prefixes (critical severity) are scanned on
+    comment lines — a commented-out live key is a common leak shape — while the
+    heuristic/structural patterns stay code-only to avoid prose false-positives."""
+
+    _AWS = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_bare_provider_token_in_hash_comment_detected(self, config):
+        findings = scan_line(1, f'# {self._AWS}', 'test.py', config=config)
+        assert len(findings) == 1
+        assert findings[0]['severity'] == 'critical'
+        assert findings[0]['full_value'] == self._AWS
+
+    def test_bare_provider_token_in_slash_comment_detected(self, config):
+        tok = 'ghp_ABCDEFGHIJ' + 'KLMNOPqrstuvwxyz123456'
+        findings = scan_line(1, f'// {tok}', 'app.js', config=config)
+        assert len(findings) == 1
+        assert any('GitHub token' in f['type'] for f in findings)
+
+    def test_commented_assignment_still_detected(self, config):
+        # `# api_key = "AKIA..."` was already caught (pass 3); still one finding
+        findings = scan_line(1, f'# api_key = "{self._AWS}"', 'test.py', config=config)
+        assert len(findings) == 1
+
+    def test_structural_pattern_in_comment_stays_code_only(self, config):
+        # a bare JWT is detected in code (structural, high) but NOT inside a
+        # comment — M3 runs only critical provider prefixes on comment lines
+        jwt = ('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
+               '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+               '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+        assert len(scan_line(1, jwt, 'a.py', config=config)) == 1
+        assert len(scan_line(1, f'# {jwt}', 'a.py', config=config)) == 0

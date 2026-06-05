@@ -46,6 +46,15 @@ class AllowList:
                     line = raw_line.strip()
                     if not line or line.startswith('#'):
                         continue
+                    # M12: an explicit `value:<literal>` entry suppresses a value
+                    # containing . / ? * (base64, JWTs, connection strings) that
+                    # the char-based routing below would otherwise send to
+                    # glob/path matching, leaving it un-allowlistable.
+                    if line.startswith('value:'):
+                        literal = line[len('value:'):]
+                        if literal:
+                            self._value_literals.add(literal)
+                        continue
                     # file:line entry
                     if ':' in line:
                         parts = line.rsplit(':', 1)
@@ -83,6 +92,18 @@ class AllowList:
                     'these hide any matching value everywhere with no per-finding '
                     'signal — review them for detection-bypass.',
                     len(self._value_literals),
+                )
+            if self._file_line:
+                # M13: file:line entries are positional only — the value is never
+                # checked — so a new secret that drifts onto a suppressed line
+                # after edits is silently hidden. No format change; surface the
+                # drift risk so entries get re-verified.
+                logger.warning(
+                    '.credactorignore has %d positional file:line suppression(s); '
+                    'they match by line number only and will not catch a new '
+                    'secret that moves onto a suppressed line — re-check them '
+                    'after large edits.',
+                    sum(len(v) for v in self._file_line.values()),
                 )
         except OSError:
             pass

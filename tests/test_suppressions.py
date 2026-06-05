@@ -113,3 +113,51 @@ class TestAllowList:
         config_file = os.path.join(tmp_dir, 'src', 'config.py')
         assert al.is_suppressed(config_file, 10, 'any_value')
         assert not al.is_suppressed(config_file, 11, 'any_value')
+
+    # --- M12: explicit `value:` prefix allowlists a value with . / + chars ---
+    def test_value_prefix_suppresses_special_char_value(self, tmp_dir):
+        # base64/JWT-shaped secret: contains / + . and = — un-allowlistable before
+        secret = 'aB3/xY9+zQ' + '==.eyJhbGciOiJI'
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write(f'value:{secret}\n')
+        al = AllowList(tmp_dir)
+        assert al.is_value_suppressed(secret)
+
+    def test_special_char_value_without_prefix_not_value_suppressed(self, tmp_dir):
+        # locks the M12 gap: without the prefix the value routes to glob/path
+        # matching and is never value-suppressed
+        secret = 'aB3/xY9+zQ' + '==.foo'
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write(f'{secret}\n')
+        al = AllowList(tmp_dir)
+        assert not al.is_value_suppressed(secret)
+
+    def test_value_prefix_does_not_break_path_suppression(self, tmp_dir):
+        # a normal path entry is unaffected by the new prefix routing
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('src/config.py\n')
+        al = AllowList(tmp_dir)
+        cfg = os.path.join(tmp_dir, 'src', 'config.py')
+        assert al.is_file_suppressed(cfg)
+
+    def test_value_prefix_beats_file_line_routing(self, tmp_dir):
+        # `value:dbhost:5432` is the VALUE literal 'dbhost:5432', NOT a file:line
+        # entry — the value: prefix is handled before the file:line/char routing
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('value:dbhost:5432\n')
+        al = AllowList(tmp_dir)
+        assert al.is_value_suppressed('dbhost:5432')
+        assert not al.is_line_suppressed(os.path.join(tmp_dir, 'dbhost'), 5432)
+
+    # --- M13: file:line entries emit a positional line-drift load warning ---
+    def test_file_line_emits_drift_warning(self, tmp_dir, credactor_caplog):
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('src/config.py:10\n')
+        AllowList(tmp_dir)
+        assert any('file:line' in r.message and 'line number only' in r.message
+                   for r in credactor_caplog.records)

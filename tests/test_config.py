@@ -85,6 +85,10 @@ class TestLoadConfigFile:
         assert result['min_value_length'] == 10
 
     def test_parent_dir_discovery(self, tmp_dir):
+        # A config at the project root (.git present) is discovered when scanning
+        # a subdirectory — the supported monorepo case (M14 keeps this working;
+        # only configs ABOVE the project root are refused).
+        os.makedirs(os.path.join(tmp_dir, '.git'))
         config_path = os.path.join(tmp_dir, '.credactor.toml')
         with open(config_path, 'w') as f:
             f.write('min_value_length = 15\n')
@@ -203,6 +207,28 @@ class TestApplyConfigFile:
         c = Config()
         apply_config_file(c, {'extra_extensions': ['.TXT']})
         assert should_scan_file('foo.txt', c.extra_extensions)
+
+    # M15 (leading dot): an un-dotted entry warns — it only matches files named
+    # exactly that, never files carrying that extension.
+    def test_extra_extensions_no_leading_dot_warns(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'extra_extensions': ['txt']})
+        assert any('extra_extensions' in r.message and 'leading dot' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_extra_extensions_dotted_does_not_warn(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'extra_extensions': ['.txt']})
+        assert not any('leading dot' in r.message for r in credactor_caplog.records)
+
+    # M15 (leading dot): the un-dotted name-match is preserved, NOT auto-prepended
+    # — `dockerfile` still matches a file named Dockerfile but not *.dockerfile.
+    def test_extra_extensions_name_match_preserved(self):
+        from credactor.scanner import should_scan_file
+        c = Config()
+        apply_config_file(c, {'extra_extensions': ['dockerfile']})
+        assert should_scan_file('Dockerfile', c.extra_extensions)
+        assert not should_scan_file('foo.dockerfile', c.extra_extensions)
 
     def test_apply_replacement(self):
         c = Config()

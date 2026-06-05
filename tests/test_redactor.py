@@ -309,6 +309,56 @@ class TestDeriveEnvVarName:
         assert '@' not in result
 
 
+class TestSecureBackupDirSymlink:
+    """M11: refuse a --secure-backup-dir reached through a symlink — leaf OR
+    ancestor — so a symlinked parent can't redirect the plaintext backup outside
+    the intended directory."""
+
+    def _finding(self, path):
+        return {'file': path, 'line': 1, 'type': 'variable:api_key',
+                'severity': 'high', 'full_value': _AWS_KEY,
+                'value_preview': '', 'raw': ''}
+
+    def test_plain_backup_dir_works(self, make_file, tmp_dir):
+        backup = os.path.join(tmp_dir, 'backups')
+        config = Config(secure_backup_dir=backup)
+        path = make_file('s.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 1
+        assert os.listdir(backup)            # backup landed where requested
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_leaf_symlink_refused(self, make_file, tmp_dir):
+        real = os.path.join(tmp_dir, 'real')
+        os.makedirs(real)
+        link = os.path.join(tmp_dir, 'backups')
+        os.symlink(real, link)
+        config = Config(secure_backup_dir=link)
+        path = make_file('s.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 0                 # backup refused -> redaction skipped
+        with open(path) as f:
+            assert _AWS_KEY in f.read()       # file untouched
+        assert not os.listdir(real)           # nothing escaped into the target
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_parent_symlink_refused(self, make_file, tmp_dir):
+        # symlinked PARENT with a real leaf dir — the case the old leaf-only
+        # os.path.islink() guard missed
+        realdest = os.path.join(tmp_dir, 'realdest')
+        os.makedirs(realdest)
+        symparent = os.path.join(tmp_dir, 'symparent')
+        os.symlink(realdest, symparent)
+        config = Config(secure_backup_dir=os.path.join(symparent, 'backups'))
+        path = make_file('s.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 0
+        with open(path) as f:
+            assert _AWS_KEY in f.read()
+        escaped = os.path.join(realdest, 'backups')
+        assert not (os.path.isdir(escaped) and os.listdir(escaped))
+
+
 class TestEnvRefForLanguage:
     """SEC-30: Verify bracket notation for JS and quoting for other languages."""
 

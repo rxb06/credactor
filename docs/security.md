@@ -20,7 +20,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 | Component | Trust Level | Notes |
 |-----------|-------------|-------|
 | Source files being scanned | Untrusted | May contain adversarial content; regex patterns are hardened against ReDoS |
-| `.credactor.toml` config | Semi-trusted | Can adjust thresholds and safe-values; traversal limited to 5 parent dirs; warns if loaded from outside project root |
+| `.credactor.toml` config | Semi-trusted | Can adjust thresholds and safe-values; traversal limited to 5 parent dirs; an implicitly-discovered config outside the project root is refused (an explicit `--config` outside the root is honored, with a warning, only in non-CI) |
 | `.credactorignore` | Semi-trusted | Can suppress findings for specific files, lines, or values |
 | CLI arguments | Trusted | Provided by the developer running the tool |
 | Git history (`--scan-history`) | Untrusted | Parses `git log -p` output; input is sanitised |
@@ -41,7 +41,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 ### v2.2.1
 
 - **SEC-01** — Secure backup handling: `--secure-backup-dir` stores `.bak` files outside the repo; `--secure-delete` overwrites backups with random data before unlinking.
-- **SEC-02** — Untrusted config warning: Config files loaded from outside the git project root trigger a `[WARN]` on stderr.
+- **SEC-02** — Untrusted config handling: An implicitly-discovered `.credactor.toml` outside the git project root is refused (`[ERROR]` on stderr, config ignored). An explicit `--config` pointing outside the root is honored with a `[WARN]` in non-CI mode; in CI it is always refused (see SEC-29 / M14).
 - **SEC-03** — Config parse failure surfacing: Warns on stderr instead of silently returning empty config.
 - **SEC-04** — Subprocess path sanitisation: All `subprocess.run(cwd=...)` calls resolve paths via `Path.resolve()` before execution.
 - **SEC-05** — File descriptor exhaustion protection: `EMFILE` errors in the thread pool trigger automatic sequential fallback.

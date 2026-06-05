@@ -126,17 +126,24 @@ def load_config_file(
                 )
 
             if outside:
-                if ci_mode:
+                ref = project_root or root
+                if explicit_path and not ci_mode:
+                    # M14: an outside-root config is honoured only when the user
+                    # points --config at it explicitly (non-CI). Implicit
+                    # discovery of a config above the project root — or any
+                    # outside config in CI — is refused: it can silently weaken
+                    # detection or inject a replacement (couples with H5).
+                    logger.warning(
+                        'Loading config from outside project root via --config: '
+                        '%s (project root: %s)', candidate, ref,
+                    )
+                else:
+                    hint = '' if ci_mode else ' Pass --config to load it explicitly.'
                     logger.error(
-                        'Refusing to load config from outside project '
-                        'root in CI mode: %s', candidate,
+                        'Refusing to load config from outside project root: '
+                        '%s (project root: %s).%s', candidate, ref, hint,
                     )
                     return {}
-                ref = project_root or root
-                logger.warning(
-                    'Config loaded from outside project root: '
-                    '%s (project root: %s)', candidate, ref,
-                )
             return _parse_toml(candidate)
 
     return {}
@@ -233,8 +240,18 @@ def apply_config_file(config: Config, file_data: dict) -> None:
     if 'skip_files' in file_data:
         config.skip_files.update(_coerce_str_list('skip_files', file_data['skip_files']))
     if 'extra_extensions' in file_data:
-        config.extra_extensions.update(
-            _coerce_str_list('extra_extensions', file_data['extra_extensions'], lower=True))
+        exts = _coerce_str_list('extra_extensions', file_data['extra_extensions'], lower=True)
+        for ext in exts:
+            # M15: an un-dotted entry only matches a file named *exactly* that
+            # (the should_scan_file name fallback), never files carrying that
+            # extension — surface the likely footgun without changing matching
+            # (auto-prepending '.' would break the legitimate Dockerfile match).
+            if ext and not ext.startswith('.'):
+                logger.warning(
+                    "extra_extensions entry %r has no leading dot; it will only "
+                    "match files named exactly %r, not files with that extension",
+                    ext, ext)
+        config.extra_extensions.update(exts)
     if 'extra_safe_values' in file_data:
         config.extra_safe_values.update(
             _coerce_str_list('extra_safe_values', file_data['extra_safe_values'], lower=True))

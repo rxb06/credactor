@@ -58,7 +58,7 @@ Make it executable:
 chmod +x .git/hooks/pre-commit
 ```
 
-`--ci` exits 1 on findings, blocking the commit. `--staged` scans only staged files. This mode is **read-only** — no file modifications or backups are created.
+`--ci` exits 1 on findings, blocking the commit. `--staged` scans only staged files and is **read-only** — it forces dry-run, so no files are modified or backed up even if `--fix-all` is also passed.
 
 ## CI Pipeline
 
@@ -115,7 +115,7 @@ credactor --ci --fail-on-error .  # strict mode
 ### CI Security Notes
 
 - `--ci` is read-only by design — it blocks `--fix-all` and forces `--dry-run`.
-- In CI mode, `.credactor.toml` files outside the project root are refused (SEC-29).
+- `.credactor.toml` files discovered *implicitly* outside the project root are refused (SEC-29 / M14): in CI they are always refused; in non-CI you can still load one by pointing `--config` at it explicitly.
 - `--fail-on-error` ensures files skipped due to permissions are not silently ignored.
 
 ## Configuration

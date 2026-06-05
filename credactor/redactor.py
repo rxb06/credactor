@@ -140,6 +140,47 @@ def _replace_quoted(original: str, full_value: str, replacement: str) -> str:
 # ---------------------------------------------------------------------------
 # Backup (#1)
 # ---------------------------------------------------------------------------
+def _system_symlink_prefixes() -> tuple[tuple[str, str], ...]:
+    """macOS aliases ``/tmp``, ``/var``, ``/etc`` to ``/private/*`` via stable
+    system symlinks; a backup dir under them (e.g. the documented
+    ``--secure-backup-dir /tmp/...``) is benign and must not be rejected.
+
+    Computed once at import; empty on Linux where these are real directories.
+    """
+    pairs: list[tuple[str, str]] = []
+    for root in ('/tmp', '/var', '/etc'):
+        try:
+            if os.path.islink(root):
+                pairs.append((root, os.path.realpath(root)))
+        except OSError:
+            pass
+    return tuple(pairs)
+
+
+_SYSTEM_SYMLINK_PREFIXES = _system_symlink_prefixes()
+
+
+def _backup_dir_via_unsafe_symlink(path_str: str) -> bool:
+    """True if *path_str* reaches its real location through a symlink the tool
+    cannot vouch for (M11).
+
+    The previous guard checked only the leaf component with ``os.path.islink``,
+    so a symlinked PARENT with a real leaf dir slipped through and let the backup
+    escape. This compares the fully-resolved path against the lexical path,
+    excepting only the well-known macOS system-temp symlinks so the documented
+    ``--secure-backup-dir /tmp/...`` workflow is not falsely rejected. A
+    not-yet-created dir with no symlink in its path is allowed (``realpath``
+    resolves the existing prefix and appends the rest lexically).
+    """
+    abspath = os.path.abspath(path_str)
+    expected = abspath
+    for src, dst in _SYSTEM_SYMLINK_PREFIXES:
+        if abspath == src or abspath.startswith(src + os.sep):
+            expected = dst + abspath[len(src):]
+            break
+    return os.path.realpath(path_str) != expected
+
+
 def _create_backup(filepath: str, config: Config) -> str | None:
     """Create a .bak copy of the file. Returns backup path or None on failure.
 
@@ -174,12 +215,14 @@ def _create_backup(filepath: str, config: Config) -> str | None:
         config.backup_warn_shown = True
 
     if config.secure_backup_dir:
-        dest_dir = Path(config.secure_backup_dir).resolve()
-        # Refuse if secure-backup-dir is a symlink — return None so caller
-        # skips redaction for this file.
-        if os.path.islink(config.secure_backup_dir):
+        # M11: refuse if the backup dir reaches its target through a symlink —
+        # leaf OR any ancestor. The prior os.path.islink() check inspected only
+        # the leaf, so a symlinked PARENT could silently redirect the backup
+        # outside the intended directory. Return None so the caller skips
+        # redaction for this file.
+        if _backup_dir_via_unsafe_symlink(config.secure_backup_dir):
             logger.error(
-                '--secure-backup-dir is a symlink (possible attack): %s\n'
+                '--secure-backup-dir resolves through a symlink (possible attack): %s\n'
                 '  Refusing to proceed — backup security cannot be guaranteed.',
                 config.secure_backup_dir,
             )
@@ -187,6 +230,7 @@ def _create_backup(filepath: str, config: Config) -> str | None:
             with contextlib.suppress(OSError):
                 os.unlink(bak)
             return None
+        dest_dir = Path(config.secure_backup_dir).resolve()
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = str(dest_dir / Path(bak).name)

@@ -34,7 +34,7 @@ In interactive mode each finding is shown and you choose whether to redact it:
 | `--ci` | Read-only mode: report findings and exit 1. Blocks `--fix-all` and forces `--dry-run` |
 | `--dry-run` | Show findings without modifying anything |
 | `--fix-all` | Redact all findings without prompts (cannot combine with `--ci`) |
-| `--staged` | Scan only git-staged files |
+| `--staged` | Scan only git-staged files (read-only — forces dry-run) |
 | `--scan-history` | Scan git commit history |
 
 ### Output
@@ -164,19 +164,33 @@ test_key = "abc123"  # credactor:ignore
 
 ### Allowlist
 
-`.credactorignore` supports three entry types:
+`.credactorignore` supports these entry types:
 
 ```
 # Glob patterns — suppress entire files
 tests/fixtures/**
 **/testdata/*.py
 
-# File:line — suppress a specific line
+# File:line — suppress a specific line (positional; see note below)
 src/config.py:42
 
 # Value literals — suppress a value anywhere
 test_fixture_token_value
+
+# Explicit value literal — required for values containing . / ? * (base64,
+# JWTs, connection strings), which would otherwise be read as a path/glob
+value:aB3/xY9+zQ==.eyJhbGci
 ```
+
+> **`file:line` is positional.** It matches by line number only — the value is
+> not checked. If edits move a *different* secret onto a suppressed line it is
+> silently suppressed, so re-check `file:line` entries after large changes (or
+> use a `value:` literal instead). Credactor logs how many positional `file:line`
+> suppressions are active on each run.
+
+> **Unprefixed entries containing `. / ? *`** are treated as file paths/globs,
+> not value literals. To allowlist a *value* with those characters, use the
+> `value:` prefix.
 
 ### Suppression Audit Trail
 

@@ -314,21 +314,76 @@ class TestConfigTypeConfusion:
 
 
 class TestConfigTrustBoundaryNonGit:
-    """SEC-39: Config from parent dirs warned even without .git."""
+    """SEC-39 / M14: an implicitly-discovered config outside the project root is
+    refused (not silently loaded) even in non-CI mode."""
 
-    def test_parent_config_warns_without_git(self, tmp_dir):
-        """Config in parent dir should warn when no .git exists."""
+    def test_parent_config_refused_without_git(self, tmp_dir, credactor_caplog):
+        """A config above the scan dir, with no .git to anchor a project root, is
+        an implicit outside-root config — M14 refuses it instead of loading it
+        with only a warning (it could weaken detection or inject a replacement)."""
         resolved = os.path.realpath(tmp_dir)
         child = os.path.join(resolved, 'subdir')
         os.makedirs(child)
-        # Place config in parent (tmp_dir), scan from child
+        # Place config in parent (tmp_dir), scan from child. No .git anywhere.
         config_path = os.path.join(resolved, '.credactor.toml')
         with open(config_path, 'w') as f:
             f.write('entropy_threshold = 4.0\n')
-        # No .git in either directory
         result = load_config_file(child)
-        # Config should still load (we just want the warning path exercised)
+        assert result == {}
+        assert any('Refusing to load config from outside project root' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_outside_config_honored_with_explicit_path(self, tmp_dir):
+        """M14: the same outside-root config IS loaded when the user points
+        --config at it explicitly (non-CI opt-in)."""
+        resolved = os.path.realpath(tmp_dir)
+        child = os.path.join(resolved, 'subdir')
+        os.makedirs(child)
+        config_path = os.path.join(resolved, '.credactor.toml')
+        with open(config_path, 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        result = load_config_file(child, explicit_path=config_path)
         assert result.get('entropy_threshold') == 4.0
+
+    def test_outside_config_refused_in_ci_even_with_explicit_path(self, tmp_dir):
+        """M14 keeps SEC-29 intact: CI refuses an outside-root config even when
+        passed explicitly via --config."""
+        resolved = os.path.realpath(tmp_dir)
+        child = os.path.join(resolved, 'subdir')
+        os.makedirs(child)
+        config_path = os.path.join(resolved, '.credactor.toml')
+        with open(config_path, 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        result = load_config_file(child, explicit_path=config_path, ci_mode=True)
+        assert result == {}
+
+    def test_config_above_git_project_root_refused(self, tmp_dir, credactor_caplog):
+        """The .git-anchored refuse branch: a config ABOVE the project root is
+        refused on implicit discovery even though parent traversal reaches it,
+        and the error names the project root (not the scan dir)."""
+        resolved = os.path.realpath(tmp_dir)
+        project = os.path.join(resolved, 'project')
+        scan_dir = os.path.join(project, 'src')
+        os.makedirs(os.path.join(project, '.git'))
+        os.makedirs(scan_dir)
+        # config sits ABOVE the project root, in tmp_dir
+        with open(os.path.join(resolved, '.credactor.toml'), 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        result = load_config_file(scan_dir)
+        assert result == {}
+        assert any('Refusing to load config from outside project root' in r.message
+                   and project in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_parent_config_refused_implicitly_in_ci(self, tmp_dir):
+        """The CI leg of 'refuse implicit outside-root in ALL modes'."""
+        resolved = os.path.realpath(tmp_dir)
+        child = os.path.join(resolved, 'subdir')
+        os.makedirs(child)
+        with open(os.path.join(resolved, '.credactor.toml'), 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        result = load_config_file(child, ci_mode=True)
+        assert result == {}
 
 
 # ---------------------------------------------------------------------------

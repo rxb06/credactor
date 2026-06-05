@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from . import __version__
 from ._log import configure as _configure_log
 from ._log import logger
 from .config import Config, apply_config_file, load_config_file
-from .redactor import _UNSAFE_REPLACEMENT_RE, fix_all, interactive_review
+from .redactor import fix_all, interactive_review
 from .report import json_report, print_gitignore_skipped, print_report, sarif_report
 from .scanner import scan_file
 from .suppressions import AllowList
@@ -57,6 +58,12 @@ def _resolve_protected_dirs() -> frozenset[str]:
 
 
 _PROTECTED_DIRS_RESOLVED: frozenset[str] = _resolve_protected_dirs()
+
+# M5: a custom replacement string must match the documented contract exactly —
+# alphanumeric, underscore, hyphen only. fullmatch (not search) is required: the
+# regex `$` matches before a trailing newline, so search would let "X\n" slip
+# through and inject a source line.
+_SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]*')
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,9 +152,10 @@ def build_parser() -> argparse.ArgumentParser:
              'custom = your own string via --replacement',
     )
     replace.add_argument(
-        '--replacement', type=str, default='REDACTED_BY_CREDACTOR',
+        '--replacement', type=str, default=None,
         help='custom replacement string used with --replace-with sentinel or custom '
-             '(default: REDACTED_BY_CREDACTOR)',
+             '(default: REDACTED_BY_CREDACTOR). An explicit value here overrides a '
+             "'replacement' set in .credactor.toml.",
     )
     replace.add_argument(
         '--no-backup', action='store_true',
@@ -272,7 +280,9 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         fail_on_error=args.fail_on_error,
         verbose=args.verbose,
         replace_mode=args.replace_mode,
-        custom_replacement=args.replacement,
+        custom_replacement=(args.replacement
+                            if args.replacement is not None
+                            else 'REDACTED_BY_CREDACTOR'),
         output_format=args.output_format,
         target=args.target,
         config_path=args.config,
@@ -297,6 +307,18 @@ def _validate_invocation(config: Config) -> None:
         if not config.dry_run:
             config.dry_run = True
 
+    if config.staged_only:
+        # M7: --staged is documented read-only (pre-commit hook use), so force
+        # dry-run — a staged scan never rewrites the working tree out from under
+        # a commit. It still reports and exits 1 on findings. Warn on --fix-all
+        # regardless of any pre-existing --dry-run so the ignored write is visible.
+        if config.fix_all:
+            logger.warning(
+                '--staged is read-only; ignoring --fix-all and scanning in '
+                'dry-run. Redact the working tree in a separate, unstaged run.',
+            )
+        config.dry_run = True
+
     if hasattr(os, 'getuid') and os.getuid() == 0:
         logger.warning(
             'Running as root — backup files may have restrictive ownership. '
@@ -311,23 +333,23 @@ def _validate_invocation(config: Config) -> None:
 
 
 def _validate_replacement(config: Config) -> None:
-    """Reject replacement strings containing code-injection metacharacters.
+    """Reject any custom replacement string outside the documented charset.
 
     Run AFTER config load so a replacement supplied via ``.credactor.toml`` is
-    validated on the same footing as the ``--replacement`` CLI flag — the guard
-    previously ran only against the CLI value, letting a config-file replacement
-    slip dangerous characters into rewritten files.
+    validated on the same footing as the ``--replacement`` CLI flag (H5) — the
+    guard previously ran only against the CLI value.
+
+    M5: enforce an allowlist (alphanumeric, underscore, hyphen) matching the
+    user-facing error message, instead of a shell-only denylist that let markup
+    and quote characters (``<>"'/``) through to inject into XML/HTML/code. The
+    allowlist also subsumes the M6 newline/control-character rejection.
     """
     if config.replace_mode not in ('sentinel', 'custom'):
         return
-    # M6: a newline or other control char is never a legitimate single-token
-    # replacement and would inject a new source line, so reject non-printables
-    # alongside the shell-metacharacter denylist.
-    if (_UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)
-            or not config.custom_replacement.isprintable()):
+    if not _SAFE_REPLACEMENT_RE.fullmatch(config.custom_replacement):
         logger.error(
-            'Replacement string contains potentially dangerous characters '
-            'that could enable code injection.\n  Value: %r\n'
+            'Replacement string contains characters outside the allowed set.\n'
+            '  Value: %r\n'
             '  Use only alphanumeric characters, underscores, and hyphens.',
             config.custom_replacement,
         )
@@ -532,6 +554,12 @@ def _main_inner(argv: list[str] | None = None) -> None:
     file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
     if file_data:
         apply_config_file(config, file_data)
+
+    # M10: an explicit --replacement overrides a config-file 'replacement'
+    # (precedence CLI > config > default). argparse default is None, so a
+    # non-None args.replacement means the flag was actually passed.
+    if args.replacement is not None:
+        config.custom_replacement = args.replacement
 
     # Validate the EFFECTIVE replacement (after config load) so a
     # .credactor.toml-supplied value can't bypass the injection guard (H5).

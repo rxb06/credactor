@@ -270,7 +270,7 @@ extra_safe_values = ["test_token_abc_123", "mock_api_key_xyz"]
 replacement = "TODO_REPLACE_WITH_ENV_VAR"
 ```
 
-Picked up automatically from the scan target or any parent directory.
+Picked up automatically from the scan target or any parent directory **up to the project root**. A config above the project root is refused unless passed explicitly with `--config` (non-CI).
 
 ## 11. XML config files
 
