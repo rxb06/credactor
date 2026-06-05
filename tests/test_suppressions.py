@@ -18,6 +18,30 @@ class TestInlineSuppression:
     def test_no_suppression(self):
         assert not has_inline_suppression('api_key = "secret"  # important')
 
+    # --- H8: directive must follow a comment opener (not a bare substring) ---
+    def test_block_comment(self):
+        assert has_inline_suppression('value = "x"  /* credactor:ignore */')
+
+    def test_xml_comment(self):
+        assert has_inline_suppression('<add value="x" />  <!-- credactor:ignore -->')
+
+    def test_prose_mention_does_not_suppress(self):
+        """A prose mention of the directive in a comment must NOT suppress."""
+        assert not has_inline_suppression(
+            'aws = "secret"  # TODO: stop using credactor:ignore everywhere')
+
+    def test_string_mention_does_not_suppress(self):
+        """The directive inside a string value (not a comment) must NOT suppress."""
+        assert not has_inline_suppression('doc = "see credactor:ignore for details"')
+
+    def test_prose_mention_does_not_silence_real_secret(self):
+        """End-to-end: a real AWS key on a line whose comment only mentions the
+        directive in prose is still reported (was silenced before H8)."""
+        from credactor.scanner import scan_line
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        line = f'aws = "{key}"  # TODO: drop credactor:ignore usage'
+        assert len(scan_line(1, line, 't.py')) == 1
+
 
 class TestAllowList:
     def test_file_glob_suppression(self, tmp_dir):

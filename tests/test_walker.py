@@ -3,6 +3,8 @@
 import os
 from unittest import mock
 
+import pytest
+
 from credactor.config import Config
 from credactor.suppressions import AllowList
 from credactor.walker import walk_and_scan
@@ -132,3 +134,19 @@ class TestWalkAndScan:
             _, _, _, errored = walk_and_scan(tmp_dir, config)
         resolved = os.path.realpath(py_file)
         assert any(os.path.realpath(e) == resolved for e in errored)
+
+    @pytest.mark.skipif(not hasattr(os, 'getuid') or os.getuid() == 0,
+                        reason='chmod 000 is not honoured as root / on Windows')
+    def test_unreadable_file_populates_errored(self, tmp_dir):
+        """H4: a file that raises OSError on read lands in errored_files (so
+        --fail-on-error can exit 2 on it)."""
+        py_file = os.path.join(tmp_dir, 'target.py')
+        with open(py_file, 'w') as f:
+            f.write('api_key = "x"\n')
+        os.chmod(py_file, 0o000)
+        try:
+            _, _, _, errored = walk_and_scan(tmp_dir, Config(no_color=True))
+            resolved = os.path.realpath(py_file)
+            assert any(os.path.realpath(e) == resolved for e in errored)
+        finally:
+            os.chmod(py_file, 0o644)

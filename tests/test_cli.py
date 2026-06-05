@@ -273,3 +273,72 @@ class TestGitleaksAllowlistIntegration:
         with pytest.raises(SystemExit) as exc_info:
             main(['--dry-run', '--from-gitleaks', report, repo])
         assert exc_info.value.code == 1
+
+
+_NOT_ROOT = pytest.mark.skipif(
+    not hasattr(os, 'getuid') or os.getuid() == 0,
+    reason='chmod 000 is not honoured as root / on Windows',
+)
+
+
+class TestPhase1Fixes:
+    """Regression tests for e2e findings H1, H4, H6."""
+
+    # --- H1: single-file target is scanned (os.walk on a file yields nothing) ---
+    def test_single_file_target_is_scanned(self, make_file):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file('config.py', f'aws_key = "{key}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', path])          # file path, not its directory
+        assert exc_info.value.code == 1         # findings present
+
+    def test_single_file_parity_with_directory(self, make_file):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file('config.py', f'aws_key = "{key}"\n')
+        for target in (path, os.path.dirname(path)):
+            with pytest.raises(SystemExit) as exc_info:
+                main(['--dry-run', target])
+            assert exc_info.value.code == 1
+
+    # --- H4: --fail-on-error must surface unreadable files ---
+    @_NOT_ROOT
+    def test_fail_on_error_exits_2_on_unreadable_file(self, make_file):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file('secret.py', f'aws_key = "{key}"\n')
+        os.chmod(path, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                main(['--fail-on-error', '--dry-run', os.path.dirname(path)])
+            assert exc_info.value.code == 2
+        finally:
+            os.chmod(path, 0o644)
+
+    @_NOT_ROOT
+    def test_unreadable_file_without_fail_on_error_exits_0(self, make_file):
+        """Characterization: without --fail-on-error an unreadable file is a
+        warning only (no SystemExit(2))."""
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file('secret.py', f'aws_key = "{key}"\n')
+        os.chmod(path, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                main(['--dry-run', os.path.dirname(path)])
+            assert exc_info.value.code == 0     # unread -> no findings, no error gate
+        finally:
+            os.chmod(path, 0o644)
+
+    # --- H6: protected-dir guard resolves symlinked roots (macOS /etc) ---
+    def test_etc_is_refused(self):
+        from pathlib import Path
+        if not Path('/etc').exists():
+            pytest.skip('no /etc on this platform')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['/etc'])
+        assert exc_info.value.code == 2
+
+    def test_resolved_protected_set_includes_symlink_targets(self):
+        from pathlib import Path
+
+        from credactor.cli import _PROTECTED_DIRS_RESOLVED
+        if Path('/etc').resolve() != Path('/etc'):   # only where /etc is a symlink
+            assert str(Path('/etc').resolve()) in _PROTECTED_DIRS_RESOLVED

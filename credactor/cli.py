@@ -40,6 +40,25 @@ _PROTECTED_DIRS: frozenset[str] = frozenset({
 # fmt: on
 
 
+def _resolve_protected_dirs() -> frozenset[str]:
+    """Add resolved forms of symlinked roots (macOS ``/etc`` -> ``/private/etc``,
+    ``/var`` -> ``/private/var``, etc.) so the protected-dir guard cannot be
+    bypassed by passing the symlink form. The literal originals are kept for
+    systems without the symlink."""
+    resolved: set[str] = set(_PROTECTED_DIRS)
+    for d in _PROTECTED_DIRS:
+        try:
+            p = Path(d)
+            if p.exists():
+                resolved.add(str(p.resolve()))
+        except OSError:
+            pass
+    return frozenset(resolved)
+
+
+_PROTECTED_DIRS_RESOLVED: frozenset[str] = _resolve_protected_dirs()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='credactor',
@@ -311,7 +330,7 @@ def _validate_target(target: str) -> Path:
     resolved = str(target_resolved_path)
 
     if (
-        resolved in _PROTECTED_DIRS
+        resolved in _PROTECTED_DIRS_RESOLVED
         or (sys.platform == 'win32' and len(resolved) == 3 and resolved[1:] == ':\\')
     ):
         logger.error(
@@ -322,7 +341,7 @@ def _validate_target(target: str) -> Path:
         )
         sys.exit(2)
 
-    if resolved == str(Path.home()):
+    if resolved == str(Path.home().resolve()):
         logger.error(
             'refusing to scan home directory: %s\n'
             '  Scanning ~ includes thousands of directories and will hang.\n'
@@ -393,6 +412,15 @@ def _collect_findings(
     if config.scan_history:
         return scan_git_history(target, config, allowlist), []
 
+    # H1: an explicitly-named file is scanned directly — os.walk() on a file
+    # yields nothing, so routing a file target through walk_and_scan silently
+    # finds zero. scan_file does not gate on extension (the user named it).
+    if os.path.isfile(target):
+        try:
+            return scan_file(target, config=config, allowlist=allowlist), []
+        except OSError:
+            return [], [target]
+
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
         target, config, allowlist,
     )
@@ -407,7 +435,10 @@ def _collect_findings(
         else:
             json_paths = select_json_files(json_files, target)
         for path in json_paths:
-            findings.extend(scan_file(path, config=config, allowlist=allowlist))
+            try:
+                findings.extend(scan_file(path, config=config, allowlist=allowlist))
+            except OSError:
+                errored_files.append(path)
 
     return findings, errored_files
 

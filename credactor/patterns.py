@@ -226,4 +226,9 @@ XML_ATTR_RE = _XML_KEY_FIRST
 # ---------------------------------------------------------------------------
 # Inline suppression comment pattern (#3)
 # ---------------------------------------------------------------------------
-SUPPRESS_RE = re.compile(r'credactor:\s*ignore', re.IGNORECASE)
+# The directive must immediately follow a comment opener (only whitespace
+# between), so a bare prose/string mention of "credactor:ignore" no longer
+# silences a real secret on the same line.  Openers cover every scanned
+# language's comment syntax (#, //, /*, <!--); SQL `--` is intentionally
+# excluded — no scanned file type uses it and it recurs in non-comment text.
+SUPPRESS_RE = re.compile(r'(?:#|//|/\*|<!--)\s*credactor:\s*ignore', re.IGNORECASE)
