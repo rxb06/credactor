@@ -168,6 +168,42 @@ class TestApplyConfigFile:
         apply_config_file(c, {'extra_safe_values': ['TestToken123']})
         assert 'testtoken123' in c.extra_safe_values
 
+    # M8: a non-string element is skipped instead of crashing on .lower()
+    def test_extra_safe_values_non_string_element_skipped(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'extra_safe_values': [123, 'OK']})
+        assert c.extra_safe_values == {'ok'}
+        assert any('extra_safe_values' in r.message and 'not a string' in r.message
+                   for r in credactor_caplog.records)
+
+    # M9: a bare string is rejected whole, not char-split into single letters
+    def test_list_key_given_string_is_rejected(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'skip_dirs': 'vendor'})
+        assert c.skip_dirs == set()
+        assert any('skip_dirs' in r.message and 'list of strings' in r.message
+                   for r in credactor_caplog.records)
+
+    # M9: a non-iterable scalar is rejected instead of raising TypeError
+    def test_list_key_given_scalar_is_rejected(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'skip_dirs': 5})
+        assert c.skip_dirs == set()
+        assert any('skip_dirs' in r.message for r in credactor_caplog.records)
+
+    # M9 parity: a valid list still merges and keeps case (must NOT be lowercased)
+    def test_skip_dirs_case_preserved(self):
+        c = Config()
+        apply_config_file(c, {'skip_dirs': ['VendorDir']})
+        assert 'VendorDir' in c.skip_dirs
+
+    # M15: extra_extensions entries are lowercased to match the lowercased suffix
+    def test_extra_extensions_lowercased(self):
+        from credactor.scanner import should_scan_file
+        c = Config()
+        apply_config_file(c, {'extra_extensions': ['.TXT']})
+        assert should_scan_file('foo.txt', c.extra_extensions)
+
     def test_apply_replacement(self):
         c = Config()
         apply_config_file(c, {'replacement': 'REMOVED'})

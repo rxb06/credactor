@@ -356,6 +356,12 @@ class TestPhase1Fixes:
             main(['--dry-run', tmp_dir])
         assert exc_info.value.code == 2
 
+    # --- M6: a newline in the replacement injects a new source line ---
+    def test_newline_in_replacement_rejected(self):
+        with pytest.raises(SystemExit) as exc:
+            _validate_replacement(Config(custom_replacement='SAFE\nimport os'))
+        assert exc.value.code == 2
+
     # --- H7: the empty-result message is not an absolute guarantee ---
     def test_clean_report_states_sensitivity_not_absolute(self, capsys):
         _emit_report([], '/tmp', Config(no_color=True))

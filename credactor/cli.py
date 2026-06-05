@@ -318,8 +318,13 @@ def _validate_replacement(config: Config) -> None:
     previously ran only against the CLI value, letting a config-file replacement
     slip dangerous characters into rewritten files.
     """
-    if (config.replace_mode in ('sentinel', 'custom')
-            and _UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)):
+    if config.replace_mode not in ('sentinel', 'custom'):
+        return
+    # M6: a newline or other control char is never a legitimate single-token
+    # replacement and would inject a new source line, so reject non-printables
+    # alongside the shell-metacharacter denylist.
+    if (_UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)
+            or not config.custom_replacement.isprintable()):
         logger.error(
             'Replacement string contains potentially dangerous characters '
             'that could enable code injection.\n  Value: %r\n'

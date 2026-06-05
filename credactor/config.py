@@ -181,6 +181,28 @@ def _coerce_scalar(key: str, raw: object, coerce, bounds: tuple[float, float], d
     return val
 
 
+def _coerce_str_list(key: str, raw: object, *, lower: bool = False) -> list[str]:
+    """Normalize a config list key into a list of strings, warn-and-skipping a
+    malformed shape or element.
+
+    A bare string or non-sequence is rejected whole — a string would otherwise
+    char-split through ``set.update`` (``"vendor"`` -> ``{'v','e',...}``) and a
+    scalar would raise ``TypeError`` (M9). Non-string elements are dropped rather
+    than crashing on ``.lower()`` (M8). ``lower`` lowercases entries, used for
+    extra_safe_values (case-insensitive match) and extra_extensions (M15).
+    """
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        logger.warning('%s must be a list of strings, ignoring', key)
+        return []
+    out: list[str] = []
+    for el in raw:
+        if not isinstance(el, str):
+            logger.warning('%s entry %r is not a string, skipping', key, el)
+            continue
+        out.append(el.lower() if lower else el)
+    return out
+
+
 def _apply_ingest_config(config: Config, file_data: dict) -> None:
     """Apply the optional ``[ingest]`` table (from_gitleaks / from_trufflehog)."""
     ingest = file_data.get('ingest', {})
@@ -207,13 +229,15 @@ def apply_config_file(config: Config, file_data: dict) -> None:
         if key in file_data:
             setattr(config, key, _coerce_scalar(key, file_data[key], coerce, bounds, default))
     if 'skip_dirs' in file_data:
-        config.skip_dirs.update(file_data['skip_dirs'])
+        config.skip_dirs.update(_coerce_str_list('skip_dirs', file_data['skip_dirs']))
     if 'skip_files' in file_data:
-        config.skip_files.update(file_data['skip_files'])
+        config.skip_files.update(_coerce_str_list('skip_files', file_data['skip_files']))
     if 'extra_extensions' in file_data:
-        config.extra_extensions.update(file_data['extra_extensions'])
+        config.extra_extensions.update(
+            _coerce_str_list('extra_extensions', file_data['extra_extensions'], lower=True))
     if 'extra_safe_values' in file_data:
-        config.extra_safe_values.update(v.lower() for v in file_data['extra_safe_values'])
+        config.extra_safe_values.update(
+            _coerce_str_list('extra_safe_values', file_data['extra_safe_values'], lower=True))
     if 'replacement' in file_data:
         config.custom_replacement = str(file_data['replacement'])
     _apply_ingest_config(config, file_data)
