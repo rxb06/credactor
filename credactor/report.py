@@ -107,9 +107,19 @@ def print_report(
 
 
 def _mask_in_line(raw_line: str, full_value: str) -> str:
-    """Replace the credential in the raw line with a masked version."""
+    """Replace the credential in the raw line with a masked version.
+
+    If ``full_value`` is not a verbatim substring of ``raw_line`` the substring
+    replace would silently no-op and print the raw line WITH the secret. This
+    happens for ingested findings whose stored value differs from the on-disk
+    form (e.g. a TruffleHog URL-decoded value vs the encoded source). Fail
+    closed: show only the masked value rather than the raw line, so a credential
+    is never emitted unmasked.
+    """
     masked = mask_secret(full_value)
-    return raw_line.replace(full_value, masked, 1)
+    if full_value and full_value in raw_line:
+        return raw_line.replace(full_value, masked, 1)
+    return masked
 
 
 # ---------------------------------------------------------------------------

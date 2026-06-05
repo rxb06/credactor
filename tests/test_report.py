@@ -45,6 +45,25 @@ class TestTextReport:
         # But the masked version should
         assert 'AKIA[REDACTED]' in output
 
+    def test_no_leak_when_value_not_verbatim_in_raw(self):
+        # An ingested finding whose stored value is NOT a verbatim substring of
+        # the raw line (e.g. TruffleHog URL-decoded value vs the encoded source)
+        # must not leak the on-disk secret: the substring mask no-ops, so the
+        # report must fail closed and show only the masked value, never raw.
+        on_disk = 'Sup3rS3cr3tP%40ss'
+        findings = [{
+            'file': '/tmp/config.py', 'line': 7,
+            'type': 'external:trufflehog:URI', 'severity': 'high',
+            'full_value': 'postgresql://admin:Sup3rS3cr3tP@ss@db:5432/x',  # decoded
+            'value_preview': '',
+            'raw': f'db_url = "postgresql://admin:{on_disk}@db:5432/x"',   # encoded
+        }]
+        buf = io.StringIO()
+        print_report(findings, '/tmp', no_color=True, stream=buf)
+        output = buf.getvalue()
+        assert on_disk not in output           # no unmasked secret
+        assert '[REDACTED]' in output          # masked value shown instead
+
 
 class TestJsonReport:
     def test_valid_json(self):
