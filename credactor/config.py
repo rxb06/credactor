@@ -156,30 +156,56 @@ def _parse_toml(path: Path) -> dict:
         return {}
 
 
+# Scalar config keys validated uniformly: (key, coerce, (lo, hi), default).
+# An invalid type or out-of-range value logs a warning and falls back to the
+# default — identical behaviour to the per-field blocks this table replaced.
+_SCALAR_VALIDATORS = (
+    ('entropy_threshold', float, (0.0, 6.0), 3.5),
+    ('min_value_length', int, (1, 200), 8),
+)
+
+
+def _coerce_scalar(key: str, raw: object, coerce, bounds: tuple[float, float], default):
+    """Coerce *raw* via *coerce* and range-check it against *bounds*; warn and
+    return *default* on a type error or out-of-range value."""
+    lo, hi = bounds
+    try:
+        val = coerce(raw)
+    except (ValueError, TypeError):
+        logger.warning('%s has invalid type, using default %s', key, default)
+        return default
+    if not lo <= val <= hi:
+        logger.warning(
+            '%s=%s out of valid range (%s-%s), using default %s', key, val, lo, hi, default)
+        return default
+    return val
+
+
+def _apply_ingest_config(config: Config, file_data: dict) -> None:
+    """Apply the optional ``[ingest]`` table (from_gitleaks / from_trufflehog)."""
+    ingest = file_data.get('ingest', {})
+    if not isinstance(ingest, dict):
+        logger.warning('[ingest] config section must be a table, ignoring')
+        return
+    if 'from_gitleaks' in ingest:
+        val = ingest['from_gitleaks']
+        if not isinstance(val, str):
+            logger.warning('ingest.from_gitleaks must be a string path, ignoring')
+        else:
+            config.from_gitleaks = val
+    if 'from_trufflehog' in ingest:
+        val = ingest['from_trufflehog']
+        if not isinstance(val, str):
+            logger.warning('ingest.from_trufflehog must be a string path, ignoring')
+        else:
+            config.from_trufflehog = val
+
+
 def apply_config_file(config: Config, file_data: dict) -> None:
     """Merge values from a parsed config file into the Config object."""
-    if 'entropy_threshold' in file_data:
-        try:
-            val = float(file_data['entropy_threshold'])
-        except (ValueError, TypeError):
-            logger.warning('entropy_threshold has invalid type, using default 3.5')
-            val = 3.5
-        if not 0.0 <= val <= 6.0:
-            logger.warning(
-                'entropy_threshold=%s out of valid range (0.0-6.0), using default 3.5', val)
-            val = 3.5
-        config.entropy_threshold = val
-    if 'min_value_length' in file_data:
-        try:
-            val_i = int(file_data['min_value_length'])
-        except (ValueError, TypeError):
-            logger.warning('min_value_length has invalid type, using default 8')
-            val_i = 8
-        if not 1 <= val_i <= 200:
-            logger.warning(
-                'min_value_length=%s out of valid range (1-200), using default 8', val_i)
-            val_i = 8
-        config.min_value_length = val_i
+    for key, coerce, bounds, default in _SCALAR_VALIDATORS:
+        if key in file_data:
+            setattr(config, key, _coerce_scalar(key, file_data[key], coerce, bounds, default))
     if 'skip_dirs' in file_data:
         config.skip_dirs.update(file_data['skip_dirs'])
     if 'skip_files' in file_data:
@@ -190,19 +216,4 @@ def apply_config_file(config: Config, file_data: dict) -> None:
         config.extra_safe_values.update(v.lower() for v in file_data['extra_safe_values'])
     if 'replacement' in file_data:
         config.custom_replacement = str(file_data['replacement'])
-    ingest = file_data.get('ingest', {})
-    if not isinstance(ingest, dict):
-        logger.warning('[ingest] config section must be a table, ignoring')
-    else:
-        if 'from_gitleaks' in ingest:
-            val = ingest['from_gitleaks']
-            if not isinstance(val, str):
-                logger.warning('ingest.from_gitleaks must be a string path, ignoring')
-            else:
-                config.from_gitleaks = val
-        if 'from_trufflehog' in ingest:
-            val = ingest['from_trufflehog']
-            if not isinstance(val, str):
-                logger.warning('ingest.from_trufflehog must be a string path, ignoring')
-            else:
-                config.from_trufflehog = val
+    _apply_ingest_config(config, file_data)

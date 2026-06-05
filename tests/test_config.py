@@ -119,6 +119,34 @@ class TestApplyConfigFile:
         apply_config_file(c, {'min_value_length': 16})
         assert c.min_value_length == 16
 
+    def test_apply_entropy_invalid_type_uses_default(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'entropy_threshold': 'not-a-number'})
+        assert c.entropy_threshold == 3.5
+        assert any('entropy_threshold' in r.message and 'invalid type' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_apply_entropy_out_of_range_uses_default(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'entropy_threshold': 99.0})
+        assert c.entropy_threshold == 3.5
+        assert any('entropy_threshold' in r.message and 'out of valid range' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_apply_min_value_length_invalid_type_uses_default(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'min_value_length': 'not-a-number'})
+        assert c.min_value_length == 8
+        assert any('min_value_length' in r.message and 'invalid type' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_apply_min_value_length_out_of_range_uses_default(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'min_value_length': 9999})
+        assert c.min_value_length == 8
+        assert any('min_value_length' in r.message and 'out of valid range' in r.message
+                   for r in credactor_caplog.records)
+
     def test_apply_skip_dirs(self):
         c = Config()
         apply_config_file(c, {'skip_dirs': ['vendor', '.terraform']})
