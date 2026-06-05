@@ -18,6 +18,7 @@ from .patterns import (
     ASSIGNMENT_RE,
     CRED_VAR_PATTERNS,
     DYNAMIC_LOOKUP_RE,
+    KEY_FILENAMES,
     SAFE_VALUES,
     SCAN_EXTENSIONS,
     VALUE_PATTERNS,
@@ -521,6 +522,10 @@ def should_scan_file(
 
     extensions = SCAN_EXTENSIONS | extra_extensions if extra_extensions else SCAN_EXTENSIONS
     if suffix in extensions:
+        return True
+
+    # M1: extensionless private-key files (id_rsa, id_ed25519, ...)
+    if p.name.lower() in KEY_FILENAMES:
         return True
 
     # .env.* variants: .env.local, .env.staging, .env.production

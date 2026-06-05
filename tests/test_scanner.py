@@ -228,6 +228,46 @@ class TestSecretFamilyVars:
             assert len(findings) == 0, var
 
 
+class TestRecallCoverage:
+    """M1/M2/M4: scan standalone key files, .config files, and Go := assignments."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_key_and_config_files_scanned(self):
+        for name in ('server.pem', 'cert.key', 'public.crt', 'web.config',
+                     'app.config', 'id_rsa', 'id_ed25519'):
+            assert should_scan_file(name), name
+
+    def test_public_key_and_unrelated_files_not_scanned(self):
+        assert not should_scan_file('id_rsa.pub')
+        assert not should_scan_file('notes.txt')
+
+    def test_extensionless_private_key_file_detected(self, make_file, config):
+        content = ('-----BEGIN RSA PRIVATE KEY-----\n'
+                   'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB\n'
+                   '-----END RSA PRIVATE KEY-----\n')
+        path = make_file('id_rsa', content)
+        findings = scan_file(path, config=config)
+        assert any('private key' in f['type'].lower() for f in findings)
+
+    def test_web_config_xml_attribute_detected(self, make_file, config):
+        # high-entropy generic value (>= 3.5) so this isolates the .config
+        # extension gap from the entropy floor
+        path = make_file('web.config',
+                         '<add key="Password" value="Xy9KmL2vQ7nR5tW8pA3bC6dE" />\n')
+        findings = scan_file(path, config=config)
+        assert any('xml-attr' in f['type'] for f in findings)
+
+    def test_go_short_var_declaration_detected(self, config):
+        findings = scan_line(1, f'apiKey := "{self._KEY}"', 'main.go', config=config)
+        assert len(findings) == 1
+        assert findings[0]['full_value'] == self._KEY
+
+    def test_comparison_operators_not_matched(self, config):
+        for line in ('a == b', 'x != y', 'cond <= 5', 'count := len(items)'):
+            assert scan_line(1, line, 'main.go', config=config) == [], line
+
+
 # ---------------------------------------------------------------------------
 # File scanning
 # ---------------------------------------------------------------------------

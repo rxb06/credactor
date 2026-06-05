@@ -15,9 +15,13 @@ SCAN_EXTENSIONS = {
     '.env', '.cfg', '.ini', '.toml',
     '.yaml', '.yml',
     '.rb', '.go', '.java', '.php', '.cs', '.kt',
-    '.tf', '.hcl', '.conf', '.properties',
+    '.tf', '.hcl', '.conf', '.config', '.properties',
     '.xml',
+    '.pem', '.key', '.crt',           # M1: standalone PEM / key / cert files
 }
+
+# M1: extensionless private-key files, matched by name in should_scan_file.
+KEY_FILENAMES = {'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'}
 
 # Directories / files to skip entirely
 SKIP_DIRS = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.tox',
@@ -184,7 +188,7 @@ ASSIGNMENT_RE = re.compile(
         ["']?                          # optional quote around key name
         (?P<var>[\w.\-]+)              # variable or key name
         ["']?                          # optional closing quote around key name
-        \s*[:=]\s*                     # assignment or dict colon
+        \s*(?::=|[:=])\s*              # assignment, dict colon, or Go := (M4)
         (?:
             (?P<q>["'])                # opening quote
             (?P<val_q>(?:(?!(?P=q)).)+)  # value: everything up to matching quote
