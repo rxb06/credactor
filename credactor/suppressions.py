@@ -62,7 +62,7 @@ class AllowList:
                                 '— this suppresses ALL files.', line,
                             )
                         elif any(
-                            line.endswith(ext) and line.lstrip('*').lstrip('/').startswith('*')
+                            (line.endswith(ext) and line.lstrip('*').lstrip('/').startswith('*'))
                             or line == f'*{ext}'
                             for ext in SCAN_EXTENSIONS
                         ):

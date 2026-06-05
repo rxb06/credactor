@@ -4,6 +4,7 @@ File modification: backup, batch replacement, env-var mode.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -125,10 +126,8 @@ def _create_backup(filepath: str, config: Config) -> str | None:
     except OSError as exc:
         logger.warning('Could not create backup %s: %s', bak, exc)
         if tmp_bak is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_bak)
-            except OSError:
-                pass
         return None
 
     if not config.backup_warn_shown and not config.secure_delete and not config.secure_backup_dir:
@@ -150,10 +149,8 @@ def _create_backup(filepath: str, config: Config) -> str | None:
                 config.secure_backup_dir,
             )
             # Clean up the in-repo backup we already created
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(bak)
-            except OSError:
-                pass
             return None
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -241,6 +238,8 @@ def batch_replace_in_file(
         bak = _create_backup(filepath, config)
         if bak is None:
             logger.error('Backup failed for %s — skipping replacements.', filepath)
+            if lock_fh:
+                lock_fh.close()
             return 0, len(file_findings)
 
     replaced = 0
@@ -283,20 +282,18 @@ def batch_replace_in_file(
         tmp_path = None  # rename succeeded — nothing to clean up
     except OSError as exc:
         logger.error('Cannot write %s: %s', filepath, exc)
+        if lock_fh:
+            lock_fh.close()
         return 0, len(file_findings)
     finally:
         if tmp_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     # Restore original file permissions
     if orig_mode is not None:
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(filepath, orig_mode)
-        except OSError:
-            pass
 
     if bak and config.secure_delete and replaced > 0:
         _secure_delete(bak)
@@ -316,7 +313,7 @@ def replace_single(
 
     Returns True on success.
     """
-    replaced, failed = batch_replace_in_file(filepath, [finding], config)
+    replaced, _ = batch_replace_in_file(filepath, [finding], config)
     return replaced > 0
 
 
@@ -415,9 +412,9 @@ def fix_all(
     total_failed = 0
 
     for filepath, file_findings in by_file.items():
-        r, f = batch_replace_in_file(filepath, file_findings, config)
-        total_replaced += r
-        total_failed += f
+        replaced, failed = batch_replace_in_file(filepath, file_findings, config)
+        total_replaced += replaced
+        total_failed += failed
 
     _print_summary(total_replaced, total_failed, len(findings))
     return total_failed

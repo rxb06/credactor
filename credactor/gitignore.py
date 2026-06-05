@@ -6,6 +6,7 @@ Extracted from the original credential_redactor.py with no logic changes.
 
 import fnmatch
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 from .patterns import SKIP_DIRS
@@ -49,7 +50,7 @@ def load_gitignore_patterns(root: str) -> list[tuple[str, Path]]:
     return patterns
 
 
-def matches_gitignore(filepath: str, patterns: list[tuple[str, str | Path]]) -> bool:
+def matches_gitignore(filepath: str, patterns: Sequence[tuple[str, str | Path]]) -> bool:
     """Return True if *filepath* is covered by any collected ``.gitignore`` pattern."""
     file_path = Path(filepath).resolve()
 

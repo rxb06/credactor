@@ -109,7 +109,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-30 | Defence-in-depth: sanitise env var names to identifier charset before emitting | `redactor.py:46,77` |
 | SEC-31 | Warn if `.credactor.toml` / `.credactorignore` is staged alongside code | `walker.py:247` |
 | SEC-32 | Reject staged paths with `..` components (component-wise, not substring) | `walker.py:260` |
-| SEC-33 | Cross-platform path-containment: normpath + os.sep boundary + normcase | `walker.py:28,270`, `config.py:113` |
+| SEC-33 | Cross-platform path-containment: normpath + os.sep boundary + normcase | `utils.py:82` (`is_within_root`), `config.py:113` |
 | SEC-34 | Brace-syntax env-ref safe value requires matching closing delimiters | `scanner.py:109` |
 | SEC-35 | HTML-escape finding type in all SARIF rule fields (XSS via XML attribute names) | `report.py:153` |
 | SEC-36 | Sanitise file paths, finding types, raw source lines in text report output | `report.py:86,98` |
@@ -137,7 +137,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | ID | Summary | Primary site(s) |
 |----|---------|-----------------|
 | A1 | NDJSON memory guard: single-line GB blob must not OOM `json.loads` | `ingest.py:384` |
-| A11 | `normcase()` for Windows defence-in-depth in path containment | `walker.py:37` |
+| A11 | `normcase()` for Windows defence-in-depth in path containment | `utils.py:99` |
 | A13 | Skip findings whose resolved path is the report file itself (self-corruption guard) | `ingest.py:122,174,382` |
 | P2 | Type-check commit field before slicing (non-string would crash dedup) | `ingest.py:305,497` |
 

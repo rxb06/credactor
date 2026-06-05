@@ -29,6 +29,7 @@ encoding = ["charset-normalizer>=3.0"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    "mypy>=1.10",
 ]
 
 [project.scripts]
@@ -50,4 +51,18 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "B", "SIM", "RUF", "PERF"]
+# RUF003: ambiguous-unicode (en dashes) in comments is intentional house style.
+# (C90/S/N deferred — see code-review-pass2 finding 3.10.)
+ignore = ["RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests routinely unpack multi-value returns (e.g. walk_and_scan's 4-tuple) and
+# ignore fields they don't assert on.
+"tests/**" = ["RUF059"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["credactor"]
+# charset_normalizer / chardet are optional, lazily-imported deps with no stubs.
+ignore_missing_imports = true

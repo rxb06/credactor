@@ -274,15 +274,15 @@ def _validate_invocation(config: Config) -> None:
         if not config.dry_run:
             config.dry_run = True
 
-    if config.replace_mode in ('sentinel', 'custom'):
-        if _UNSAFE_REPLACEMENT_RE.search(config.custom_replacement):
-            logger.error(
-                'Replacement string contains potentially dangerous characters '
-                'that could enable code injection.\n  Value: %r\n'
-                '  Use only alphanumeric characters, underscores, and hyphens.',
-                config.custom_replacement,
-            )
-            sys.exit(2)
+    if (config.replace_mode in ('sentinel', 'custom')
+            and _UNSAFE_REPLACEMENT_RE.search(config.custom_replacement)):
+        logger.error(
+            'Replacement string contains potentially dangerous characters '
+            'that could enable code injection.\n  Value: %r\n'
+            '  Use only alphanumeric characters, underscores, and hyphens.',
+            config.custom_replacement,
+        )
+        sys.exit(2)
 
     if hasattr(os, 'getuid') and os.getuid() == 0:
         logger.warning(
@@ -304,7 +304,7 @@ def _validate_target(target: str) -> Path:
     warning logic.
     """
     if not os.path.exists(target):
-        print(f'Error: path not found: {target}', file=sys.stderr)
+        logger.error('path not found: %s', target)
         sys.exit(2)
 
     target_resolved_path = Path(target).resolve()
@@ -314,21 +314,21 @@ def _validate_target(target: str) -> Path:
         resolved in _PROTECTED_DIRS
         or (sys.platform == 'win32' and len(resolved) == 3 and resolved[1:] == ':\\')
     ):
-        print(f'Error: refusing to scan system directory: {resolved}',
-              file=sys.stderr)
-        print('  Credactor is designed to scan project directories only.',
-              file=sys.stderr)
-        print('  Point it at your project root (e.g. credactor ./my-project)',
-              file=sys.stderr)
+        logger.error(
+            'refusing to scan system directory: %s\n'
+            '  Credactor is designed to scan project directories only.\n'
+            '  Point it at your project root (e.g. credactor ./my-project)',
+            resolved,
+        )
         sys.exit(2)
 
     if resolved == str(Path.home()):
-        print(f'Error: refusing to scan home directory: {resolved}',
-              file=sys.stderr)
-        print('  Scanning ~ includes thousands of directories and will hang.',
-              file=sys.stderr)
-        print('  Point it at your project root (e.g. credactor ./my-project)',
-              file=sys.stderr)
+        logger.error(
+            'refusing to scan home directory: %s\n'
+            '  Scanning ~ includes thousands of directories and will hang.\n'
+            '  Point it at your project root (e.g. credactor ./my-project)',
+            resolved,
+        )
         sys.exit(2)
 
     return target_resolved_path

@@ -15,37 +15,38 @@ from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
 from credactor.scanner import _is_safe_value
 from credactor.suppressions import AllowList
-from credactor.walker import _is_within_root, walk_and_scan
+from credactor.utils import is_within_root
+from credactor.walker import walk_and_scan
 
 
 class TestPathContainment:
-    """SEC-33: Verify _is_within_root prevents prefix collisions."""
+    """SEC-33: Verify is_within_root prevents prefix collisions."""
 
-    def test_child_path_is_within_root(self):
-        assert _is_within_root('/tmp/repo/file.py', '/tmp/repo/')
+    def test_child_pathis_within_root(self):
+        assert is_within_root('/tmp/repo/file.py', '/tmp/repo/')
 
     def test_exact_root_is_within(self):
-        assert _is_within_root('/tmp/repo', '/tmp/repo/')
+        assert is_within_root('/tmp/repo', '/tmp/repo/')
 
     def test_prefix_collision_blocked(self):
         """repo_evil must NOT match repo — this was a regression in SEC-33."""
-        assert not _is_within_root('/tmp/repo_evil/file.py', '/tmp/repo/')
+        assert not is_within_root('/tmp/repo_evil/file.py', '/tmp/repo/')
 
     def test_prefix_collision_no_trailing_sep(self):
-        assert not _is_within_root('/tmp/repo_evil/file.py', '/tmp/repo')
+        assert not is_within_root('/tmp/repo_evil/file.py', '/tmp/repo')
 
     def test_sibling_dir_blocked(self):
-        assert not _is_within_root('/tmp/repo2/file.py', '/tmp/repo/')
+        assert not is_within_root('/tmp/repo2/file.py', '/tmp/repo/')
 
     def test_parent_dir_blocked(self):
-        assert not _is_within_root('/tmp/file.py', '/tmp/repo/')
+        assert not is_within_root('/tmp/file.py', '/tmp/repo/')
 
     def test_unrelated_path_blocked(self):
-        assert not _is_within_root('/etc/passwd', '/tmp/repo/')
+        assert not is_within_root('/etc/passwd', '/tmp/repo/')
 
     def test_case_differs_treated_as_distinct_on_case_sensitive_fs(self):
         """On Linux, paths differing only in case are distinct — not within root."""
-        assert not _is_within_root('/tmp/REPO/file.py', '/tmp/repo/')
+        assert not is_within_root('/tmp/REPO/file.py', '/tmp/repo/')
 
 
 class TestSymlinkBoundary:

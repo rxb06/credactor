@@ -430,6 +430,15 @@ class TestSynthesiseRaw:
         _read_file_lines.cache_clear()
         assert _synthesise_raw(str(tmp_path / 'nonexistent.py'), 1) == ''
 
+    def test_non_int_lineno_returns_empty(self, tmp_path):
+        """A non-int lineno raises TypeError in the bounds check; it is caught
+        and '' is returned (regression guard for the narrowed except)."""
+        f = tmp_path / 'myfile.py'
+        f.write_text('line1\nline2\n', encoding='utf-8')
+        from credactor.ingest import _read_file_lines
+        _read_file_lines.cache_clear()
+        assert _synthesise_raw(str(f), 'not-an-int') == ''
+
 
 # ---------------------------------------------------------------------------
 # 8.2 TruffleHog Parser Tests

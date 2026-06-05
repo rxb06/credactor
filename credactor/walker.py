@@ -22,29 +22,7 @@ from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import scan_file, should_scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import log_verbose
-
-
-def _is_within_root(path_str: str, root_str: str) -> bool:
-    """Cross-platform path containment check.
-
-    On Windows, git returns forward-slash paths but Path.resolve() returns
-    backslash paths.  Normalise both sides so the startswith() boundary
-    check works regardless of separator style.
-
-    Appends os.sep AFTER normpath to prevent prefix collision
-    (e.g. /tmp/repo must not match /tmp/repo_evil).
-
-    os.path.normcase() is added for Windows defense-in-depth — it
-    lowercases paths on Windows (NTFS case-insensitive) so that a path
-    differing only in case from the root is not incorrectly treated as
-    outside it.  normcase() is a no-op on Linux (case-sensitive) and
-    macOS (Path.resolve() at all call sites already returns canonical case
-    via the OS, so paths entering here are already case-consistent).
-    """
-    norm_path = os.path.normcase(os.path.normpath(path_str))
-    norm_root = os.path.normcase(os.path.normpath(root_str))
-    return norm_path == norm_root or norm_path.startswith(norm_root + os.sep)
+from .utils import is_within_root, log_verbose
 
 
 def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], None]:
@@ -89,7 +67,7 @@ def walk_and_scan(
         dirnames[:] = [
             d for d in dirnames
             if d not in extra_skip_dirs
-            and _is_within_root(str(Path(os.path.join(dirpath, d)).resolve()), root_str)
+            and is_within_root(str(Path(os.path.join(dirpath, d)).resolve()), root_str)
         ]
         if '.gitignore' in filenames:
             gi_patterns.extend(parse_gitignore_file(
@@ -104,7 +82,7 @@ def walk_and_scan(
             if os.path.islink(full_path):
                 try:
                     resolved_file = str(Path(full_path).resolve())
-                    if not _is_within_root(resolved_file, root_str):
+                    if not is_within_root(resolved_file, root_str):
                         continue
                 except OSError:
                     continue
@@ -199,7 +177,7 @@ def _parallel_scan(
 
     if emfile_hit:
         recovered: set[str] = set()
-        for fp in list(errored):
+        for fp in errored:
             try:
                 all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
                 recovered.add(fp)
@@ -260,7 +238,7 @@ def scan_staged_files(
             resolved = str(Path(full_path).resolve())
         except OSError:
             continue
-        if not _is_within_root(resolved, str(root_path) + os.sep):
+        if not is_within_root(resolved, str(root_path) + os.sep):
             continue
         if os.path.isfile(full_path) and should_scan_file(line, config.extra_extensions):
             staged.append(full_path)
@@ -317,10 +295,7 @@ def scan_git_history(
         if line.startswith('@@'):
             # Parse hunk header: @@ -old,count +new,count @@
             hunk_match = re.search(r'\+(\d+)', line)
-            if hunk_match:
-                diff_lineno = int(hunk_match.group(1)) - 1
-            else:
-                diff_lineno = 0
+            diff_lineno = int(hunk_match.group(1)) - 1 if hunk_match else 0
             continue
         if line.startswith('+') and not line.startswith('+++'):
             diff_lineno += 1

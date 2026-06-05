@@ -7,6 +7,7 @@ Addresses: #16 (encoding detection), #28 (optimized entropy)
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from typing import TYPE_CHECKING
@@ -76,6 +77,28 @@ def detect_encoding(filepath: str) -> str:
 
     # Try latin-1 as a last resort (it never fails, but may be wrong)
     return 'latin-1'
+
+
+def is_within_root(path_str: str, root_str: str) -> bool:
+    """Cross-platform path containment check.
+
+    On Windows, git returns forward-slash paths but Path.resolve() returns
+    backslash paths.  Normalise both sides so the startswith() boundary
+    check works regardless of separator style.
+
+    Appends os.sep AFTER normpath to prevent prefix collision
+    (e.g. /tmp/repo must not match /tmp/repo_evil).
+
+    os.path.normcase() is added for Windows defense-in-depth — it
+    lowercases paths on Windows (NTFS case-insensitive) so that a path
+    differing only in case from the root is not incorrectly treated as
+    outside it.  normcase() is a no-op on Linux (case-sensitive) and
+    macOS (Path.resolve() at all call sites already returns canonical case
+    via the OS, so paths entering here are already case-consistent).
+    """
+    norm_path = os.path.normcase(os.path.normpath(path_str))
+    norm_root = os.path.normcase(os.path.normpath(root_str))
+    return norm_path == norm_root or norm_path.startswith(norm_root + os.sep)
 
 
 def mask_secret(value: str, visible: int = 4) -> str:

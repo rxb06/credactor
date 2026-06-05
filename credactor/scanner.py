@@ -152,9 +152,8 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None) -> bool:
         return True
 
     # URLs without embedded credentials
-    if '://' in cleaned and '@' not in cleaned:
-        if cleaned.startswith(('http', 'ftp')):
-            return True
+    if '://' in cleaned and '@' not in cleaned and cleaned.startswith(('http', 'ftp')):
+        return True
 
     # Path-like strings: require high slash density (>20%) AND at least
     # 3 slashes to reduce false negatives
@@ -173,10 +172,7 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None) -> bool:
         return True
 
     # Hashed/encrypted values: bcrypt, argon2, scrypt prefixes
-    if _HASH_PREFIX_RE.match(cleaned):
-        return True
-
-    return False
+    return bool(_HASH_PREFIX_RE.match(cleaned))
 
 
 def _severity_for_variable(var_name: str) -> str:
@@ -508,7 +504,4 @@ def should_scan_file(
     name_lower = p.name.lower()
     if name_lower == '.env' or name_lower == 'env':
         return True
-    if name_lower.startswith('.env.') or name_lower.startswith('.env-'):
-        return True
-
-    return False
+    return name_lower.startswith('.env.') or name_lower.startswith('.env-')

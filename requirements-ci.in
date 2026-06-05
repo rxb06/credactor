@@ -1,6 +1,14 @@
 # CI/build dependencies — used by .github/workflows/ci.yml and publish.yml
 # Regenerate: pip-compile --generate-hashes --allow-unsafe requirements-ci.in > requirements-ci.txt
 # Project requires Python >=3.11; tomllib/ExceptionGroup are stdlib on supported versions.
+#
+# TODO(before merging develop -> main): finish wiring mypy into CI (finding 3.11).
+#   mypy is already in pyproject `[dev]` extras and configured under [tool.mypy];
+#   `mypy credactor/` is green locally. Deferred here only to avoid re-resolving /
+#   bumping the pinned CI deps right now. Remaining steps:
+#     1. add `mypy>=1.10` to the dependency list below;
+#     2. regenerate requirements-ci.txt WITH hashes (command above);
+#     3. add a "Type check" step to .github/workflows/ci.yml running `mypy credactor/`.
 build
 pytest>=8.0
 ruff>=0.5

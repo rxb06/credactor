@@ -13,8 +13,7 @@ from pathlib import Path
 from ._log import logger
 from .config import Config
 from .types import Finding
-from .utils import detect_encoding
-from .walker import _is_within_root
+from .utils import detect_encoding, is_within_root
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
@@ -75,11 +74,14 @@ def _gitleaks_severity(rule_id: str, tags: list | None = None) -> str:
 # Raw line synthesis
 # ---------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=256)
 def _read_file_lines(filepath: str) -> tuple[str, ...]:
     """Read all lines of a file and return as an immutable tuple (LRU-cached).
 
-    Cached to avoid re-reading the same file for multiple findings.
+    Cached to avoid re-reading the same file for multiple findings.  Bounded at
+    256 entries so importing this module into a long-running process (CI server,
+    language server) cannot grow the cache without limit; 256 far exceeds the
+    unique-file count of any realistic external-scanner report.
     """
     enc = detect_encoding(filepath)
     try:
@@ -93,12 +95,15 @@ def _synthesise_raw(filepath: str, lineno: int) -> str:
     """Read the source line at *lineno* (1-indexed) from *filepath*.
 
     Returns the line stripped of trailing whitespace, or ``""`` on any error.
+    ``_read_file_lines`` already absorbs ``OSError`` (returning ``()``); the only
+    failure the guard still needs to catch is a ``TypeError`` from the bounds
+    comparison if a caller passes a non-int *lineno*.
     """
     try:
         lines = _read_file_lines(filepath)
         if lines and 1 <= lineno <= len(lines):
             return lines[lineno - 1].rstrip()
-    except Exception:  # noqa: BLE001
+    except TypeError:
         pass
     return ''
 
@@ -124,7 +129,7 @@ def _resolve_external_finding_path(
     resolved = str(Path(os.path.normpath(
         os.path.join(target_resolved, raw_file))).resolve())
 
-    if not _is_within_root(resolved, target_resolved):
+    if not is_within_root(resolved, target_resolved):
         logger.warning(
             'Skipping %s finding: path %r resolves outside target directory '
             '(possible path traversal).', scanner_name, raw_file,
@@ -370,7 +375,9 @@ def ingest_trufflehog(
         )
 
     try:
-        fh = open(filepath, encoding='utf-8', errors='replace')
+        # Closed via `with fh:` below; opened inside try only to convert OSError
+        # into a ValueError with a clearer message.
+        fh = open(filepath, encoding='utf-8', errors='replace')  # noqa: SIM115
     except OSError as exc:
         raise ValueError(
             f'Cannot open TruffleHog file {filepath!r}: {exc}'
@@ -562,7 +569,7 @@ def deduplicate_findings(
     then trufflehog.  First occurrence wins, so priority is automatically
     Credactor > Gitleaks > TruffleHog.
     """
-    def _base(f: dict) -> tuple:
+    def _base(f: Finding) -> tuple:
         path_norm = os.path.normpath(os.path.realpath(f.get('file', '')))
         line = f.get('line', 1)
         # Use surrogateescape so lone surrogate code points (which can arrive
