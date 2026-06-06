@@ -5,10 +5,6 @@ Reflects the `develop` branch (the 2.4.0
 line). For limitations and safe usage see the [Disclaimer](DISCLAIMER.md); for
 the threat model see [Security](security.md).
 
-> Every example below was executed against a sandbox to confirm it behaves as
-> described. Where behaviour is subtle (precedence, mutual exclusions, exit
-> codes) the verified result is stated explicitly.
-
 ---
 
 ## Synopsis
@@ -472,6 +468,13 @@ credactor --from-gitleaks gl.json --fix-all --yes .
 trufflehog filesystem . --no-verification --json > th.json
 credactor --from-trufflehog th.json --ci .
 ```
+
+> **`--no-verification` keeps trufflehog offline.** It still detects secrets but
+> skips the live API calls that would otherwise validate each one, so nothing is
+> sent to a third party (verified against trufflehog 3.95.x: findings report
+> `Verified: false` and zero verification time). Drop it only if you want
+> trufflehog to confirm secrets online. `gitleaks dir` likewise scans the
+> working tree without reading git history (use `gitleaks git` for history).
 
 Verified behaviour and **requirements**:
 
