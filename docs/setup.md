@@ -145,7 +145,7 @@ Broad glob patterns and value-literal / positional suppressions are reported as 
 
 ## Pre-commit Hooks and CI/CD
 
-See the [Integration Guide](integration.md) for pre-commit hook setup (framework and standalone) and CI pipeline configuration (GitHub Actions, GitLab CI).
+See the [CI Integration Guide](ci_integration.md) for pre-commit hook setup (framework and standalone) and CI pipeline configuration (GitHub Actions, GitLab CI).
 
 ## Running Tests
 

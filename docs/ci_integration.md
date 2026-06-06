@@ -1,4 +1,4 @@
-# Integration Guide
+# CI Integration Guide
 
 ## Recommended Workflow
 
