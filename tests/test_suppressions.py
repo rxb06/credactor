@@ -98,6 +98,25 @@ class TestAllowList:
         AllowList(tmp_dir)
         assert any('value-literal' in r.message for r in credactor_caplog.records)
 
+    # --- #14: a read error mid-load must be surfaced, not swallowed ---
+    def test_load_logs_warning_on_read_error(self, tmp_dir, monkeypatch,
+                                             credactor_caplog):
+        import pathlib
+        ignore_path = os.path.join(tmp_dir, '.credactorignore')
+        with open(ignore_path, 'w') as f:
+            f.write('somevalue\n')
+        real_open = pathlib.Path.open
+
+        def boom(self, *args, **kwargs):
+            if self.name == '.credactorignore':
+                raise OSError('disk error')
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, 'open', boom)
+        AllowList(tmp_dir)  # must not raise
+        assert any('could not be fully read' in r.message
+                   for r in credactor_caplog.records)
+
     def test_globs_and_file_lines_emit_no_value_literal_warning(self, tmp_dir,
                                                                  credactor_caplog):
         ignore_path = os.path.join(tmp_dir, '.credactorignore')

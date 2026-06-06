@@ -531,13 +531,13 @@ def fix_all(
         total_replaced += replaced
         total_failed += failed
 
-    _print_summary(total_replaced, total_failed, len(findings))
+    _print_summary(total_replaced, total_failed, len(findings), label='failed')
     return total_failed
 
 
-def _print_summary(replaced: int, skipped: int, total: int) -> None:
+def _print_summary(replaced: int, other: int, total: int, label: str = 'skipped') -> None:
     print(f'{"=" * 70}')
-    print(f'  Summary:  {replaced} replaced  |  {skipped} skipped  |  {total} total')
+    print(f'  Summary:  {replaced} replaced  |  {other} {label}  |  {total} total')
     if replaced:
         print('  Reminder: rotate / revoke any credentials that were just redacted.')
         print('  SECURITY: .bak backup files contain original credentials in PLAINTEXT.')

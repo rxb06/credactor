@@ -11,6 +11,7 @@ from credactor.config import Config
 from credactor.suppressions import AllowList
 from credactor.walker import (
     GitUnavailableError,
+    _parallel_scan,
     scan_git_history,
     scan_staged_files,
     walk_and_scan,
@@ -277,3 +278,48 @@ class TestStagedScanning:
         findings, errored = scan_staged_files(repo, Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
+
+
+class TestParallelScanEmfileRecovery:
+    """#17: EMFILE recovery retries ONLY fd-exhausted files and logs retry failures.
+
+    A file that failed for a non-EMFILE reason must stay in ``errored`` and must
+    not be re-scanned; an EMFILE file that succeeds on retry must not be errored.
+    """
+
+    def test_retries_only_emfile_files(self, monkeypatch, credactor_caplog):
+        import collections
+        import errno
+        import threading
+
+        from credactor import walker
+
+        files = [f'/nonexistent/f{i}.py' for i in range(6)]  # >4 -> threaded branch
+        emfile_file, bad_file = files[0], files[1]
+        calls: collections.Counter = collections.Counter()
+        lock = threading.Lock()
+
+        def fake_scan_file(fp, *, config=None, allowlist=None):
+            with lock:
+                calls[fp] += 1
+                n = calls[fp]
+            if fp == emfile_file and n == 1:
+                raise OSError(errno.EMFILE, 'too many open files')
+            if fp == bad_file:
+                raise OSError(errno.EACCES, 'permission denied')
+            return [{'file': fp, 'line': 1, 'type': 'variable:x', 'severity': 'low',
+                     'full_value': 'v', 'value_preview': 'v', 'raw': 'x'}]
+
+        monkeypatch.setattr(walker, 'scan_file', fake_scan_file)
+        findings, errored = _parallel_scan(files, Config(no_color=True), None)
+
+        # EMFILE file recovered on the sequential retry: scanned twice, not errored.
+        assert calls[emfile_file] == 2
+        assert emfile_file not in errored
+        # Non-EMFILE failure: stays errored and is NOT retried (scanned once).
+        assert bad_file in errored
+        assert calls[bad_file] == 1
+        # 4 healthy files + 1 recovered = 5 findings; the retry failure is logged.
+        assert len(findings) == 5
+        assert any('Too many open files' in r.message
+                   for r in credactor_caplog.records)

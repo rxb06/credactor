@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from credactor.config import Config
-from credactor.redactor import _derive_env_var_name, batch_replace_in_file
+from credactor.redactor import _derive_env_var_name, batch_replace_in_file, fix_all
 
 # Construct test credentials via concatenation so the tool doesn't self-redact
 _AWS_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -403,3 +403,17 @@ class TestEnvRefForLanguage:
     def test_go_quoted(self):
         from credactor.redactor import _env_ref_for_language
         assert _env_ref_for_language('API_KEY', '.go') == 'os.Getenv("API_KEY")'
+
+
+class TestFixAllSummary:
+    """#8: fix_all must report write/lookup FAILURES as 'failed', not 'skipped'."""
+
+    def test_failures_reported_as_failed_not_skipped(self, make_file, capsys):
+        # full_value is absent from the line, so batch_replace counts it failed.
+        path = make_file('a.py', f'api_key = "{_AWS_KEY}"\n')
+        bogus = _mk_finding(path, 'VALUE_NOT_ON_THIS_LINE')
+        unresolved = fix_all([bogus], os.path.dirname(path), Config(no_backup=True))
+        out = capsys.readouterr().out
+        assert unresolved == 1
+        assert '1 failed' in out
+        assert 'skipped' not in out

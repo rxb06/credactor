@@ -24,6 +24,15 @@ from .suppressions import AllowList
 from .types import Finding
 from .utils import is_within_root, log_verbose
 
+# Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
+# history `git log -p` walk needs a longer one — intentionally distinct.
+_GIT_TIMEOUT_S = 30
+_GIT_LOG_TIMEOUT_S = 120
+# Thread-pool sizing for the parallel file scan (#27): cap workers to avoid fd
+# exhaustion, and scan small batches sequentially.
+_MAX_SCAN_WORKERS = 8
+_SEQUENTIAL_BATCH_THRESHOLD = 4
+
 
 class GitUnavailableError(RuntimeError):
     """Git itself is unavailable or the target is not a git repository, for a
@@ -144,8 +153,8 @@ def _parallel_scan(
     done_count = 0
 
     # Use threads (I/O-bound); limit to 8 workers to avoid fd exhaustion
-    max_workers = min(8, len(files))
-    if max_workers <= 1 or len(files) <= 4:
+    max_workers = min(_MAX_SCAN_WORKERS, len(files))
+    if max_workers <= 1 or len(files) <= _SEQUENTIAL_BATCH_THRESHOLD:
         # Sequential for small batches
         for i, fp in enumerate(files, 1):
             try:
@@ -157,7 +166,7 @@ def _parallel_scan(
         return all_findings, errored
 
     lock = threading.Lock()
-    emfile_hit = False
+    emfile_files: set[str] = set()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_file = {
             executor.submit(scan_file, fp, config=config, allowlist=allowlist): fp
@@ -169,11 +178,13 @@ def _parallel_scan(
                 result = future.result()
             except OSError as exc:
                 if exc.errno == errno.EMFILE:
-                    emfile_hit = True
-                    errored.append(fp)
-                    logger.warning(
-                        'Too many open files — remaining files will be scanned sequentially.',
-                    )
+                    # Record EMFILE-only failures for a post-pool sequential retry;
+                    # warn once (not per fd-exhausted file).
+                    if not emfile_files:
+                        logger.warning(
+                            'Too many open files — remaining files will be scanned sequentially.',
+                        )
+                    emfile_files.add(fp)
                 else:
                     errored.append(fp)
                     logger.warning('Error scanning %s: %s', fp, exc)
@@ -187,15 +198,16 @@ def _parallel_scan(
                 progress(done_count)
                 all_findings.extend(result)
 
-    if emfile_hit:
-        recovered: set[str] = set()
-        for fp in errored:
+    # Sequential retry of ONLY the EMFILE-failed files (fds are now freed). A file
+    # that errored for any other reason stays in `errored` and is not re-scanned;
+    # an EMFILE file that fails again is appended to `errored` with a logged reason.
+    if emfile_files:
+        for fp in emfile_files:
             try:
                 all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
-                recovered.add(fp)
-            except Exception:
-                pass  # already in errored list
-        errored = [fp for fp in errored if fp not in recovered]
+            except Exception as exc:
+                errored.append(fp)
+                logger.warning('Error re-scanning %s: %s', fp, exc)
 
     return all_findings, errored
 
@@ -220,7 +232,7 @@ def scan_staged_files(
     try:
         top = subprocess.run(
             ['git', 'rev-parse', '--show-toplevel'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=30,
+            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
@@ -231,7 +243,7 @@ def scan_staged_files(
     try:
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=30,
+            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         # rev-parse already proved git is usable; a diff failure here is a
@@ -286,7 +298,7 @@ def scan_staged_files(
         try:
             blob = subprocess.run(
                 ['git', 'show', f':{line}'],
-                capture_output=True, cwd=str(root_path), timeout=30,
+                capture_output=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning('Cannot read staged %s: %s', line, exc)
@@ -326,7 +338,7 @@ def scan_git_history(
     try:
         probe = subprocess.run(
             ['git', 'rev-parse', '--git-dir'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=30,
+            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
@@ -337,7 +349,7 @@ def scan_git_history(
         result = subprocess.run(
             ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
              '--no-color', '--format=commit %H'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=120,
+            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
         )
         if result.returncode != 0:
             # e.g. a valid repo with no commits yet — nothing to scan, not fatal.

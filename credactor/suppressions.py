@@ -42,7 +42,7 @@ class AllowList:
         if not ignore_path.is_file():
             return
         try:
-            with open(ignore_path, encoding='utf-8', errors='replace') as fh:
+            with ignore_path.open(encoding='utf-8', errors='replace') as fh:
                 for raw_line in fh:
                     line = raw_line.strip()
                     if not line or line.startswith('#'):
@@ -112,8 +112,12 @@ class AllowList:
                     'after large edits.',
                     sum(len(v) for v in self._file_line.values()),
                 )
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                '.credactorignore could not be fully read (%s); '
+                'the allowlist may be incomplete.',
+                exc,
+            )
 
     def _rel(self, filepath: str) -> str:
         try:

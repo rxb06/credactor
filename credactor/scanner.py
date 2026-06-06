@@ -437,11 +437,11 @@ def scan_file(
     try:
         with open(filepath, encoding=encoding, errors='surrogateescape') as fh:
             lines = fh.readlines()
-    except OSError as exc:
+    except OSError:
         # Re-raise so the caller (walker._parallel_scan / the cli single-file and
-        # --scan-json branches) records this in errored_files; otherwise
-        # --fail-on-error silently passes over files it could not read.
-        logger.warning('Cannot read %s: %s', filepath, exc)
+        # --scan-json branches) records this in errored_files AND logs it once;
+        # otherwise --fail-on-error silently passes over files it could not read.
+        # scan_file is a library re-raiser: the caller owns the warning.
         raise
 
     # Strip BOM from first line if present

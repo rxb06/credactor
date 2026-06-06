@@ -482,7 +482,8 @@ def _collect_findings(
     if os.path.isfile(target):
         try:
             return scan_file(target, config=config, allowlist=allowlist), []
-        except OSError:
+        except OSError as exc:
+            logger.warning('Cannot read %s: %s', target, exc)
             return [], [target]
 
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
@@ -501,7 +502,8 @@ def _collect_findings(
         for path in json_paths:
             try:
                 findings.extend(scan_file(path, config=config, allowlist=allowlist))
-            except OSError:
+            except OSError as exc:
+                logger.warning('Cannot read %s: %s', path, exc)
                 errored_files.append(path)
 
     return findings, errored_files
