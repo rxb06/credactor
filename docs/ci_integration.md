@@ -167,4 +167,4 @@ credactor --fix-all --yes .    # then rewrite (writes .bak unless --no-backup)
 
 ## Configuration
 
-See the [User Guide](user-guide.md) for the full list of CLI flags, config options, and suppression mechanisms.
+See the [Manual](manual.md) for the full list of CLI flags, config options, and suppression mechanisms.

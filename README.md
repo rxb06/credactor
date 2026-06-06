@@ -102,7 +102,7 @@ Standalone high-entropy hex/Base64 strings are only flagged when quoted; unquote
 - Inline `# credactor:ignore` suppression and `.credactorignore` allowlists (globs, `file:line`, value literals, and an explicit `value:` prefix)
 - Per-repo config via `.credactor.toml`
 - Parallel scanning (up to 8 worker threads; sequential for small file sets) for large repos
-- SARIF 2.1.0 output with column-level annotations for GitHub Code Scanning ([details](docs/user-guide.md#sarif))
+- SARIF 2.1.0 output with column-level annotations for GitHub Code Scanning ([details](docs/manual.md#--format-sarif))
 - **(BETA)** Ingest findings from external scanners — `--from-gitleaks FILE` / `--from-trufflehog FILE` — merged into the redaction pipeline and deduplicated against native findings (higher severity wins on overlap). Also configurable via an `[ingest]` table in `.credactor.toml`
 - `--fail-on-error` to catch files that couldn't be scanned
 
@@ -127,8 +127,7 @@ JSON files are excluded by default (high false-positive rate from API responses)
 | Document | Description |
 |----------|-------------|
 | [Setup Guide](docs/setup.md) | Installation, configuration, CI/CD integration |
-| [User Guide](docs/user-guide.md) | CLI reference, replacement modes, backup safety |
-| [Manual](docs/manual.md) | Complete flag-by-flag reference: every mode, combination, exit code, and limitation (behaviour test-verified) |
+| [Manual](docs/manual.md) | Complete reference: every flag, mode, combination, replacement & backup behaviour, detection/severity, exit codes, and limitations (behaviour test-verified) |
 | [Examples](docs/examples.md) | Common workflows with output |
 | [CI Integration](docs/ci_integration.md) | Pre-commit hooks, CI pipelines |
 | [Security](docs/security.md) | Threat model, hardening measures, known limitations |

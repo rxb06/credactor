@@ -1,9 +1,9 @@
 # Credactor Manual
 
-Complete reference for every flag, mode, and combination — with the behaviour of
-each **verified by running the tool**. Reflects the `develop` branch (the 2.4.0
-line). For a gentler introduction see the [User Guide](user-guide.md); for
-limitations and safe usage see the [Disclaimer](DISCLAIMER.md).
+Complete reference for every flag, mode, and combination. 
+Reflects the `develop` branch (the 2.4.0
+line). For limitations and safe usage see the [Disclaimer](DISCLAIMER.md); for
+the threat model see [Security](security.md).
 
 > Every example below was executed against a sandbox to confirm it behaves as
 > described. Where behaviour is subtle (precedence, mutual exclusions, exit
@@ -55,6 +55,45 @@ credactor path/to/file.py   # scan one file
 | `--verbose`, `-v` | config | Log scan/suppression activity on stderr |
 | `--from-gitleaks FILE` | ingest (BETA) | Ingest a Gitleaks JSON report |
 | `--from-trufflehog FILE` | ingest (BETA) | Ingest a TruffleHog NDJSON report |
+
+---
+
+## Detection & severity
+
+Every finding carries a severity, used for triage. Verified assignments (scan
+with `-f json` and read the `severity` field):
+
+| Severity | What earns it | Examples (verified) |
+|----------|---------------|---------------------|
+| **critical** | Deterministic provider prefixes and PEM private-key blocks — unambiguous, **no entropy floor** | AWS `AKIA…`, GCP `AIza…`, Stripe live `sk_live_…`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox…`, npm `npm_`, PyPI `pypi-`, `-----BEGIN … PRIVATE KEY-----` |
+| **high** | JWTs, connection strings, and credential variables whose name implies a secret | `eyJ…` JWT, `postgresql://user:pass@host`, `password`/`api_key`/`token`/`secret_key`/`access_key` `= …` |
+| **medium** | Heuristic value matches and generic credential variables | quoted hex (32–64 chars), Stripe **test** key `sk_test_…`, `webhook_secret = …` |
+| **low** | Weak heuristics and ID-type variables | quoted Base64 (≥60 chars), `client_id` / `tenant_id` / `app_id` |
+
+### Entropy model
+
+- **Deterministic matches have no entropy floor.** Provider prefixes and PEM
+  blocks flag regardless of randomness — a *format-valid placeholder also flags*
+  (suppress via `.credactorignore`). Verified: a `ghp_…` token is found even with
+  `entropy_threshold = 6.0`. These are also scanned **inside comments**, so a
+  commented-out live-shaped key is still caught.
+- **Each heuristic value detector has its own fixed floor, independent of the
+  config threshold:** JWT 3.3, connection string 2.5, hex 3.5, Base64 3.8,
+  Stripe-test 3.0 (bits/char). Verified: a JWT and a connection string are still
+  found with `entropy_threshold = 6.0`. Unlike the deterministic matches, these
+  are **not** scanned inside comments.
+- **`entropy_threshold` (default 3.5) gates only variable-assignment and
+  XML-attribute findings** — those caught by the *variable name* rather than a
+  value pattern. Password-family variables (`password`, `passwd`, `passphrase`,
+  `private_key`, `secret_key`) use a lower floor of `min(entropy_threshold, 3.0)`:
+  verified, `password = "Summer2024!"` (entropy ≈ 3.1) is flagged **high** even at
+  `entropy_threshold = 6.0` (the floor clamps at 3.0) — a memorable password
+  below the default 3.5 is still caught.
+
+Standalone hex/Base64 fires **only when the value is quoted**; an unquoted
+high-entropy value is caught only when assigned to a credential-named variable
+(verified: unquoted hex on `api_key = …` → `variable:api_key`; the same value
+bare → nothing). This deliberately spares unquoted git SHAs and checksums.
 
 ---
 
@@ -186,6 +225,52 @@ credactor --fix-all --secure-delete .                 # redact, wipe backups
 credactor --fix-all --secure-backup-dir /tmp/cred-bak .
 ```
 
+### Recovering an over-redaction
+
+The `.bak` is your undo (verified):
+
+```bash
+diff src/config.py.bak src/config.py   # see exactly what changed
+mv   src/config.py.bak src/config.py   # restore the original
+```
+
+With `--no-backup` or `--secure-delete` there is no `.bak` — recover from git:
+`git checkout -- <file>` (uncommitted) or `git show HEAD:<file>` (committed).
+
+### `.bak` files and git
+
+The shipped `.gitignore` lists `*.bak` and `*.credactor.tmp` (`.gitignore:39,42`),
+so backups and crash-residue temp files aren't staged by `git add .`. They still
+hold **plaintext**, so a `git add --force` or a general secret scanner will
+surface them — use `--secure-delete` or `--secure-backup-dir` (outside the repo)
+for a clean tree.
+
+### What `--secure-delete` does
+
+On a successful redaction the `.bak` is overwritten with `os.urandom()` bytes,
+`fsync`'d, then unlinked (`redactor.py:254`). Verified: no `.bak` remains
+afterwards. It is wiped only when at least one replacement actually landed, and a
+single-pass overwrite is **not** a forensic guarantee on copy-on-write / SSD /
+journaling filesystems.
+
+### Other safety properties (verified)
+
+- **Atomic writes** — both the backup and the rewrite go through a temp file then
+  `os.replace`, cleaned up in a `finally`; a mid-write crash leaves the original
+  intact (`redactor.py:393`, backup at `:197`).
+- **Permissions preserved** — a `chmod 600` file stays `600` after redaction.
+- **Multiple secrets per file** — replaced bottom-to-top so line numbers stay
+  valid.
+- **Masking** — output shows only the first 4 characters (`AKIA[REDACTED]`); the
+  full secret never appears in text, JSON, or SARIF.
+- **Symlink boundary** — a file symlink resolving outside the scan root is
+  skipped.
+- **Encoding** — UTF-8 (including BOM) and Latin-1 work out of the box. ⚠ Other
+  encodings (e.g. UTF-16) need the optional `charset-normalizer` / `chardet`
+  extra (`pip install 'credactor[encoding]'`); **without it a UTF-16 file is read
+  as Latin-1 and its secrets are silently missed** — a clean scan of a non-UTF-8
+  codebase is not proof of safety.
+
 ---
 
 ## Output formats
@@ -253,6 +338,18 @@ even outside the project root (non-CI).
 data). Verified: a secret in a `.json` is found **only** with `--scan-json`
 (0 → 1).
 
+### Scanned file types
+
+During a directory walk only these extensions are read:
+
+`.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini`
+`.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl`
+`.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+
+plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`,
+`id_ed25519`). `.json` is read only with `--scan-json`. A file named **directly**
+on the command line is scanned even if its extension is not in this list.
+
 ### `--fail-on-error`
 
 Exit **2** if any file could not be scanned (permissions, encoding). Verified:
@@ -294,6 +391,39 @@ In the scan root. Entry types (verified against a 2-secret file, baseline 2):
 > behaves like `*`, and `*` already crosses `/`. Catch-all patterns warn at load
 > time. `file:line` and value-literal suppressions also log a warning so they get
 > reviewed.
+
+---
+
+## What is not flagged
+
+Beyond explicit suppression, Credactor auto-skips a range of values and
+locations. Verified — each of the following yields 0 findings:
+
+- **Safe values** — placeholders (`your_api_key`, `changeme`, `placeholder`,
+  `TODO`, `change_this`), the literal strings `test_password` / `mock_api_key` /
+  `fake_secret`, and the sentinel `REDACTED_BY_CREDACTOR`. These match by
+  **value**: a real secret in a variable merely *named* `test_api_key` is still
+  flagged.
+- **Runtime references** (not hardcoded secrets) — env lookups (`${VAR}`,
+  `os.getenv("…")`, `process.env.X`), templates (`{{ vault_password }}`), dynamic
+  lookups (`config.get()`, `keyring.get_password()`, Vault/SOPS `ENC[AES256_GCM…]`,
+  Doppler, 1Password `op://`), property access (`self.config.password`), function
+  calls/defs (`get_secret()`, `def get_password(password="default")`), and
+  Terraform refs (`var.password`, `local.secret`, `module.db.password`, `data.*`).
+- **Hashes, not secrets** — variables named `*_hash` / `*_digest` / `*_checksum`
+  (and `sha*` / `md5*`), and hash values (`$2b$…` bcrypt, `$argon2id$…`).
+- **Non-credential shapes** — file paths, credential-free URLs, values under 8
+  characters, and low-entropy values.
+
+**Skipped locations** apply only while **walking a directory**:
+
+- Directories: `.git`, `__pycache__`, `node_modules`, `.venv`, `venv`, `.tox`,
+  `dist`, `build` (plus IDE/cache dirs).
+- Lock files: `package-lock.json`, `yarn.lock`, `poetry.lock`, `pnpm-lock.yaml`.
+
+> Point Credactor **directly** at a skipped file or directory and it is scanned
+> anyway (verified) — the same rule that lets a named single file bypass the
+> extension list.
 
 ---
 
@@ -383,3 +513,6 @@ detail; these are the behaviours most likely to surprise.)
   another scanner via ingestion for breadth.
 - **No cross-file or semantic analysis**; obfuscated/runtime-assembled secrets
   are missed.
+- **UTF-8 / Latin-1 only by default.** Other encodings (UTF-16, …) require the
+  optional `charset-normalizer` / `chardet` extra; without it such files are read
+  as Latin-1 and their secrets can be silently missed.
