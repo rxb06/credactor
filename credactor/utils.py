@@ -75,7 +75,18 @@ def detect_encoding(filepath: str) -> str:
     except UnicodeDecodeError:
         pass
 
-    # Try latin-1 as a last resort (it never fails, but may be wrong)
+    # Last resort: latin-1 never fails to decode, but for a multibyte encoding
+    # (e.g. UTF-16) it silently misreads the bytes, so secrets can be missed and
+    # a clean scan is not proof of safety. We could not positively confirm the
+    # encoding here, so warn — installing the optional encoding extra
+    # (pip install "credactor[encoding]") enables real detection and avoids this.
+    from ._log import logger
+    logger.warning(
+        'could not confirm encoding of %s; reading as latin-1 — if it is UTF-16 '
+        'or another multibyte encoding, secrets may be missed. For reliable '
+        'detection install the encoding extra: pip install "credactor[encoding]"',
+        sanitize_for_terminal(filepath),
+    )
     return 'latin-1'
 
 

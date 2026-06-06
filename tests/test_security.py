@@ -15,7 +15,7 @@ from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
 from credactor.scanner import _is_safe_value
 from credactor.suppressions import AllowList
-from credactor.utils import is_within_root
+from credactor.utils import detect_encoding, is_within_root
 from credactor.walker import walk_and_scan
 
 
@@ -586,5 +586,50 @@ class TestA10TagsTypeConfusion:
         result = _gitleaks_severity('generic-api-key', [42, None, True])
         # Falls through to table lookup — same result as no tags
         assert result == _gitleaks_severity('generic-api-key', [])
+
+
+class TestUnconfirmedEncodingWarns:
+    """A non-UTF-8 file whose encoding cannot be positively confirmed is read as
+    latin-1, which silently misreads multibyte encodings (e.g. UTF-16) and can
+    miss secrets — making a clean scan a false all-clear. detect_encoding must
+    warn in that case so the fallback is visible."""
+
+    @staticmethod
+    def _no_detectors(monkeypatch):
+        # Simulate neither charset_normalizer nor chardet being installed, so the
+        # last-resort latin-1 branch is exercised deterministically regardless of
+        # what the test environment happens to have available.
+        monkeypatch.setitem(sys.modules, 'charset_normalizer', None)
+        monkeypatch.setitem(sys.modules, 'chardet', None)
+
+    def test_utf16_falls_back_to_latin1_and_warns(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'config.env'
+        p.write_bytes('API_KEY="AKIAZ7XK4PQR2WNDLMT3"\n'.encode('utf-16'))
+
+        enc = detect_encoding(str(p))
+
+        assert enc == 'latin-1'
+        msgs = ' '.join(r.getMessage() for r in credactor_caplog.records)
+        assert 'could not confirm encoding' in msgs
+        assert 'credactor[encoding]' in msgs
+        assert any(r.levelname == 'WARNING' for r in credactor_caplog.records)
+
+    def test_valid_utf8_does_not_warn(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'ok.py'
+        p.write_text('x = "hello world"\n', encoding='utf-8')
+
+        enc = detect_encoding(str(p))
+
+        assert enc == 'utf-8'
+        assert not any(
+            'could not confirm encoding' in r.getMessage()
+            for r in credactor_caplog.records
+        )
 
 

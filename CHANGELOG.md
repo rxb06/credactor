@@ -80,6 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupts state — invalid values warn and fall back to defaults.
 - `--staged` / `--scan-history` run outside a git repository now exits 2 instead
   of a false-clean exit 0.
+- **Encoding false-clean made visible:** when a file's encoding cannot be
+  positively confirmed (no `charset-normalizer` / `chardet` extra and not valid
+  UTF-8), Credactor falls back to Latin-1, which silently misreads multibyte
+  encodings such as UTF-16 and can miss their secrets. It now emits a `[WARN]`
+  naming the file and recommending the encoding extra, so a non-UTF-8 file is no
+  longer passed as a silent clean.
 - **Ingest hardening (SEC-40a/b/c):** a report file-size guard before parsing,
   hardening against non-string path/secret fields, path-traversal and
   self-reference guards, symlink resolution with within-target containment,
