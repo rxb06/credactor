@@ -415,9 +415,14 @@ class TestReplacementPrecedence:
         args = build_parser().parse_args([])
         assert _config_from_args(args).custom_replacement == 'REDACTED_BY_CREDACTOR'
 
-    def test_config_from_args_keeps_explicit(self):
+    def test_config_from_args_defers_explicit_to_main_inner(self):
+        # P2/#46: _config_from_args no longer bakes in --replacement; it leaves
+        # the Config default in place and the override is applied in _main_inner
+        # (so precedence is CLI > config-file > default). The end-to-end CLI
+        # override is covered by test_cli_replacement_overrides_config below.
         args = build_parser().parse_args(['--replacement', 'FROM_CLI'])
-        assert _config_from_args(args).custom_replacement == 'FROM_CLI'
+        assert _config_from_args(args).custom_replacement == 'REDACTED_BY_CREDACTOR'
+        assert args.replacement == 'FROM_CLI'  # value still captured for _main_inner
 
     def _make_repo(self, tmp_dir):
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -498,3 +503,53 @@ class TestGitUnavailableExit:
         with pytest.raises(SystemExit) as exc:
             main(['--scan-history', tmp_dir])
         assert exc.value.code == 2
+
+
+class TestIngestErrorMessages:
+    """P2/#1: the collapsed _ingest_one helper must render tool/flag names exactly."""
+
+    def _report(self, tmp_dir):
+        report = os.path.join(tmp_dir, 'report.json')
+        with open(report, 'w') as f:
+            json.dump([], f)
+        return report
+
+    def _file_target(self, tmp_dir):
+        repo = os.path.join(tmp_dir, 'repo')
+        os.makedirs(repo)
+        target = os.path.join(repo, 'a.py')
+        with open(target, 'w') as f:
+            f.write('x = 1\n')
+        return target
+
+    def test_gitleaks_file_not_found_message(self, tmp_dir, credactor_caplog):
+        missing = os.path.join(tmp_dir, 'nope.json')
+        with pytest.raises(SystemExit) as exc:
+            main(['--from-gitleaks', missing, tmp_dir])
+        assert exc.value.code == 2
+        assert any('Gitleaks file not found' in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_trufflehog_file_not_found_message(self, tmp_dir, credactor_caplog):
+        missing = os.path.join(tmp_dir, 'nope.json')
+        with pytest.raises(SystemExit) as exc:
+            main(['--from-trufflehog', missing, tmp_dir])
+        assert exc.value.code == 2
+        assert any('TruffleHog file not found' in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_gitleaks_directory_target_message(self, tmp_dir, credactor_caplog):
+        report = self._report(tmp_dir)
+        with pytest.raises(SystemExit):
+            main(['--from-gitleaks', report, self._file_target(tmp_dir)])
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any('--from-gitleaks requires a directory target' in m
+                   and 'Gitleaks report' in m for m in msgs)
+
+    def test_trufflehog_directory_target_message(self, tmp_dir, credactor_caplog):
+        report = self._report(tmp_dir)
+        with pytest.raises(SystemExit):
+            main(['--from-trufflehog', report, self._file_target(tmp_dir)])
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any('--from-trufflehog requires a directory target' in m
+                   and 'TruffleHog report' in m for m in msgs)

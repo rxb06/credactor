@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 from . import __version__
 from ._log import configure as _configure_log
@@ -71,6 +72,12 @@ _PROTECTED_DIRS_RESOLVED: frozenset[str] = _resolve_protected_dirs()
 # regex `$` matches before a trailing newline, so search would let "X\n" slip
 # through and inject a source line.
 _SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]*')
+
+
+def _fatal(msg: str, *args: object) -> NoReturn:
+    """Log an error and exit with code 2 — the CLI's standard fatal path."""
+    logger.error(msg, *args)
+    sys.exit(2)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -268,13 +275,13 @@ def _handle_errored_files(errored_files: list[str], config: Config) -> None:
     """Report files that errored during scan; honour ``--fail-on-error``."""
     if not errored_files:
         return
-    print('', file=sys.stderr)
-    logger.warning('%d file(s) could not be scanned:', len(errored_files))
-    for fp in errored_files:
-        print(f'  - {fp}', file=sys.stderr)
+    logger.warning(
+        '%d file(s) could not be scanned:\n%s',
+        len(errored_files),
+        '\n'.join(f'  - {fp}' for fp in errored_files),
+    )
     if config.fail_on_error:
-        logger.error('Exiting due to --fail-on-error.')
-        sys.exit(2)
+        _fatal('Exiting due to --fail-on-error.')
 
 
 def _config_from_args(args: argparse.Namespace) -> Config:
@@ -294,9 +301,6 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         fail_on_error=args.fail_on_error,
         verbose=args.verbose,
         replace_mode=args.replace_mode,
-        custom_replacement=(args.replacement
-                            if args.replacement is not None
-                            else 'REDACTED_BY_CREDACTOR'),
         output_format=args.output_format,
         target=args.target,
         config_path=args.config,
@@ -308,16 +312,14 @@ def _config_from_args(args: argparse.Namespace) -> Config:
 def _validate_invocation(config: Config) -> None:
     """Reject incompatible flag combinations and warn on hazardous configs."""
     if config.scan_history and (config.from_gitleaks or config.from_trufflehog):
-        logger.error(
+        _fatal(
             '--scan-history cannot be combined with --from-gitleaks or --from-trufflehog. '
             'External findings reference on-disc files; history scan references committed content.',
         )
-        sys.exit(2)
 
     if config.ci_mode:
         if config.fix_all:
-            logger.error('--ci and --fix-all are mutually exclusive. --ci is read-only by design.')
-            sys.exit(2)
+            _fatal('--ci and --fix-all are mutually exclusive. --ci is read-only by design.')
         if not config.dry_run:
             config.dry_run = True
 
@@ -361,13 +363,12 @@ def _validate_replacement(config: Config) -> None:
     if config.replace_mode not in ('sentinel', 'custom'):
         return
     if not _SAFE_REPLACEMENT_RE.fullmatch(config.custom_replacement):
-        logger.error(
+        _fatal(
             'Replacement string contains characters outside the allowed set.\n'
             '  Value: %r\n'
             '  Use only alphanumeric characters, underscores, and hyphens.',
             config.custom_replacement,
         )
-        sys.exit(2)
 
 
 def _validate_target(target: str) -> Path:
@@ -376,9 +377,8 @@ def _validate_target(target: str) -> Path:
     Returns the resolved ``Path`` for reuse by the banner and network-mount
     warning logic.
     """
-    if not os.path.exists(target):
-        logger.error('path not found: %s', target)
-        sys.exit(2)
+    if not Path(target).exists():
+        _fatal('path not found: %s', target)
 
     target_resolved_path = Path(target).resolve()
     resolved = str(target_resolved_path)
@@ -387,22 +387,20 @@ def _validate_target(target: str) -> Path:
         resolved in _PROTECTED_DIRS_RESOLVED
         or (sys.platform == 'win32' and len(resolved) == 3 and resolved[1:] == ':\\')
     ):
-        logger.error(
+        _fatal(
             'refusing to scan system directory: %s\n'
             '  Credactor is designed to scan project directories only.\n'
             '  Point it at your project root (e.g. credactor ./my-project)',
             resolved,
         )
-        sys.exit(2)
 
     if resolved == str(Path.home().resolve()):
-        logger.error(
+        _fatal(
             'refusing to scan home directory: %s\n'
             '  Scanning ~ includes thousands of directories and will hang.\n'
             '  Point it at your project root (e.g. credactor ./my-project)',
             resolved,
         )
-        sys.exit(2)
 
     return target_resolved_path
 
@@ -432,9 +430,9 @@ def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int
         print('  .bak backups will be created (contain original secrets).')
     else:
         print('  ┌─────────────────────────────────────────────────────────┐')
-        print('  │  DANGER: --no-backup is set. Original values will be   │')
-        print('  │  PERMANENTLY LOST. Ensure you have git history or      │')
-        print('  │  another recovery mechanism before proceeding.         │')
+        print('  │  DANGER: --no-backup is set. Original values will be    │')
+        print('  │  PERMANENTLY LOST. Ensure you have git history or       │')
+        print('  │  another recovery mechanism before proceeding.          │')
         print('  └─────────────────────────────────────────────────────────┘')
     print('  Tip: run with --dry-run first to preview changes.')
     # L3: --yes skips the interactive gate for non-interactive/CI use. Without it
@@ -472,13 +470,12 @@ def _collect_findings(
         if config.scan_history:
             return scan_git_history(target, config, allowlist), []
     except GitUnavailableError as exc:
-        logger.error('%s', exc)
-        sys.exit(2)
+        _fatal('%s', exc)
 
     # H1: an explicitly-named file is scanned directly — os.walk() on a file
     # yields nothing, so routing a file target through walk_and_scan silently
     # finds zero. scan_file does not gate on extension (the user named it).
-    if os.path.isfile(target):
+    if Path(target).is_file():
         try:
             return scan_file(target, config=config, allowlist=allowlist), []
         except OSError as exc:
@@ -528,41 +525,26 @@ def _ingest_external(
     def _suppressed(f: Finding) -> bool:
         return allowlist.is_suppressed(f['file'], f['line'], f['full_value'])
 
-    if config.from_gitleaks:
-        if not os.path.isfile(config.from_gitleaks):
-            logger.error('Gitleaks file not found: %s', config.from_gitleaks)
-            sys.exit(2)
-        if os.path.isfile(target):
-            logger.error(
-                '--from-gitleaks requires a directory target, not a file. '
+    def _ingest_one(name: str, report_path: str, ingest_fn) -> None:
+        if not Path(report_path).is_file():
+            _fatal('%s file not found: %s', name, report_path)
+        if Path(target).is_file():
+            _fatal(
+                '--from-%s requires a directory target, not a file. '
                 'Pass the repository root directory so that file paths in the '
-                'Gitleaks report can be resolved correctly.',
+                '%s report can be resolved correctly.',
+                name.lower(), name,
             )
-            sys.exit(2)
         try:
-            gl = ingest_gitleaks(config.from_gitleaks, target, config=config)
-            findings.extend(f for f in gl if not _suppressed(f))
+            ext = ingest_fn(report_path, target, config=config)
+            findings.extend(f for f in ext if not _suppressed(f))
         except ValueError as exc:
-            logger.error('%s', exc)
-            sys.exit(2)
+            _fatal('%s', exc)
 
+    if config.from_gitleaks:
+        _ingest_one('Gitleaks', config.from_gitleaks, ingest_gitleaks)
     if config.from_trufflehog:
-        if not os.path.isfile(config.from_trufflehog):
-            logger.error('TruffleHog file not found: %s', config.from_trufflehog)
-            sys.exit(2)
-        if os.path.isfile(target):
-            logger.error(
-                '--from-trufflehog requires a directory target, not a file. '
-                'Pass the repository root directory so that file paths in the '
-                'TruffleHog report can be resolved correctly.',
-            )
-            sys.exit(2)
-        try:
-            th = ingest_trufflehog(config.from_trufflehog, target, config=config)
-            findings.extend(f for f in th if not _suppressed(f))
-        except ValueError as exc:
-            logger.error('%s', exc)
-            sys.exit(2)
+        _ingest_one('TruffleHog', config.from_trufflehog, ingest_trufflehog)
 
     return deduplicate_findings(findings, config=config)
 
