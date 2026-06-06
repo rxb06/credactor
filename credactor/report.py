@@ -11,7 +11,7 @@ import html
 import json
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from . import __version__
 from .types import Finding
@@ -81,7 +81,7 @@ def print_report(
         print(_c(f'  FILE: {safe_rel}', 'bold', use_color=color), file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
-            severity = finding.get('severity', 'medium')
+            severity = finding['severity']
             sev_color = _SEVERITY_COLOR.get(severity, 'dim')
 
             # #2/#29 — mask the credential in the raw line display
@@ -129,7 +129,7 @@ def json_report(findings: list[Finding], root: str) -> str:
             'file':     rel,
             'line':     f['line'],
             'type':     f['type'],
-            'severity': f.get('severity', 'medium'),
+            'severity': f['severity'],
             'value':    mask_secret(f['full_value']),
             'commit':   f.get('commit'),
         })
@@ -143,7 +143,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
     """Return findings as a SARIF 2.1.0 JSON string."""
     root_path = Path(root).resolve()
 
-    rules: dict[str, dict] = {}
+    rules: dict[str, dict[str, Any]] = {}
     rule_index: dict[str, int] = {}
     results = []
 
@@ -163,30 +163,30 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                              ' environment variable or secrets manager instead.'),
                 },
                 'defaultConfiguration': {
-                    'level': _sarif_level(f.get('severity', 'medium')),
+                    'level': _sarif_level(f['severity']),
                 },
             }
 
         rel = relativize(f['file'], root_path)
 
-        # Compute column positions for precise annotation
-        raw_line = f.get('raw', '')
-        full_val = f.get('full_value', '')
-        col_start = raw_line.find(full_val) + 1 if full_val and full_val in raw_line else 1
-        col_end = col_start + len(full_val) if col_start > 0 else None
+        # Column positions for precise annotation. Omit them when the value
+        # isn't found on the stored line rather than pointing at a wrong column.
+        raw_line = f['raw']
+        full_val = f['full_value']
+        idx = raw_line.find(full_val) if full_val else -1
 
-        region: dict = {
+        region: dict[str, Any] = {
             'startLine': f['line'],
             'endLine': f['line'],
-            'startColumn': col_start,
         }
-        if col_end is not None:
-            region['endColumn'] = col_end
+        if idx >= 0:
+            region['startColumn'] = idx + 1
+            region['endColumn'] = idx + 1 + len(full_val)
 
         results.append({
             'ruleId': rule_id,
             'ruleIndex': rule_index[rule_id],
-            'level': _sarif_level(f.get('severity', 'medium')),
+            'level': _sarif_level(f['severity']),
             'message': {
                 'text': (
                     f'Potential credential detected: {html.escape(f["type"])}'
@@ -235,14 +235,15 @@ def _sarif_level(severity: str) -> str:
 # ---------------------------------------------------------------------------
 # Gitignore skip report
 # ---------------------------------------------------------------------------
-def print_gitignore_skipped(skipped: list[str], root: str, *, no_color: bool = False) -> None:
+def print_gitignore_skipped(skipped: list[str], root: str, *, no_color: bool = False,
+                            stream: TextIO = sys.stdout) -> None:
     if not skipped:
         return
     root_path = Path(root).resolve()
     color = _should_use_color(no_color)
     print(_c(f'\n  [{len(skipped)} file(s) not scanned -- covered by .gitignore]',
-             'dim', use_color=color))
+             'dim', use_color=color), file=stream)
     for s in sorted(skipped):
         rel = relativize(s, root_path)
-        print(f'    {rel}')
-    print()
+        print(f'    {sanitize_for_terminal(rel)}', file=stream)
+    print(file=stream)

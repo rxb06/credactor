@@ -3,7 +3,12 @@
 import io
 import json
 
-from credactor.report import json_report, print_report, sarif_report
+from credactor.report import (
+    json_report,
+    print_gitignore_skipped,
+    print_report,
+    sarif_report,
+)
 from credactor.utils import mask_secret
 
 # Construct test credential via concatenation to prevent self-redaction
@@ -126,6 +131,40 @@ class TestSarifReport:
         assert region['endLine'] == 5
         assert region['startColumn'] >= 1
         assert 'endColumn' in region
+
+    def test_sarif_omits_columns_when_value_absent(self):
+        # P8/#31: when full_value isn't on the raw line, omit column info rather
+        # than point at a wrong column.
+        findings = [{
+            'file': '/tmp/test.py',
+            'line': 3,
+            'type': 'variable:api_key',
+            'severity': 'high',
+            'full_value': _AWS_KEY,
+            'value_preview': _AWS_KEY,
+            'raw': 'api_key = os.environ["KEY"]',  # value not present in raw
+        }]
+        result = json.loads(sarif_report(findings, '/tmp'))
+        region = result['runs'][0]['results'][0]['locations'][0]['physicalLocation']['region']
+        assert region['startLine'] == 3
+        assert 'startColumn' not in region
+        assert 'endColumn' not in region
+
+
+class TestPrintGitignoreSkipped:
+    def test_writes_to_configurable_stream(self):
+        # P8/#60: a configurable stream like print_report.
+        buf = io.StringIO()
+        print_gitignore_skipped(['/tmp/a/secret.json'], '/tmp',
+                                no_color=True, stream=buf)
+        out = buf.getvalue()
+        assert 'not scanned' in out
+        assert 'a/secret.json' in out
+
+    def test_empty_is_noop(self):
+        buf = io.StringIO()
+        print_gitignore_skipped([], '/tmp', stream=buf)
+        assert buf.getvalue() == ''
 
     def test_sarif_rule_fields(self):
         """SARIF rules should include fullDescription and help."""

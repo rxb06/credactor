@@ -289,3 +289,32 @@ class TestApplyConfigFile:
         c = Config()
         apply_config_file(c, {'ingest': {'unknown_key': 'x'}})
         assert not hasattr(c, 'unknown_key')
+
+
+class TestReplacementValidation:
+    def test_non_string_replacement_ignored_with_warning(self, credactor_caplog):
+        # P8/#21: a non-str replacement now warns-and-ignores (keeps the default)
+        # instead of being coerced to its repr — matching the ingest-key discipline.
+        c = Config()
+        apply_config_file(c, {'replacement': 123})
+        assert c.custom_replacement == 'REDACTED_BY_CREDACTOR'
+        assert any('replacement must be a string' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_string_replacement_applied(self):
+        c = Config()
+        apply_config_file(c, {'replacement': 'SCRUBBED'})
+        assert c.custom_replacement == 'SCRUBBED'
+
+
+def test_threshold_defaults_single_sourced():
+    # P8/#4: the field defaults and the _SCALAR_VALIDATORS defaults must come from
+    # the same constants (no triplication drift).
+    from credactor.config import (
+        _SCALAR_VALIDATORS,
+        ENTROPY_DEFAULT,
+        MIN_LEN_DEFAULT,
+    )
+    defaults = {key: default for key, _coerce, _bounds, default in _SCALAR_VALIDATORS}
+    assert Config().entropy_threshold == ENTROPY_DEFAULT == defaults['entropy_threshold']
+    assert Config().min_value_length == MIN_LEN_DEFAULT == defaults['min_value_length']

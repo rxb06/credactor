@@ -51,10 +51,26 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "SIM", "RUF", "PERF"]
+select = [
+    "E", "F", "W", "I", "B", "SIM", "RUF", "PERF",
+    # Regression guards for the style-plan fixes (no current violations):
+    "UP035",    # deprecated typing imports — use collections.abc (P7 #69, P8 #20)
+    "FURB105",  # empty-string print (P2 #18)
+    "PLW0108",  # unnecessary lambda in default_factory (P1 #50)
+    # Complexity guards — generous limits (see mccabe/pylint below):
+    "C901", "PLR0912", "PLR0915",
+]
 # RUF003: ambiguous-unicode (en dashes) in comments is intentional house style.
-# (C90/S/N deferred — see code-review-pass2 finding 3.10.)
 ignore = ["RUF003"]
+
+[tool.ruff.lint.mccabe]
+# Generous ceiling: the scanner/redactor have a few inherently branchy functions
+# (current worst cyclomatic complexity is 23). This guards against further growth.
+max-complexity = 25
+
+[tool.ruff.lint.pylint]
+max-branches = 25     # current worst: 24
+max-statements = 90   # current worst: 88
 
 [tool.ruff.lint.per-file-ignores]
 # Tests routinely unpack multi-value returns (e.g. walk_and_scan's 4-tuple) and
@@ -64,5 +80,6 @@ ignore = ["RUF003"]
 [tool.mypy]
 python_version = "3.11"
 files = ["credactor"]
+strict = true
 # charset_normalizer / chardet are optional, lazily-imported deps with no stubs.
 ignore_missing_imports = true

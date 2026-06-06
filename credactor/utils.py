@@ -56,7 +56,7 @@ def detect_encoding(filepath: str) -> str:
         import charset_normalizer
         result = charset_normalizer.from_bytes(raw).best()
         if result and result.encoding:
-            return result.encoding
+            return str(result.encoding)
     except ImportError:
         pass
 
@@ -65,7 +65,7 @@ def detect_encoding(filepath: str) -> str:
         import chardet
         det = chardet.detect(raw)
         if det and det.get('encoding') and det.get('confidence', 0) > 0.7:
-            return det['encoding']
+            return str(det['encoding'])
     except ImportError:
         pass
 

@@ -1,4 +1,5 @@
-"""Central logging setup for credactor.
+"""
+Central logging setup for credactor.
 
 Usage in modules:
     from ._log import logger
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import ClassVar
+from typing import ClassVar, TextIO
 
 logger = logging.getLogger('credactor')
 logger.setLevel(logging.DEBUG)   # let the handler filter; logger sees everything
@@ -33,7 +34,7 @@ class _BracketFormatter(logging.Formatter):
         return self._PREFIX.get(record.levelno, '') + record.getMessage()
 
 
-class _DynamicStderrHandler(logging.StreamHandler):
+class _DynamicStderrHandler(logging.StreamHandler[TextIO]):
     """StreamHandler that re-resolves sys.stderr on every emit call.
 
     pytest's capsys fixture temporarily replaces sys.stderr with a capture

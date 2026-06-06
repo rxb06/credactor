@@ -1,4 +1,5 @@
-"""Shared type definitions for Credactor.
+"""
+Shared type definitions for Credactor.
 
 Defines the ``Finding`` dictionary shape used across scanner, ingest, walker,
 report, and redactor modules. Using a ``TypedDict`` keeps the runtime shape

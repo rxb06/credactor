@@ -8,6 +8,7 @@ import argparse
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
@@ -20,7 +21,7 @@ from .report import json_report, print_gitignore_skipped, print_report, sarif_re
 from .scanner import scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import group_by_file
+from .utils import group_by_file, sanitize_for_terminal
 from .walker import (
     GitUnavailableError,
     scan_git_history,
@@ -278,7 +279,7 @@ def _handle_errored_files(errored_files: list[str], config: Config) -> None:
     logger.warning(
         '%d file(s) could not be scanned:\n%s',
         len(errored_files),
-        '\n'.join(f'  - {fp}' for fp in errored_files),
+        '\n'.join(f'  - {sanitize_for_terminal(fp)}' for fp in errored_files),
     )
     if config.fail_on_error:
         _fatal('Exiting due to --fail-on-error.')
@@ -525,7 +526,10 @@ def _ingest_external(
     def _suppressed(f: Finding) -> bool:
         return allowlist.is_suppressed(f['file'], f['line'], f['full_value'])
 
-    def _ingest_one(name: str, report_path: str, ingest_fn) -> None:
+    def _ingest_one(
+        name: str, report_path: str,
+        ingest_fn: Callable[[str, str], list[Finding]],
+    ) -> None:
         if not Path(report_path).is_file():
             _fatal('%s file not found: %s', name, report_path)
         if Path(target).is_file():

@@ -4,11 +4,23 @@ Configuration loading from ``.credactor.toml`` files.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ._log import logger
 from .utils import is_within_root
+
+# Single source of truth for the two numeric thresholds — referenced by the
+# Config field defaults, __post_init__, and _SCALAR_VALIDATORS so they can't drift.
+ENTROPY_BOUNDS: tuple[float, float] = (0.0, 6.0)
+ENTROPY_DEFAULT: float = 3.5
+MIN_LEN_BOUNDS: tuple[int, int] = (1, 200)
+MIN_LEN_DEFAULT: int = 8
+
+# Parsed-TOML config shape.
+TomlData = dict[str, Any]
 
 
 @dataclass
@@ -16,8 +28,8 @@ class Config:
     """Runtime configuration — populated from CLI flags and/or config file."""
 
     # Thresholds
-    entropy_threshold: float = 3.5
-    min_value_length: int = 8
+    entropy_threshold: float = ENTROPY_DEFAULT
+    min_value_length: int = MIN_LEN_DEFAULT
 
     # Directories / files
     skip_dirs: set[str] = field(default_factory=set)
@@ -49,13 +61,15 @@ class Config:
     backup_warn_shown: bool = False
 
     def __post_init__(self) -> None:
-        if not 0.0 <= self.entropy_threshold <= 6.0:
+        lo_e, hi_e = ENTROPY_BOUNDS
+        if not lo_e <= self.entropy_threshold <= hi_e:
             raise ValueError(
-                f'entropy_threshold must be in [0.0, 6.0], '
+                f'entropy_threshold must be in [{lo_e}, {hi_e}], '
                 f'got {self.entropy_threshold}')
-        if not 1 <= self.min_value_length <= 200:
+        lo_m, hi_m = MIN_LEN_BOUNDS
+        if not lo_m <= self.min_value_length <= hi_m:
             raise ValueError(
-                f'min_value_length must be in [1, 200], '
+                f'min_value_length must be in [{lo_m}, {hi_m}], '
                 f'got {self.min_value_length}')
         if self.replace_mode not in ('sentinel', 'env', 'custom'):
             raise ValueError(
@@ -86,7 +100,7 @@ def load_config_file(
     root: str,
     explicit_path: str | None = None,
     ci_mode: bool = False,
-) -> dict:
+) -> TomlData:
     """Load a .credactor.toml config file and return the raw dict.
 
     Searches for .credactor.toml in root, then parent dirs up to /.
@@ -144,7 +158,7 @@ def load_config_file(
     return {}
 
 
-def _parse_toml(path: Path) -> dict:
+def _parse_toml(path: Path) -> TomlData:
     """Parse a TOML file using stdlib tomllib (Python 3.11+)."""
     import tomllib
     try:
@@ -162,12 +176,15 @@ def _parse_toml(path: Path) -> dict:
 # An invalid type or out-of-range value logs a warning and falls back to the
 # default — identical behaviour to the per-field blocks this table replaced.
 _SCALAR_VALIDATORS = (
-    ('entropy_threshold', float, (0.0, 6.0), 3.5),
-    ('min_value_length', int, (1, 200), 8),
+    ('entropy_threshold', float, ENTROPY_BOUNDS, ENTROPY_DEFAULT),
+    ('min_value_length', int, MIN_LEN_BOUNDS, MIN_LEN_DEFAULT),
 )
 
 
-def _coerce_scalar(key: str, raw: object, coerce, bounds: tuple[float, float], default):
+def _coerce_scalar(
+    key: str, raw: object, coerce: Callable[[Any], Any],
+    bounds: tuple[float, float], default: Any,
+) -> Any:
     """Coerce *raw* via *coerce* and range-check it against *bounds*; warn and
     return *default* on a type error or out-of-range value."""
     lo, hi = bounds
@@ -205,7 +222,7 @@ def _coerce_str_list(key: str, raw: object, *, lower: bool = False) -> list[str]
     return out
 
 
-def _apply_ingest_config(config: Config, file_data: dict) -> None:
+def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
     """Apply the optional ``[ingest]`` table (from_gitleaks / from_trufflehog)."""
     ingest = file_data.get('ingest', {})
     if not isinstance(ingest, dict):
@@ -225,7 +242,7 @@ def _apply_ingest_config(config: Config, file_data: dict) -> None:
             config.from_trufflehog = val
 
 
-def apply_config_file(config: Config, file_data: dict) -> None:
+def apply_config_file(config: Config, file_data: TomlData) -> None:
     """Merge values from a parsed config file into the Config object."""
     for key, coerce, bounds, default in _SCALAR_VALIDATORS:
         if key in file_data:
@@ -251,5 +268,9 @@ def apply_config_file(config: Config, file_data: dict) -> None:
         config.extra_safe_values.update(
             _coerce_str_list('extra_safe_values', file_data['extra_safe_values'], lower=True))
     if 'replacement' in file_data:
-        config.custom_replacement = str(file_data['replacement'])
+        val = file_data['replacement']
+        if not isinstance(val, str):
+            logger.warning('replacement must be a string, ignoring')
+        else:
+            config.custom_replacement = val
     _apply_ingest_config(config, file_data)

@@ -22,7 +22,7 @@ from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import scan_file, scan_line, should_scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, log_verbose, relativize
+from .utils import is_within_root, log_verbose, relativize, sanitize_for_terminal
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -446,7 +446,7 @@ def select_json_files(
     print(f'\n  Found {len(json_files)} .json file(s):\n')
     for i, path in enumerate(json_files, 1):
         rel = relativize(path, root_path)
-        print(f'    [{i:>3}]  {rel}')
+        print(f'    [{i:>3}]  {sanitize_for_terminal(rel)}')
 
     print()
     print('  Enter file numbers to scan (e.g. 1,3,5  or  2-4  or  all):')
