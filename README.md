@@ -6,9 +6,9 @@
 
 **The secret scanner that fixes what it finds.**
 
-Most scanners stop at detection — they hand you a list and leave the cleanup to you. Credactor finds the hardcoded secret **and rewrites it in place**, so remediation is one command instead of a manual chore.
+Most scanners stop at detection, they hand you a list and leave the cleanup to you. Credactor finds the hardcoded secret **and rewrites it in place**, so remediation is one command instead of a manual chore.
 
-<img width="1280" height="640" alt="credactor" src="https://github.com/user-attachments/assets/f1f94a9c-feea-4b8b-9ea4-81f25f07c4df" />
+<img alt="Credactor — scan, redact, commit clean" src="docs/assets/credactor-banner.png" width="1280" height="320" />
 
 ```python
 # Credactor finds this…
