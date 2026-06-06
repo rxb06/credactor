@@ -128,6 +128,7 @@ JSON files are excluded by default (high false-positive rate from API responses)
 |----------|-------------|
 | [Setup Guide](docs/setup.md) | Installation, configuration, CI/CD integration |
 | [User Guide](docs/user-guide.md) | CLI reference, replacement modes, backup safety |
+| [Manual](docs/manual.md) | Complete flag-by-flag reference: every mode, combination, exit code, and limitation (behaviour test-verified) |
 | [Examples](docs/examples.md) | Common workflows with output |
 | [Integration](docs/integration.md) | Pre-commit hooks, CI pipelines |
 | [Security](docs/security.md) | Threat model, hardening measures, known limitations |
