@@ -11,15 +11,15 @@ import re
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable
 
 from ._log import logger
 from .config import Config
 from .gitignore import matches_gitignore, parse_gitignore_file
 from .patterns import SKIP_DIRS, SKIP_FILES
-from .scanner import scan_file, should_scan_file
+from .scanner import scan_file, scan_line, should_scan_file
 from .suppressions import AllowList
 from .types import Finding
 from .utils import is_within_root, log_verbose, relativize
@@ -60,6 +60,7 @@ def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], No
 
 def walk_and_scan(
     root: str,
+    *,
     config: Config,
     allowlist: AllowList | None = None,
 ) -> tuple[list[Finding], list[str], list[str], list[str]]:
@@ -215,8 +216,37 @@ def _parallel_scan(
 # ---------------------------------------------------------------------------
 # #6 — Git staged-only scanning
 # ---------------------------------------------------------------------------
+def _is_safe_relpath(p: str) -> bool:
+    """True if *p* has no ``..`` path component. Uses a component check, not a
+    substring, so a filename like ``secret..py`` is not falsely rejected."""
+    return not any(part == '..' for part in Path(p).parts)
+
+
+def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
+    """Probe that *root* is a usable git repo; raise GitUnavailableError if not.
+
+    ``want_toplevel`` selects the rev-parse subcommand: ``--show-toplevel`` (needs
+    a work tree — for --staged) vs ``--git-dir`` (also accepts bare/empty repos —
+    the canonical --scan-history target, so it isn't falsely rejected). Returns
+    rev-parse's stdout (the toplevel path when *want_toplevel*, else the git-dir,
+    which the caller may ignore)."""
+    sub = '--show-toplevel' if want_toplevel else '--git-dir'
+    try:
+        probe = subprocess.run(
+            ['git', 'rev-parse', sub],
+            capture_output=True, text=True, cwd=root, timeout=_GIT_TIMEOUT_S,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise GitUnavailableError(f'Cannot run git: {exc}') from exc
+    if probe.returncode != 0:
+        raise GitUnavailableError(
+            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}')
+    return probe.stdout.strip()
+
+
 def scan_staged_files(
     root: str,
+    *,
     config: Config,
     allowlist: AllowList | None = None,
 ) -> tuple[list[Finding], list[str]]:
@@ -227,19 +257,9 @@ def scan_staged_files(
     root_path = Path(root).resolve()
     # `git diff --cached` lists paths relative to the repo root, so resolve them
     # against the toplevel, not the scan root (which may be a subdirectory).
-    # rev-parse is also the not-a-repo discriminator (L4): if it fails the dir is
-    # not a usable repo -> hard GitUnavailableError, not a false-clean result.
-    try:
-        top = subprocess.run(
-            ['git', 'rev-parse', '--show-toplevel'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise GitUnavailableError(f'Cannot run git: {exc}') from exc
-    if top.returncode != 0:
-        raise GitUnavailableError(
-            f'not a git repository (git rev-parse failed): {top.stderr.strip()}')
-    toplevel = Path(top.stdout.strip())
+    # rev-parse is also the not-a-repo discriminator (L4): --staged needs a work
+    # tree, hence want_toplevel.
+    toplevel = Path(_require_git_repo(str(root_path), want_toplevel=True))
     try:
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
@@ -269,15 +289,12 @@ def scan_staged_files(
             ', '.join(staged_configs),
         )
 
-    from .scanner import scan_line
-
     findings: list[Finding] = []
     errored: list[str] = []
     for line in raw_staged:
-        # Reject paths with '..' path components (traversal guard,
-        # consistent with the git-history scanner).  Uses component check,
-        # not substring, so filenames like 'secret..py' are not falsely skipped.
-        if any(part == '..' for part in Path(line).parts):
+        # Reject paths with '..' components (traversal guard, consistent with the
+        # git-history scanner).
+        if not _is_safe_relpath(line):
             continue
         full_path = str(toplevel / line)
         try:
@@ -323,28 +340,18 @@ def scan_staged_files(
 # ---------------------------------------------------------------------------
 def scan_git_history(
     root: str,
+    *,
     config: Config,
     allowlist: AllowList | None = None,
     max_commits: int = 100,
 ) -> list[Finding]:
     """Scan ``git log -p`` output for credentials in committed history."""
     root_path = Path(root).resolve()
-    # L4: `git rev-parse --git-dir` is the not-a-repo discriminator (rc 0 in
-    # normal, bare, AND empty repos; rc 128 only when there is no repo). Unlike
-    # --show-toplevel it doesn't require a work tree, so a bare repo — a canonical
-    # --scan-history target — isn't falsely rejected. A valid repo with zero
-    # commits makes `git log` exit non-zero, but rev-parse passes, so that stays a
-    # non-fatal empty result; only a rev-parse failure is GitUnavailableError.
-    try:
-        probe = subprocess.run(
-            ['git', 'rev-parse', '--git-dir'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise GitUnavailableError(f'Cannot run git: {exc}') from exc
-    if probe.returncode != 0:
-        raise GitUnavailableError(
-            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}')
+    # L4: probe with --git-dir (not --show-toplevel) so a bare/empty repo — a
+    # canonical --scan-history target — isn't falsely rejected. A valid repo with
+    # zero commits makes `git log` exit non-zero below, but rev-parse passes, so
+    # that stays a non-fatal empty result. See _require_git_repo.
+    _require_git_repo(str(root_path))
     try:
         result = subprocess.run(
             ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
@@ -364,17 +371,14 @@ def scan_git_history(
     current_file = ''
     diff_lineno = 0
 
-    from .scanner import scan_line
-
     for line in result.stdout.splitlines():
         if line.startswith('commit '):
             current_commit = line.split(' ', 1)[1][:12]
             continue
         if line.startswith('+++ b/'):
             current_file = line[6:]
-            # Reject '..' path components from git output — component check,
-            # not substring, so 'secret..py' is not falsely skipped.
-            if any(part == '..' for part in Path(current_file).parts):
+            # Reject '..' path components from git output (traversal guard).
+            if not _is_safe_relpath(current_file):
                 current_file = ''
             diff_lineno = 0
             continue
@@ -401,6 +405,33 @@ def scan_git_history(
 # ---------------------------------------------------------------------------
 # JSON file selection (interactive, kept from original)
 # ---------------------------------------------------------------------------
+def _parse_selection(answer: str, n: int) -> list[int] | str:
+    """Parse a selection string ('1,3,5', '2-4', or a mix) into ordered,
+    de-duplicated 1-based indices in [1, n]. Returns an error message string on
+    invalid input. Pure (no I/O) so it is unit-testable on its own."""
+    selected: list[int] = []
+    for token in answer.replace(' ', '').split(','):
+        if '-' in token:
+            parts = token.split('-', 1)
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                lo, hi = int(parts[0]), int(parts[1])
+                if 1 <= lo <= hi <= n:
+                    selected.extend(range(lo, hi + 1))
+                else:
+                    return f'Range {token} out of bounds (1-{n}).'
+            else:
+                return f'Invalid range: {token}'
+        elif token.isdigit():
+            idx = int(token)
+            if 1 <= idx <= n:
+                selected.append(idx)
+            else:
+                return f'Number {token} out of bounds (1-{n}).'
+        else:
+            return f'Unrecognised token: {token!r}'
+    return list(dict.fromkeys(selected))
+
+
 def select_json_files(
     json_files: list[str],
     root: str,
@@ -409,7 +440,7 @@ def select_json_files(
     root_path = Path(root).resolve()
 
     if not json_files:
-        print('  [INFO] No .json files available to scan.\n')
+        print('  No .json files available to scan.\n')
         return []
 
     print(f'\n  Found {len(json_files)} .json file(s):\n')
@@ -434,37 +465,10 @@ def select_json_files(
         if answer == 'all':
             return json_files
 
-        selected: list[str] = []
-        valid = True
-        for token in answer.replace(' ', '').split(','):
-            if '-' in token:
-                parts = token.split('-', 1)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    lo, hi = int(parts[0]), int(parts[1])
-                    if 1 <= lo <= hi <= len(json_files):
-                        selected.extend(json_files[lo - 1:hi])
-                    else:
-                        print(f'  [ERROR] Range {token} out of bounds (1-{len(json_files)}).')
-                        valid = False
-                        break
-                else:
-                    print(f'  [ERROR] Invalid range: {token}')
-                    valid = False
-                    break
-            elif token.isdigit():
-                idx = int(token)
-                if 1 <= idx <= len(json_files):
-                    selected.append(json_files[idx - 1])
-                else:
-                    print(f'  [ERROR] Number {token} out of bounds (1-{len(json_files)}).')
-                    valid = False
-                    break
-            else:
-                print(f'  [ERROR] Unrecognised token: {token!r}')
-                valid = False
-                break
-
-        if valid:
-            unique = list(dict.fromkeys(selected))
-            print(f'  Selected {len(unique)} file(s) for .json scan.\n')
-            return unique
+        result = _parse_selection(answer, len(json_files))
+        if isinstance(result, str):
+            print(f'  {result}')
+            continue
+        selected = [json_files[i - 1] for i in result]
+        print(f'  Selected {len(selected)} file(s) for .json scan.\n')
+        return selected

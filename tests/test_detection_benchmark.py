@@ -33,7 +33,7 @@ def _flagged_basenames(cases) -> set[str]:
     for c in cases:
         with open(os.path.join(d, c.filename), 'w', encoding='utf-8') as fh:
             fh.write(c.content)
-    findings, _gi, _json, _err = walk_and_scan(d, Config(no_color=True))
+    findings, _gi, _json, _err = walk_and_scan(d, config=Config(no_color=True))
     return {os.path.basename(f['file']) for f in findings}
 
 

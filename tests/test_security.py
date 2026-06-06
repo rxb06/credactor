@@ -70,7 +70,7 @@ class TestSymlinkBoundary:
             os.symlink(ext_path, link_path)
 
             config = Config(no_color=True)
-            findings, _, _, _ = walk_and_scan(tmp_dir, config)
+            findings, _, _, _ = walk_and_scan(tmp_dir, config=config)
 
             # The external file's credential must NOT appear in findings
             assert all(f['file'] != link_path for f in findings)
@@ -94,7 +94,7 @@ class TestSymlinkBoundary:
         os.symlink(real_path, link_path)
 
         config = Config(no_color=True)
-        findings, _, _, _ = walk_and_scan(resolved_dir, config)
+        findings, _, _, _ = walk_and_scan(resolved_dir, config=config)
 
         # Both the real file and the internal symlink should produce findings
         found_files = {f['file'] for f in findings}

@@ -11,7 +11,9 @@ from credactor.config import Config
 from credactor.suppressions import AllowList
 from credactor.walker import (
     GitUnavailableError,
+    _is_safe_relpath,
     _parallel_scan,
+    _parse_selection,
     scan_git_history,
     scan_staged_files,
     walk_and_scan,
@@ -21,7 +23,7 @@ from credactor.walker import (
 class TestWalkAndScan:
     def test_empty_directory(self, tmp_dir):
         config = Config(no_color=True)
-        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config)
+        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config=config)
         assert findings == []
         assert json_files == []
         assert errored == []
@@ -31,7 +33,7 @@ class TestWalkAndScan:
         with open(py_file, 'w') as f:
             f.write('x = 1\nprint("hello")\n')
         config = Config(no_color=True)
-        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config)
+        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config=config)
         assert findings == []
         assert errored == []
 
@@ -42,7 +44,7 @@ class TestWalkAndScan:
         with open(py_file, 'w') as f:
             f.write(f'aws_key = "{key}"\n')
         config = Config(no_color=True)
-        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config)
+        findings, skipped, json_files, errored = walk_and_scan(tmp_dir, config=config)
         assert len(findings) >= 1
 
     def test_skips_skip_dirs(self, tmp_dir):
@@ -54,7 +56,7 @@ class TestWalkAndScan:
         with open(py_file, 'w') as f:
             f.write(f'aws_key = "{key}"\n')
         config = Config(no_color=True)
-        findings, _, _, _ = walk_and_scan(tmp_dir, config)
+        findings, _, _, _ = walk_and_scan(tmp_dir, config=config)
         assert findings == []
 
     def test_collects_json_files(self, tmp_dir):
@@ -62,7 +64,7 @@ class TestWalkAndScan:
         with open(json_file, 'w') as f:
             f.write('{"key": "value"}\n')
         config = Config(no_color=True)
-        _, _, json_files, _ = walk_and_scan(tmp_dir, config)
+        _, _, json_files, _ = walk_and_scan(tmp_dir, config=config)
         assert len(json_files) == 1
         assert json_files[0].endswith('data.json')
 
@@ -75,7 +77,7 @@ class TestWalkAndScan:
         with open(py_file, 'w') as f:
             f.write(f'aws_key = "{key}"\n')
         config = Config(no_color=True, skip_dirs={'vendor'})
-        findings, _, _, _ = walk_and_scan(tmp_dir, config)
+        findings, _, _, _ = walk_and_scan(tmp_dir, config=config)
         assert findings == []
 
     def test_custom_skip_files(self, tmp_dir):
@@ -85,7 +87,7 @@ class TestWalkAndScan:
         with open(py_file, 'w') as f:
             f.write(f'aws_key = "{key}"\n')
         config = Config(no_color=True, skip_files={'generated.py'})
-        findings, _, _, _ = walk_and_scan(tmp_dir, config)
+        findings, _, _, _ = walk_and_scan(tmp_dir, config=config)
         assert findings == []
 
     def test_multiple_files(self, tmp_dir):
@@ -96,14 +98,14 @@ class TestWalkAndScan:
             with open(path, 'w') as f:
                 f.write(f'key{i} = "{key}"\n')
         config = Config(no_color=True)
-        findings, _, _, errored = walk_and_scan(tmp_dir, config)
+        findings, _, _, errored = walk_and_scan(tmp_dir, config=config)
         assert len(findings) >= 5
         assert errored == []
 
     def test_permission_denied_handled_gracefully(self, tmp_dir):
         """A directory with no scannable files produces no errors."""
         config = Config(no_color=True)
-        findings, _, _, errored = walk_and_scan(tmp_dir, config)
+        findings, _, _, errored = walk_and_scan(tmp_dir, config=config)
         assert errored == []
 
     def test_file_level_suppression_logs_clean_message(self, tmp_dir, credactor_caplog):
@@ -123,7 +125,7 @@ class TestWalkAndScan:
 
         config = Config(no_color=True)
         allowlist = AllowList(tmp_dir)
-        walk_and_scan(tmp_dir, config, allowlist)
+        walk_and_scan(tmp_dir, config=config, allowlist=allowlist)
 
         skip_records = [
             r for r in credactor_caplog.records
@@ -139,7 +141,7 @@ class TestWalkAndScan:
             f.write('x = 1\n')
         config = Config(no_color=True)
         with mock.patch('credactor.walker.scan_file', side_effect=RuntimeError('injected')):
-            _, _, _, errored = walk_and_scan(tmp_dir, config)
+            _, _, _, errored = walk_and_scan(tmp_dir, config=config)
         resolved = os.path.realpath(py_file)
         assert any(os.path.realpath(e) == resolved for e in errored)
 
@@ -153,7 +155,7 @@ class TestWalkAndScan:
             f.write('api_key = "x"\n')
         os.chmod(py_file, 0o000)
         try:
-            _, _, _, errored = walk_and_scan(tmp_dir, Config(no_color=True))
+            _, _, _, errored = walk_and_scan(tmp_dir, config=Config(no_color=True))
             resolved = os.path.realpath(py_file)
             assert any(os.path.realpath(e) == resolved for e in errored)
         finally:
@@ -180,7 +182,7 @@ class TestStagedScanning:
         # working tree is now clean; the INDEX still holds the secret
         with open(path, 'w') as f:
             f.write('aws = "clean"\n')
-        findings, errored = scan_staged_files(repo, Config(no_color=True))
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
 
@@ -190,17 +192,17 @@ class TestStagedScanning:
         fake = mock.Mock(returncode=128, stdout='', stderr='fatal: not a git repo')
         with mock.patch('credactor.walker.subprocess.run', return_value=fake), \
                 pytest.raises(GitUnavailableError):
-            scan_staged_files(tmp_dir, Config(no_color=True))
+            scan_staged_files(tmp_dir, config=Config(no_color=True))
 
     def test_staged_in_non_git_dir_raises(self, tmp_dir):
         # L4: a plain (non-git) directory is a hard error for --staged
         with pytest.raises(GitUnavailableError):
-            scan_staged_files(tmp_dir, Config(no_color=True))
+            scan_staged_files(tmp_dir, config=Config(no_color=True))
 
     def test_scan_history_in_non_git_dir_raises(self, tmp_dir):
         # L4: same for --scan-history
         with pytest.raises(GitUnavailableError):
-            scan_git_history(tmp_dir, Config(no_color=True))
+            scan_git_history(tmp_dir, config=Config(no_color=True))
 
     def test_scan_history_empty_repo_is_clean(self, tmp_dir):
         # L4 carve-out: a valid repo with zero commits makes `git log` fail too,
@@ -208,7 +210,7 @@ class TestStagedScanning:
         repo = os.path.join(tmp_dir, 'empty')
         os.makedirs(repo)
         subprocess.run(['git', 'init'], cwd=repo, check=True, capture_output=True)
-        assert scan_git_history(repo, Config(no_color=True)) == []
+        assert scan_git_history(repo, config=Config(no_color=True)) == []
 
     def test_scan_history_bare_repo_is_scannable(self, tmp_dir):
         # L4 regression: a valid BARE repo (no work tree) must NOT be rejected —
@@ -228,7 +230,7 @@ class TestStagedScanning:
         bare = os.path.join(tmp_dir, 'bare.git')
         subprocess.run(['git', 'clone', '--bare', work, bare],
                        check=True, capture_output=True)
-        findings = scan_git_history(bare, Config(no_color=True))   # must NOT raise
+        findings = scan_git_history(bare, config=Config(no_color=True))   # must NOT raise
         assert any(key in f.get('full_value', '') or 'AWS' in f.get('type', '')
                    for f in findings), findings
 
@@ -243,7 +245,7 @@ class TestStagedScanning:
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(path, 'w') as f:
             f.write(f'aws = "{key}"\n')
-        findings, errored = scan_staged_files(repo, Config(no_color=True))
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert findings == []
 
     def test_scans_staged_blob_from_subdirectory(self, tmp_dir):
@@ -259,7 +261,7 @@ class TestStagedScanning:
             f.write(f'aws = "{key}"\n')
         subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
                        capture_output=True)
-        findings, errored = scan_staged_files(subdir, Config(no_color=True))
+        findings, errored = scan_staged_files(subdir, config=Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
         # the finding must name the real file, not a doubled .../sub/sub/app.py
@@ -275,7 +277,7 @@ class TestStagedScanning:
             f.write(f'aws = "{key}"\n')
         subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
                        capture_output=True)
-        findings, errored = scan_staged_files(repo, Config(no_color=True))
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
 
@@ -323,3 +325,41 @@ class TestParallelScanEmfileRecovery:
         assert len(findings) == 5
         assert any('Too many open files' in r.message
                    for r in credactor_caplog.records)
+
+
+class TestParseSelection:
+    """P7/#44: the pure selection parser extracted from select_json_files."""
+
+    def test_comma_list(self):
+        assert _parse_selection('1,3,5', 5) == [1, 3, 5]
+
+    def test_range(self):
+        assert _parse_selection('2-4', 5) == [2, 3, 4]
+
+    def test_mixed_and_deduped_in_order(self):
+        assert _parse_selection('1-3,2,5', 5) == [1, 2, 3, 5]
+
+    def test_number_out_of_bounds(self):
+        assert _parse_selection('9', 5) == 'Number 9 out of bounds (1-5).'
+
+    def test_range_out_of_bounds(self):
+        assert _parse_selection('4-9', 5) == 'Range 4-9 out of bounds (1-5).'
+
+    def test_invalid_range(self):
+        assert _parse_selection('2-x', 5) == 'Invalid range: 2-x'
+
+    def test_unrecognised_token(self):
+        assert _parse_selection('abc', 5) == "Unrecognised token: 'abc'"
+
+
+class TestIsSafeRelpath:
+    """P7/#43: component-based '..' traversal guard (not a substring check)."""
+
+    def test_double_dot_component_rejected(self):
+        assert _is_safe_relpath('../secret.py') is False
+        assert _is_safe_relpath('a/../b.py') is False
+
+    def test_dotdot_in_filename_is_safe(self):
+        # 'secret..py' contains '..' as a substring but not as a path component.
+        assert _is_safe_relpath('secret..py') is True
+        assert _is_safe_relpath('a/b/c.py') is True

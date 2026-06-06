@@ -466,9 +466,9 @@ def _collect_findings(
     # hard error (exit 2), never a false-clean exit 0.
     try:
         if config.staged_only:
-            return scan_staged_files(target, config, allowlist)
+            return scan_staged_files(target, config=config, allowlist=allowlist)
         if config.scan_history:
-            return scan_git_history(target, config, allowlist), []
+            return scan_git_history(target, config=config, allowlist=allowlist), []
     except GitUnavailableError as exc:
         _fatal('%s', exc)
 
@@ -483,7 +483,7 @@ def _collect_findings(
             return [], [target]
 
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
-        target, config, allowlist,
+        target, config=config, allowlist=allowlist,
     )
 
     if config.output_format == 'text':
