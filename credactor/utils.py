@@ -10,20 +10,21 @@ import math
 import os
 import re
 from collections import Counter
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ._log import logger
+
 if TYPE_CHECKING:
-    from .config import Config
+    from .types import Finding
 
 
-def log_verbose(config: Config | None, msg: str) -> None:
+def log_verbose(msg: str) -> None:
     """Emit *msg* at DEBUG level via the credactor logger.
 
     The handler level (WARNING by default, DEBUG after configure(verbose=True))
-    determines whether the message reaches stderr.  The ``config`` parameter is
-    kept for call-site compatibility; it is no longer consulted at runtime.
+    determines whether the message reaches stderr.
     """
-    from ._log import logger
     logger.debug(msg)
 
 
@@ -80,7 +81,6 @@ def detect_encoding(filepath: str) -> str:
     # a clean scan is not proof of safety. We could not positively confirm the
     # encoding here, so warn — installing the optional encoding extra
     # (pip install "credactor[encoding]") enables real detection and avoids this.
-    from ._log import logger
     logger.warning(
         'could not confirm encoding of %s; reading as latin-1 — if it is UTF-16 '
         'or another multibyte encoding, secrets may be missed. For reliable '
@@ -112,7 +112,7 @@ def is_within_root(path_str: str, root_str: str) -> bool:
     return norm_path == norm_root or norm_path.startswith(norm_root + os.sep)
 
 
-def mask_secret(value: str, visible: int = 4) -> str:
+def mask_secret(value: str, *, visible: int = 4) -> str:
     """Mask a secret value, showing only the first `visible` characters."""
     if len(value) <= visible:
         return '[REDACTED]'
@@ -130,3 +130,40 @@ def sanitize_for_terminal(s: str) -> str:
     injection via crafted filenames or values."""
     s = _ANSI_ESC_RE.sub('', s)
     return s.translate(_CONTROL_CHAR_TABLE)
+
+
+def preview(val: str, n: int = 60) -> str:
+    """Truncated, safe-for-display version of *val* (adds an ellipsis when longer
+    than *n*). Shared by the native scanner and external ingest so every
+    ``value_preview`` is formatted identically, with one truncation length."""
+    return val[:n] + ('...' if len(val) > n else '')
+
+
+def relativize(path: str, root_path: Path) -> str:
+    """Return *path* made relative to *root_path* as a str, or the original path
+    string if it lies outside the root. Callers pass an already-resolved
+    *root_path* so ``resolve()`` is not paid per finding."""
+    try:
+        return str(Path(path).relative_to(root_path))
+    except ValueError:
+        return path
+
+
+def group_by_file(findings: list[Finding]) -> dict[str, list[Finding]]:
+    """Group *findings* by their ``file`` key, preserving input order within each
+    file. Callers that need sorted output sort the returned dict themselves."""
+    by_file: dict[str, list[Finding]] = {}
+    for f in findings:
+        by_file.setdefault(f['file'], []).append(f)
+    return by_file
+
+
+def read_lines(filepath: str, *, errors: str = 'surrogateescape') -> list[str]:
+    """Read *filepath* with its detected encoding and return its lines.
+
+    The *errors* mode is explicit: ``surrogateescape`` for files that may be
+    rewritten (scanner), ``replace`` for read-only display (ingest). ``OSError``
+    is left to propagate so callers keep their own error handling."""
+    encoding = detect_encoding(filepath)
+    with open(filepath, encoding=encoding, errors=errors) as fh:
+        return fh.readlines()

@@ -26,7 +26,7 @@ from .patterns import (
 )
 from .suppressions import AllowList, has_inline_suppression
 from .types import SEVERITY_RANK, Finding
-from .utils import detect_encoding, entropy, log_verbose
+from .utils import entropy, log_verbose, preview, read_lines
 
 # Global defaults (can be overridden by Config)
 ENTROPY_THRESHOLD = 3.5
@@ -96,10 +96,6 @@ _HASH_CONTEXT_RE = re.compile(
     r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|md5)\s*[:=]',
     re.IGNORECASE,
 )
-
-
-def _preview(val: str, n: int = 60) -> str:
-    return val[:n] + ('...' if len(val) > n else '')
 
 
 def _is_safe_value(val: str, extra_safe: set[str] | None = None,
@@ -229,7 +225,7 @@ def scan_line(
 
     # #3 — inline suppression
     if has_inline_suppression(line):
-        log_verbose(config, f'{filepath}:{lineno} suppressed by inline credactor:ignore')
+        log_verbose(f'{filepath}:{lineno} suppressed by inline credactor:ignore')
         return findings
 
     if len(line) > _MAX_LINE_LENGTH:
@@ -270,14 +266,14 @@ def scan_line(
             # hex/high-entropy: skip if line contains hash/digest variable
             is_hex_like = label in ('hex credential', 'high-entropy string')
             if is_hex_like and _HASH_CONTEXT_RE.search(line):
-                log_verbose(config, f'{filepath}:{lineno} suppressed by hash context')
+                log_verbose(f'{filepath}:{lineno} suppressed by hash context')
                 continue
 
             # L1: a compact JWT (all 3 segments <=40 chars) matches
             # _DOTTED_ACCESS_RE inside _is_safe_value and would be dropped; bypass
             # that one heuristic for JWT-matched tokens only.
             if _is_safe_value(val, extra_safe, skip_dotted_access=(label == 'JWT token')):
-                log_verbose(config, f'{filepath}:{lineno} suppressed by safe value heuristic')
+                log_verbose(f'{filepath}:{lineno} suppressed by safe value heuristic')
                 continue
             if len(val) < min_len and label != 'private key header':
                 continue
@@ -287,7 +283,7 @@ def scan_line(
             # Allowlist check (L11: record which kind matched)
             reason = allowlist.suppression_reason(filepath, lineno, val) if allowlist else None
             if reason:
-                log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
                 continue
 
             candidates.append((match.start(), match.end(), {
@@ -296,7 +292,7 @@ def scan_line(
                 'type':          f'pattern:{label}',
                 'severity':      severity,
                 'full_value':    val,
-                'value_preview': _preview(val),
+                'value_preview': preview(val),
                 'raw':           line.rstrip(),
             }))
 
@@ -306,7 +302,7 @@ def scan_line(
             if not CRED_VAR_PATTERNS.search(xml_key):
                 continue
             if _is_safe_value(xml_val, extra_safe):
-                log_verbose(config, f'{filepath}:{lineno} suppressed by safe value heuristic')
+                log_verbose(f'{filepath}:{lineno} suppressed by safe value heuristic')
                 continue
             if len(xml_val.strip()) < min_len:
                 continue
@@ -314,7 +310,7 @@ def scan_line(
                 continue
             reason = allowlist.suppression_reason(filepath, lineno, xml_val) if allowlist else None
             if reason:
-                log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
                 continue
             candidates.append((xml_span[0], xml_span[1], {
                 'file':          filepath,
@@ -322,7 +318,7 @@ def scan_line(
                 'type':          f'xml-attr:{xml_key}',
                 'severity':      _severity_for_variable(xml_key),
                 'full_value':    xml_val,
-                'value_preview': _preview(xml_val),
+                'value_preview': preview(xml_val),
                 'raw':           line.rstrip(),
             }))
 
@@ -350,7 +346,7 @@ def scan_line(
             if any(low_var.endswith(s) for s in _HASH_VAR_SUFFIXES):
                 continue
             if _is_safe_value(val, extra_safe):
-                log_verbose(config, f'{filepath}:{lineno} suppressed by safe value heuristic')
+                log_verbose(f'{filepath}:{lineno} suppressed by safe value heuristic')
                 continue
             val_stripped = val.strip()
             if len(val_stripped) < min_len:
@@ -364,7 +360,7 @@ def scan_line(
             reason = (allowlist.suppression_reason(filepath, lineno, val_stripped)
                       if allowlist else None)
             if reason:
-                log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
                 continue
 
             candidates.append((match.start(grp), match.end(grp), {
@@ -373,7 +369,7 @@ def scan_line(
                 'type':          f'variable:{var}',
                 'severity':      _severity_for_variable(var),
                 'full_value':    val_stripped,
-                'value_preview': _preview(val_stripped),
+                'value_preview': preview(val_stripped),
                 'raw':           line.rstrip(),
             }))
 
@@ -431,12 +427,8 @@ def scan_file(
     except OSError:
         pass  # proceed; open() will fail with a better message
 
-    # detect encoding
-    encoding = detect_encoding(filepath)
-
     try:
-        with open(filepath, encoding=encoding, errors='surrogateescape') as fh:
-            lines = fh.readlines()
+        lines = read_lines(filepath)
     except OSError:
         # Re-raise so the caller (walker._parallel_scan / the cli single-file and
         # --scan-json branches) records this in errored_files AND logs it once;
@@ -463,7 +455,7 @@ def scan_file(
             reason = (allowlist.suppression_reason(filepath, lineno, line.strip())
                       if allowlist else None)
             if reason:
-                log_verbose(config, f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
                 continue
             findings.append({
                 'file':          filepath,
@@ -471,7 +463,7 @@ def scan_file(
                 'type':          'pattern:private key block',
                 'severity':      'critical',
                 'full_value':    line.strip(),
-                'value_preview': _preview(line.strip()),
+                'value_preview': preview(line.strip()),
                 'raw':           line.rstrip(),
             })
         elif in_pem_block and '-----END' in line and 'PRIVATE KEY' in line:
@@ -556,7 +548,7 @@ def _scan_multiline_strings(
                     reason = (allowlist.suppression_reason(filepath, block_lineno, val)
                               if allowlist else None)
                     if reason:
-                        log_verbose(config, f'{filepath}:{block_lineno} suppressed '
+                        log_verbose(f'{filepath}:{block_lineno} suppressed '
                                             f'by allowlist ({reason})')
                         continue
                     existing_findings.append({
@@ -565,7 +557,7 @@ def _scan_multiline_strings(
                         'type':          f'multiline:{label}',
                         'severity':      severity,
                         'full_value':    val,
-                        'value_preview': _preview(val),
+                        'value_preview': preview(val),
                         'raw':           block.replace('\n', '\\n')[:120],
                     })
                     break  # one finding per block is enough

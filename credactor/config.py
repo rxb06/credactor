@@ -4,11 +4,11 @@ Configuration loading from ``.credactor.toml`` files.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._log import logger
+from .utils import is_within_root
 
 
 @dataclass
@@ -20,10 +20,10 @@ class Config:
     min_value_length: int = 8
 
     # Directories / files
-    skip_dirs: set[str] = field(default_factory=lambda: set())
-    skip_files: set[str] = field(default_factory=lambda: set())
-    extra_extensions: set[str] = field(default_factory=lambda: set())
-    extra_safe_values: set[str] = field(default_factory=lambda: set())
+    skip_dirs: set[str] = field(default_factory=set)
+    skip_files: set[str] = field(default_factory=set)
+    extra_extensions: set[str] = field(default_factory=set)
+    extra_safe_values: set[str] = field(default_factory=set)
 
     # Behaviour flags (populated by CLI)
     ci_mode: bool = False
@@ -111,20 +111,14 @@ def load_config_file(
 
     for candidate in candidates:
         if candidate.is_file():
-            # Normpath for cross-platform separator normalisation, then
-            # append os.sep AFTER normpath to prevent prefix collision.
-            _cand = os.path.normpath(str(candidate.resolve()))
-            _scan = os.path.normpath(str(Path(root).resolve()))
+            _cand = str(candidate.resolve())
+            _scan = str(Path(root).resolve())
 
             if project_root:
-                _root = os.path.normpath(str(project_root))
-                outside = not (
-                    _cand == _root or _cand.startswith(_root + os.sep)
-                )
+                _root = str(project_root)
+                outside = not is_within_root(_cand, _root)
             else:
-                outside = not (
-                    _cand == _scan or _cand.startswith(_scan + os.sep)
-                )
+                outside = not is_within_root(_cand, _scan)
 
             if outside:
                 ref = project_root or root

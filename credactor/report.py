@@ -15,7 +15,7 @@ from typing import TextIO
 
 from . import __version__
 from .types import Finding
-from .utils import mask_secret, sanitize_for_terminal
+from .utils import group_by_file, mask_secret, relativize, sanitize_for_terminal
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers (#31)
@@ -69,9 +69,7 @@ def print_report(
 
     color = _should_use_color(no_color)
     root_path = Path(root).resolve()
-    by_file: dict[str, list[Finding]] = {}
-    for f in findings:
-        by_file.setdefault(f['file'], []).append(f)
+    by_file = group_by_file(findings)
 
     print(f'\n{"=" * 70}', file=stream)
     header = f'  CREDENTIAL SCAN REPORT  --  {len(findings)} finding(s) in {len(by_file)} file(s)'
@@ -79,11 +77,7 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
     for filepath, file_findings in sorted(by_file.items()):
-        try:
-            rel = Path(filepath).relative_to(root_path)
-        except ValueError:
-            rel = Path(filepath)
-        safe_rel = sanitize_for_terminal(str(rel))
+        safe_rel = sanitize_for_terminal(relativize(filepath, root_path))
         print(_c(f'  FILE: {safe_rel}', 'bold', use_color=color), file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
@@ -130,10 +124,7 @@ def json_report(findings: list[Finding], root: str) -> str:
     root_path = Path(root).resolve()
     output = []
     for f in findings:
-        try:
-            rel = str(Path(f['file']).relative_to(root_path))
-        except ValueError:
-            rel = f['file']
+        rel = relativize(f['file'], root_path)
         output.append({
             'file':     rel,
             'line':     f['line'],
@@ -176,10 +167,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 },
             }
 
-        try:
-            rel = str(Path(f['file']).relative_to(root_path))
-        except ValueError:
-            rel = f['file']
+        rel = relativize(f['file'], root_path)
 
         # Compute column positions for precise annotation
         raw_line = f.get('raw', '')
@@ -255,9 +243,6 @@ def print_gitignore_skipped(skipped: list[str], root: str, *, no_color: bool = F
     print(_c(f'\n  [{len(skipped)} file(s) not scanned -- covered by .gitignore]',
              'dim', use_color=color))
     for s in sorted(skipped):
-        try:
-            rel = Path(s).relative_to(root_path)
-        except ValueError:
-            rel = Path(s)
+        rel = relativize(s, root_path)
         print(f'    {rel}')
     print()

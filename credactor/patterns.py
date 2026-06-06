@@ -5,7 +5,13 @@ Addresses: #17 (connection strings), #18 (PEM keys), #19 (provider prefixes),
            #20 (Vault/SOPS dynamic lookups), #21 (XML attributes)
 """
 
+from __future__ import annotations
+
 import re
+from collections.abc import Iterator
+from typing import NamedTuple
+
+from .types import Severity
 
 # ---------------------------------------------------------------------------
 # File types to scan
@@ -96,7 +102,7 @@ DYNAMIC_LOOKUP_RE = re.compile(
 # Suspicious variable name patterns (case-insensitive)
 # ---------------------------------------------------------------------------
 CRED_VAR_PATTERNS = re.compile(
-    r'(?i)\b('
+    r'\b('
     r'api[_\-]?key|apikey|api[_\-]?token|'
     r'auth[_\-]?token|access[_\-]?token|bearer[_\-]?token|'
     r'client[_\-]?secret|secret[_\-]?key|app[_\-]?secret|'
@@ -115,7 +121,8 @@ CRED_VAR_PATTERNS = re.compile(
     r'webhook[_\-]?secret|bot[_\-]?token|'
     r'consumer[_\-]?key|consumer[_\-]?secret|'
     r'refresh[_\-]?token|oauth[_\-]?token'
-    r')\b'
+    r')\b',
+    re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
@@ -154,7 +161,14 @@ _CONN_STRING_RE = re.compile(
 _PEM_KEY_RE = re.compile(r'-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
 
 # severity: critical > high > medium > low
-VALUE_PATTERNS = [
+class ValuePattern(NamedTuple):
+    pattern: re.Pattern[str]
+    label: str
+    min_entropy: float
+    severity: Severity
+
+
+VALUE_PATTERNS: list[ValuePattern] = [
     # Deterministic provider prefixes — critical severity. L12: min_entropy 0.0
     # because the fixed prefix + length already constrains the format, so the
     # entropy gate is redundant and would otherwise drop a format-valid but
@@ -163,22 +177,22 @@ VALUE_PATTERNS = [
     # placeholders (e.g. an AKIA + constant body in a .env.example) are also
     # flagged — a false positive is noise, a missed live key is a leak. Suppress
     # known placeholders via .credactorignore.
-    (_AWS_RE,          'AWS access key',       0.0, 'critical'),
-    (_GCP_RE,          'GCP API key',          0.0, 'critical'),
-    (_STRIPE_LIVE_RE,  'Stripe live key',      0.0, 'critical'),
-    (_GITHUB_RE,       'GitHub token',         0.0, 'critical'),
-    (_GITLAB_RE,       'GitLab token',         0.0, 'critical'),
-    (_SLACK_RE,        'Slack token',          0.0, 'critical'),
-    (_NPM_RE,          'npm token',            0.0, 'critical'),
-    (_PYPI_RE,         'PyPI token',           0.0, 'critical'),
-    (_PEM_KEY_RE,      'private key header',   0.0, 'critical'),
+    ValuePattern(_AWS_RE,          'AWS access key',       0.0, 'critical'),
+    ValuePattern(_GCP_RE,          'GCP API key',          0.0, 'critical'),
+    ValuePattern(_STRIPE_LIVE_RE,  'Stripe live key',      0.0, 'critical'),
+    ValuePattern(_GITHUB_RE,       'GitHub token',         0.0, 'critical'),
+    ValuePattern(_GITLAB_RE,       'GitLab token',         0.0, 'critical'),
+    ValuePattern(_SLACK_RE,        'Slack token',          0.0, 'critical'),
+    ValuePattern(_NPM_RE,          'npm token',            0.0, 'critical'),
+    ValuePattern(_PYPI_RE,         'PyPI token',           0.0, 'critical'),
+    ValuePattern(_PEM_KEY_RE,      'private key header',   0.0, 'critical'),
     # Structural patterns — high severity
-    (_JWT_RE,          'JWT token',            3.3, 'high'),
-    (_CONN_STRING_RE,  'connection string',    2.5, 'high'),
-    (_STRIPE_TEST_RE,  'Stripe test key',      3.0, 'medium'),
+    ValuePattern(_JWT_RE,          'JWT token',            3.3, 'high'),
+    ValuePattern(_CONN_STRING_RE,  'connection string',    2.5, 'high'),
+    ValuePattern(_STRIPE_TEST_RE,  'Stripe test key',      3.0, 'medium'),
     # Heuristic patterns — medium/low severity
-    (_HEX_RE,          'hex credential',       3.5, 'medium'),
-    (_B64_RE,          'high-entropy string',  3.8, 'low'),
+    ValuePattern(_HEX_RE,          'hex credential',       3.5, 'medium'),
+    ValuePattern(_B64_RE,          'high-entropy string',  3.8, 'low'),
 ]
 
 # ---------------------------------------------------------------------------
@@ -221,7 +235,7 @@ _XML_VAL_FIRST = re.compile(
 )
 
 
-def xml_attr_finditer(line: str):
+def xml_attr_finditer(line: str) -> Iterator[tuple[str, str, tuple[int, int]]]:
     """Yield ``(xml_key, xml_val, val_span)`` from XML attribute matches in
     either order. ``val_span`` is the ``(start, end)`` of the value within
     *line*, used by the scanner's per-line span dedup (L2)."""
@@ -232,10 +246,6 @@ def xml_attr_finditer(line: str):
             if (key, val) not in seen:
                 seen.add((key, val))
                 yield key, val, m.span('xml_val')
-
-
-# Keep for backward compat in tests
-XML_ATTR_RE = _XML_KEY_FIRST
 
 # ---------------------------------------------------------------------------
 # Inline suppression comment pattern (#3)

@@ -8,7 +8,7 @@ and IDEs catch typos in finding keys.
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class Finding(TypedDict):
@@ -50,3 +50,7 @@ class Finding(TypedDict):
 # (L2) and the ingest dedup's severity merge (L5c) so both rank severities the
 # same way.
 SEVERITY_RANK: dict[str, int] = {'critical': 3, 'high': 2, 'medium': 1, 'low': 0}
+
+# The fixed severity domain, shared by VALUE_PATTERNS (patterns.ValuePattern)
+# and the Finding.severity field documented above.
+Severity = Literal['critical', 'high', 'medium', 'low']

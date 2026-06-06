@@ -22,7 +22,7 @@ from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import scan_file, should_scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, log_verbose
+from .utils import is_within_root, log_verbose, relativize
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -115,7 +115,7 @@ def walk_and_scan(
 
             # Allowlist file-level suppression
             if allowlist and allowlist.is_file_suppressed(full_path):
-                log_verbose(config, f'{full_path} suppressed by allowlist (file-level)')
+                log_verbose(f'{full_path} suppressed by allowlist (file-level)')
                 continue
 
             p = Path(filename)
@@ -414,10 +414,7 @@ def select_json_files(
 
     print(f'\n  Found {len(json_files)} .json file(s):\n')
     for i, path in enumerate(json_files, 1):
-        try:
-            rel = Path(path).relative_to(root_path)
-        except ValueError:
-            rel = Path(path)
+        rel = relativize(path, root_path)
         print(f'    [{i:>3}]  {rel}')
 
     print()

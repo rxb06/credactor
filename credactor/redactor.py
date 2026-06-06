@@ -14,7 +14,7 @@ from pathlib import Path
 from ._log import logger
 from .config import Config
 from .types import Finding
-from .utils import detect_encoding, sanitize_for_terminal
+from .utils import detect_encoding, group_by_file, relativize, sanitize_for_terminal
 
 _UNSAFE_REPLACEMENT_RE = re.compile(
     r'[`$\\;|&]|__import__|eval\s*\(|exec\s*\(|system\s*\(|subprocess'
@@ -461,14 +461,11 @@ def interactive_review(
     print(f'{"=" * 70}\n')
 
     for i, finding in enumerate(findings, 1):
-        try:
-            rel = Path(finding['file']).relative_to(root_path)
-        except ValueError:
-            rel = Path(finding['file'])
+        rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_terminal(str(rel))
+        safe_rel = sanitize_for_terminal(rel)
         safe_type = sanitize_for_terminal(finding['type'])
         safe_masked = sanitize_for_terminal(masked)
 
@@ -519,9 +516,7 @@ def fix_all(
     Returns the number of unresolved findings.
     """
     # Group by file for batch replacement
-    by_file: dict[str, list[Finding]] = {}
-    for f in findings:
-        by_file.setdefault(f['file'], []).append(f)
+    by_file = group_by_file(findings)
 
     total_replaced = 0
     total_failed = 0

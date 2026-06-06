@@ -19,6 +19,7 @@ from .report import json_report, print_gitignore_skipped, print_report, sarif_re
 from .scanner import scan_file
 from .suppressions import AllowList
 from .types import Finding
+from .utils import group_by_file
 from .walker import (
     GitUnavailableError,
     scan_git_history,
@@ -424,9 +425,7 @@ def _print_banner(target_resolved_path: Path) -> None:
 
 def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int:
     """Confirm with the user and run ``fix_all``. Returns unresolved count."""
-    by_file: dict[str, list[Finding]] = {}
-    for f in findings:
-        by_file.setdefault(f['file'], []).append(f)
+    by_file = group_by_file(findings)
     print(f'\n  --fix-all will modify {len(by_file)} file(s) '
           f'with {len(findings)} replacement(s).')
     if not config.no_backup:

@@ -17,7 +17,6 @@ from credactor.patterns import (
     CRED_VAR_PATTERNS,
     DYNAMIC_LOOKUP_RE,
     SUPPRESS_RE,
-    XML_ATTR_RE,
     xml_attr_finditer,
 )
 
@@ -123,10 +122,12 @@ class TestAssignmentRegex:
 class TestXmlAttr:
     def test_xml_password_key_first(self):
         line = '<add key="Password" value="s3cretP@ssw0rd123!!" />'
-        m = XML_ATTR_RE.search(line)
-        assert m
-        assert m.group('xml_key') == 'Password'
-        assert m.group('xml_val') == 's3cretP@ssw0rd123!!'
+        results = list(xml_attr_finditer(line))
+        assert len(results) >= 1
+        key, val, span = results[0]
+        assert key == 'Password'
+        assert val == 's3cretP@ssw0rd123!!'
+        assert line[span[0]:span[1]] == val
 
     def test_xml_value_first(self):
         line = '<add value="s3cretP@ssw0rd123!!" key="Password" />'
@@ -141,9 +142,21 @@ class TestXmlAttr:
     def test_xml_name_variant(self):
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         line = f'<setting name="api_key" value="{key}" />'
-        m = XML_ATTR_RE.search(line)
-        assert m
-        assert m.group('xml_key') == 'api_key'
+        results = list(xml_attr_finditer(line))
+        assert len(results) >= 1
+        assert results[0][0] == 'api_key'
+
+
+class TestValuePattern:
+    def test_named_fields_and_positional_unpacking(self):
+        from credactor.patterns import VALUE_PATTERNS, ValuePattern
+        vp = VALUE_PATTERNS[0]
+        assert isinstance(vp, ValuePattern)
+        assert vp.severity == 'critical'
+        # The scanner unpacks positionally — that must keep working.
+        pattern, label, min_ent, severity = vp
+        assert (pattern, label, min_ent, severity) == (
+            vp.pattern, vp.label, vp.min_entropy, vp.severity)
 
 
 # ---------------------------------------------------------------------------

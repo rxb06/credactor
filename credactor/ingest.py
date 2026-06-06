@@ -13,7 +13,7 @@ from pathlib import Path
 from ._log import logger
 from .config import Config
 from .types import SEVERITY_RANK, Finding
-from .utils import detect_encoding, is_within_root
+from .utils import is_within_root, preview, read_lines
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
@@ -83,10 +83,8 @@ def _read_file_lines(filepath: str) -> tuple[str, ...]:
     language server) cannot grow the cache without limit; 256 far exceeds the
     unique-file count of any realistic external-scanner report.
     """
-    enc = detect_encoding(filepath)
     try:
-        with open(filepath, encoding=enc, errors='replace') as fh:
-            return tuple(fh.readlines())
+        return tuple(read_lines(filepath, errors='replace'))
     except OSError:
         return ()
 
@@ -294,7 +292,7 @@ def ingest_gitleaks(
             'type': ftype,
             'severity': severity,
             'full_value': secret,
-            'value_preview': secret[:60],
+            'value_preview': preview(secret),
             'raw': raw,
         }
 
@@ -548,7 +546,7 @@ def ingest_trufflehog(
                 'type': ftype,
                 'severity': severity,
                 'full_value': raw_secret,
-                'value_preview': raw_secret[:60],
+                'value_preview': preview(raw_secret),
                 'raw': raw_ctx,
             }
 
