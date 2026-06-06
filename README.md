@@ -4,17 +4,33 @@
 
 # Credactor
 
-> **TL;DR:** Detect and redact hardcoded credentials before they hit version control. Regex + entropy + context-aware analysis, SARIF output, pre-commit hooks, parallel scanning, automated redaction.
+**The secret scanner that fixes what it finds.**
 
-Credactor scans source code for hardcoded secrets — API keys, tokens, passwords, private keys, connection strings — and redacts them in place before they reach version control: by default with a safe sentinel (`REDACTED_BY_CREDACTOR`), or optionally with language-aware environment-variable references (`--replace-with env`). It runs as a CLI tool, a pre-commit hook, or in CI pipelines. SARIF output plugs straight into GitHub Code Scanning.
+Most scanners stop at detection — they hand you a list and leave the cleanup to you. Credactor finds the hardcoded secret **and rewrites it in place**, so remediation is one command instead of a manual chore.
 
 <img width="1280" height="640" alt="credactor" src="https://github.com/user-attachments/assets/f1f94a9c-feea-4b8b-9ea4-81f25f07c4df" />
 
+```python
+# Credactor finds this…
+db_password = "h8Tq2vKp9mRz4Wd"
+
+# …and rewrites it — by default, a loud sentinel that fails closed at runtime:
+db_password = "REDACTED_BY_CREDACTOR"
+
+# …or, with --replace-with env, real code that reads from the environment:
+db_password = os.environ["DB_PASSWORD"]
+```
+
+> Redaction rewrites your **working tree**. If a secret has already been committed, rotate the key and scrub history too (e.g. `git filter-repo`) — a rewrite isn't a substitute for revoking a leaked credential.
+
 ---
 
-## Why Credactor?
+## What makes it different
 
-Most secret scanners stop at detection. Credactor **redacts in place** — by default replacing each secret with a loud sentinel (`REDACTED_BY_CREDACTOR`) that fails closed at runtime, or, with `--replace-with env`, the right env-var syntax for each language (`os.environ` in Python, `process.env` in JS, `System.getenv` in Java, and so on). It assigns severity levels so you can triage critical findings first instead of wading through noise.
+- **It redacts, not just reports.** In-place replacement — a loud `REDACTED_BY_CREDACTOR` sentinel by default, or language-aware environment-variable code (Python, JS/TS, Go, Java/Kotlin, Ruby, PHP, shell) that still compiles.
+- **Zero runtime dependencies.** Pure Python 3.11+ standard library — nothing to vet, no supply chain. (An optional extra adds detection for non-UTF-8 encodings.)
+- **Fail-closed by design.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup can't be written, the file is skipped — never silently rewritten.
+- **Plugs into your workflow.** SARIF for GitHub Code Scanning, a read-only `--ci` gate with clear exit codes, a pre-commit hook (beta), and ingestion of Gitleaks / TruffleHog reports (BETA) — detect with anything, remediate with Credactor.
 
 ## Install
 
@@ -22,7 +38,7 @@ Most secret scanners stop at detection. Credactor **redacts in place** — by de
 pip install credactor
 ```
 
-Requires Python 3.11 or newer.
+Requires Python 3.11+. No other dependencies.
 
 From source:
 
@@ -32,95 +48,83 @@ cd Credactor
 pip install -e .
 ```
 
-After either method, `credactor` works from any directory.
+`credactor` then works from any directory.
 
-## Quick Start
+## Quick start
 
-> Always run `--dry-run` first and review findings before redacting. False positives are possible — use `# credactor:ignore` or `.credactorignore` to suppress them.
+> Run `--dry-run` first and review the findings before redacting — false positives are possible, and under `--fix-all` a false positive gets rewritten. Suppress known-safe values with `# credactor:ignore` or a `.credactorignore` entry.
 
 ```bash
-# Scan current directory (dry run)
-credactor --dry-run .
-
-# Scan and interactively redact
-credactor .
-
-# Redact everything (one confirmation prompt)
-credactor --fix-all .
-
-# Redact everything non-interactively (skip the prompt — for CI)
-credactor --fix-all --yes .
-
-# CI mode — exit 1 on findings
-credactor --ci .
-
-# Redact findings from another scanner's report (BETA)
-credactor --from-gitleaks gitleaks.json --dry-run .
+credactor --dry-run .                 # scan, change nothing
+credactor .                           # scan, then redact interactively (y/n per finding)
+credactor --fix-all .                 # redact everything after one confirmation
+credactor --fix-all --yes .           # redact non-interactively (CI / scripts)
+credactor --ci .                      # read-only gate: exit 1 on findings
+credactor --replace-with env .        # redact to env-var references instead of the sentinel
 ```
 
-### Pre-commit Hook (beta)
+### Pre-commit hook (beta)
 
-> Hook integration is in beta — run `credactor --dry-run .` manually before relying on it exclusively.
+> Hook integration is in beta — run `credactor --dry-run .` manually before relying on it alone.
 
 ```yaml
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/Credactor
-    rev: v2.3.3
+    rev: v2.3.3   # pin to the latest release tag
     hooks:
       - id: credactor
-```
-
-Or run as a module:
-
-```bash
-python -m credactor .
 ```
 
 ## Detection
 
 | Category | Examples | Severity |
 |---|---|---|
-| Cloud provider keys | AWS (`AKIA...`), GCP (`AIza...`), Stripe (`sk_live_...`), Slack (`xoxb-...`) | Critical |
+| Cloud provider keys | AWS (`AKIA…`), GCP (`AIza…`), Stripe (`sk_live_…`), Slack (`xoxb-…`) | Critical |
 | Platform tokens | GitHub (`ghp_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), PyPI (`pypi-`) | Critical |
-| Private keys | PEM blocks (`-----BEGIN RSA PRIVATE KEY-----`) | Critical |
-| JWT tokens | `eyJ...` three-segment tokens | High |
-| Connection strings | `postgresql://user:pass@host`, `mongodb+srv://...`, `redis://...` | High |
-| Variable assignments | `password = "..."`, `api_key = "..."`, `db_password = "..."` | High/Medium/Low |
-| XML attributes | `<add key="Password" value="..." />` | High |
-| High-entropy strings | Hex (32-64 chars), Base64 (60+ chars) | Medium/Low |
+| Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`) | Critical |
+| JWTs | `eyJ…` three-segment tokens | High |
+| Connection strings | URLs with inline credentials (`scheme://user:pass@host`) | High |
+| Credential variables | `password = "…"`, `api_key = "…"`, `secret_key = "…"` | High/Medium/Low |
+| XML attributes | `<add key="Password" value="…" />` | High/Medium/Low |
+| High-entropy strings | quoted hex (32–64 chars) / Base64 (60+ chars) | Medium/Low |
 
-Standalone high-entropy hex/Base64 strings are only flagged when quoted; unquoted values are caught only when assigned to a credential-named variable (this intentionally filters out unquoted git SHAs and checksums). ID-type credential variables (`client_id`, `tenant_id`, `app_id`) are Low severity.
+Deterministic provider tokens (the prefixes above) are flagged regardless of entropy; heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex/Base64 is flagged only when quoted — an unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. Full detection and severity rules: see the [Manual](docs/manual.md#detection--severity).
 
-## Features
+> **Credactor's edge is remediation, not out-detecting every scanner.** Pair it with a dedicated detector for the broadest coverage — or run it standalone.
 
-- Entropy-based detection with per-pattern thresholds to cut false positives
-- Interactive or batch redaction — review one-by-one, or `--fix-all` (`--yes`/`-y` skips the confirmation for non-interactive/CI runs)
-- Language-aware replacements (`os.environ`, `process.env`, `System.getenv`, etc.)
-- Git history scanning via `--scan-history`
-- `.bak` backups before any file modification (fail-closed: redaction is skipped if a secure backup can't be written)
-- Inline `# credactor:ignore` suppression and `.credactorignore` allowlists (globs, `file:line`, value literals, and an explicit `value:` prefix)
-- Per-repo config via `.credactor.toml`
-- Parallel scanning (up to 8 worker threads; sequential for small file sets) for large repos
-- SARIF 2.1.0 output with column-level annotations for GitHub Code Scanning ([details](docs/manual.md#--format-sarif))
-- **(BETA)** Ingest findings from external scanners — `--from-gitleaks FILE` / `--from-trufflehog FILE` — merged into the redaction pipeline and deduplicated against native findings (higher severity wins on overlap). Also configurable via an `[ingest]` table in `.credactor.toml`
-- `--fail-on-error` to catch files that couldn't be scanned
+## Detect with another scanner, redact with Credactor (BETA)
 
-## Scanned File Types
+Already run Gitleaks or TruffleHog? Feed their report in and Credactor redacts the combined set, deduplicated against its own findings (higher severity wins on overlap):
 
-`.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini` `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl` `.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+```bash
+gitleaks dir . -f json -r gitleaks.json
+credactor --from-gitleaks gitleaks.json --fix-all --yes .
+```
 
-Plus standalone SSH / private-key files matched by name: `id_rsa` `id_dsa` `id_ecdsa` `id_ed25519`.
+`--from-gitleaks` / `--from-trufflehog` (or an `[ingest]` table in `.credactor.toml`) require a directory target. See the [CI Integration guide](docs/ci_integration.md).
 
-JSON files are excluded by default (high false-positive rate from API responses). Use `--scan-json` to include them.
+## More features
 
-## Exit Codes
+- Interactive or batch redaction; a custom replacement string via `--replacement`; `--scan-history` to scan git commit history
+- Secure backups: `--secure-delete` (overwrite and remove the `.bak`; raises the bar against casual recovery, not a forensic guarantee) or `--secure-backup-dir` to store backups outside the repo
+- Inline `# credactor:ignore` and `.credactorignore` allowlists (globs, `file:line`, value literals)
+- Per-repo config via `.credactor.toml`; parallel scanning (up to 8 threads) on large repos
+- 28 source/config file types out of the box; `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
+
+## Scanned file types
+
+> `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini` `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl` `.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+
+Plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`). JSON is excluded by default (high false-positive rate from API responses) — add `--scan-json` to include it. A file named directly on the command line is scanned even if its extension isn't in this list.
+
+## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | No findings, or all resolved |
 | `1` | Unresolved findings |
-| `2` | Error, or files skipped with `--fail-on-error` |
+| `2` | Error — e.g. bad path, dangerous `--replacement`, `--ci --fix-all`, or `--fail-on-error` with unreadable files |
 
 ## Docs
 
