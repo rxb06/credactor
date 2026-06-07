@@ -30,7 +30,7 @@ db_password = os.environ["DB_PASSWORD"]
 - **It redacts, not just reports.** In-place replacement — a loud `REDACTED_BY_CREDACTOR` sentinel by default, or language-aware environment-variable references (Python, JS/TS, Go, Java/Kotlin, Ruby, PHP, shell), e.g. `os.environ["KEY"]`. The reference parses as valid code; add the matching import (e.g. `import os`) if the file doesn't already have one.
 - **Zero runtime dependencies.** Pure Python 3.11+ standard library — nothing to vet, no supply chain. (An optional extra adds detection for non-UTF-8 encodings.)
 - **Fail-closed by design.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup can't be written, the file is skipped — never silently rewritten.
-- **Plugs into your workflow.** SARIF for GitHub Code Scanning, a read-only `--ci` gate with clear exit codes, a pre-commit hook (beta), and ingestion of Gitleaks / TruffleHog reports (BETA) — detect with anything, remediate with Credactor.
+- **Plugs into your workflow.** SARIF for GitHub Code Scanning, a read-only `--ci` gate with clear exit codes, a pre-commit hook (beta), and ingestion of Gitleaks / TruffleHog reports (BETA; more detectors incoming) — detect with anything, remediate with Credactor.
 
 ## Install
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: clarified that external-scanner ingestion currently supports Gitleaks
+  and TruffleHog, with more detectors planned — corrected README/manual wording
+  that implied pairing with any scanner.
+
 ## [2.4.0] - 2026-06-07
 
 ### Added
@@ -56,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strings) stay entropy-gated; this is a deliberate recall-over-precision trade
   for unambiguous tokens.
 - **BREAKING:** Minimum Python version raised to **3.11**. Python 3.10
-  support is dropped. Users on 3.10 must pin to credactor `< 3.0` or
+  support is dropped. Users on 3.10 must pin to credactor `< 2.4` or
   upgrade Python. Rationale: 3.10 reaches end-of-life in October 2026,
   and `tomllib` (3.11+ stdlib) replaces the previous hand-rolled TOML
   fallback parser, preserving the project's zero-runtime-dependency
