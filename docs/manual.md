@@ -547,7 +547,7 @@ detail; these are the behaviours most likely to surprise.)
 - **`.bak` backups hold plaintext** (use `--secure-delete`/`--secure-backup-dir`).
 - **Narrower provider rule set** than dedicated detectors — some provider formats
   (e.g. SendGrid, Twilio, Slack webhooks) are not natively detected. Pair with
-  another scanner via ingestion for breadth.
+  another scanner via ingestion (Gitleaks or TruffleHog today, more incoming) for breadth.
 - **No cross-file or semantic analysis**; obfuscated/runtime-assembled secrets
   are missed.
 - **UTF-8 / Latin-1 only by default.** Other encodings (UTF-16, …) require the
