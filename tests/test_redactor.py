@@ -18,6 +18,25 @@ def _mk_finding(path, value, ftype='variable:api_key', line=1):
             'full_value': value, 'value_preview': '', 'raw': ''}
 
 
+class TestSecureDelete:
+    """P3: --secure-delete must leave no plaintext .bak behind (was untested)."""
+
+    def test_secure_delete_removes_backup(self, make_file):
+        config = Config(no_backup=False, secure_delete=True)
+        path = make_file('secret.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, failed = batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config)
+        assert replaced == 1
+        assert not os.path.exists(path + '.bak')      # backup securely deleted
+        with open(path) as f:
+            assert _AWS_KEY not in f.read()            # original redacted
+
+    def test_backup_kept_without_secure_delete(self, make_file):
+        config = Config(no_backup=False, secure_delete=False)
+        path = make_file('secret.py', f'api_key = "{_AWS_KEY}"\n')
+        batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config)
+        assert os.path.exists(path + '.bak')           # contrast: .bak lingers
+
+
 class TestBackup:
     def test_backup_created(self, make_file):
         config = Config(no_backup=False)

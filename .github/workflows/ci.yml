@@ -31,6 +31,9 @@ jobs:
       - name: Lint
         run: ruff check credactor/ tests/
 
+      - name: Type check
+        run: mypy credactor/
+
       - name: Test
         run: pytest tests/ -v
 
