@@ -643,3 +643,17 @@ class TestScanJsonEndToEnd:
         with pytest.raises(SystemExit) as exc:
             main(['--dry-run', tmp_dir])
         assert exc.value.code == 0
+
+    def test_interactive_mode_scans_json_without_picker(
+            self, tmp_dir, monkeypatch, capsys):
+        # --scan-json is the explicit opt-in: interactive mode scans all
+        # collected .json like every other mode. The former numbered
+        # file-picker prompt is gone — the only prompt is Replace?.
+        self._make_json_secret(tmp_dir)
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--scan-json', tmp_dir])
+        assert exc.value.code == 1           # found, then skipped at the prompt
+        out = capsys.readouterr().out
+        assert 'Selection' not in out        # no picker prompt
+        assert 'INTERACTIVE REDACTION' in out  # went straight to review

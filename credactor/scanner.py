@@ -26,12 +26,7 @@ from .patterns import (
 )
 from .suppressions import AllowList, has_inline_suppression
 from .types import SEVERITY_RANK, Finding
-from .utils import entropy, log_verbose, preview, read_lines
-
-# Global defaults (can be overridden by Config) — single-sourced from config so
-# the no-Config scan path can't drift from the dataclass defaults.
-ENTROPY_THRESHOLD = ENTROPY_DEFAULT
-MIN_VALUE_LENGTH = MIN_LEN_DEFAULT
+from .utils import entropy, preview, read_lines
 
 # Human-chosen password/secret variables hold memorable, lower-entropy values
 # that are still real credentials, so they get a lower entropy floor (H7).
@@ -241,7 +236,7 @@ def _evaluate_candidate(
     val: str, *,
     min_len: int, floor: float,
     filepath: str, lineno: int,
-    allowlist: AllowList | None, config: Config | None,
+    allowlist: AllowList | None,
     skip_dotted_access: bool = False, allow_short: bool = False,
     safe_values: set[str] | None = None,
 ) -> str | None:
@@ -255,7 +250,7 @@ def _evaluate_candidate(
     headers). ``safe_values`` is the pre-merged safe set (#34).
     """
     if _is_safe_value(val, safe_values=safe_values, skip_dotted_access=skip_dotted_access):
-        log_verbose(f'{filepath}:{lineno} suppressed by safe value heuristic')
+        logger.debug('%s:%d suppressed by safe value heuristic', filepath, lineno)
         return None
     if len(val) < min_len and not allow_short:
         return None
@@ -263,7 +258,7 @@ def _evaluate_candidate(
         return None
     reason = allowlist.suppression_reason(filepath, lineno, val) if allowlist else None
     if reason:
-        log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+        logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
         return None
     return val
 
@@ -285,15 +280,15 @@ def scan_line(
 
     # #3 — inline suppression
     if has_inline_suppression(line):
-        log_verbose(f'{filepath}:{lineno} suppressed by inline credactor:ignore')
+        logger.debug('%s:%d suppressed by inline credactor:ignore', filepath, lineno)
         return findings
 
     if len(line) > _MAX_LINE_LENGTH:
         line = line[:_MAX_LINE_LENGTH]
         stripped = line.strip()
 
-    ent_threshold = config.entropy_threshold if config else ENTROPY_THRESHOLD
-    min_len = config.min_value_length if config else MIN_VALUE_LENGTH
+    ent_threshold = config.entropy_threshold if config else ENTROPY_DEFAULT
+    min_len = config.min_value_length if config else MIN_LEN_DEFAULT
     extra_safe = config.extra_safe_values if config else None
     # Merge the safe-value set once per line instead of per candidate (#34).
     safe_set = SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES
@@ -332,7 +327,7 @@ def scan_line(
                 if hash_context is None:
                     hash_context = bool(_HASH_CONTEXT_RE.search(line))
                 if hash_context:
-                    log_verbose(f'{filepath}:{lineno} suppressed by hash context')
+                    logger.debug('%s:%d suppressed by hash context', filepath, lineno)
                     continue
 
             # L1: a compact JWT (3 segments <=40 chars) matches _DOTTED_ACCESS_RE
@@ -340,7 +335,7 @@ def scan_line(
             accepted = _evaluate_candidate(
                 val, min_len=min_len, floor=min_ent,
                 filepath=filepath, lineno=lineno,
-                allowlist=allowlist, config=config,
+                allowlist=allowlist,
                 skip_dotted_access=(label == 'JWT token'),
                 allow_short=(label == 'private key header'),
                 safe_values=safe_set)
@@ -361,7 +356,7 @@ def scan_line(
             if _evaluate_candidate(
                     xml_val.strip(), min_len=min_len, floor=ent_threshold,
                     filepath=filepath, lineno=lineno,
-                    allowlist=allowlist, config=config,
+                    allowlist=allowlist,
                     safe_values=safe_set) is None:
                 continue
             candidates.append((xml_span[0], xml_span[1], _make_finding(
@@ -383,7 +378,7 @@ def scan_line(
     # on the --verbose audit trail. (Restores visibility of the suppression; it does
     # not change detection — a hardcoded default inside the lookup is still skipped.)
     if dynamic_lookup and not run_assignment:
-        log_verbose(f'{filepath}:{lineno} assignment scan skipped — runtime/dynamic lookup')
+        logger.debug('%s:%d assignment scan skipped — runtime/dynamic lookup', filepath, lineno)
 
     if run_assignment:
         for match in ASSIGNMENT_RE.finditer(line):
@@ -406,7 +401,7 @@ def scan_line(
             if _evaluate_candidate(
                     val_stripped, min_len=min_len, floor=floor,
                     filepath=filepath, lineno=lineno,
-                    allowlist=allowlist, config=config,
+                    allowlist=allowlist,
                     safe_values=safe_set) is None:
                 continue
 
@@ -467,14 +462,12 @@ def scan_file(
     except OSError:
         pass  # proceed; open() will fail with a better message
 
-    try:
-        lines = read_lines(filepath)
-    except OSError:
-        # Re-raise so the caller (walker._parallel_scan / the cli single-file and
-        # --scan-json branches) records this in errored_files AND logs it once;
-        # otherwise --fail-on-error silently passes over files it could not read.
-        # scan_file is a library re-raiser: the caller owns the warning.
-        raise
+    # read_lines may raise OSError; let it propagate so the caller
+    # (walker._scan_files / the cli single-file and --scan-json branches)
+    # records this in errored_files AND logs it once; otherwise --fail-on-error
+    # silently passes over files it could not read. scan_file is a library
+    # re-raiser: the caller owns the warning.
+    lines = read_lines(filepath)
 
     return scan_lines(filepath, lines, config=config, allowlist=allowlist)
 
@@ -518,7 +511,7 @@ def scan_lines(
             reason = (allowlist.suppression_reason(filepath, lineno, line.strip())
                       if allowlist else None)
             if reason:
-                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
                 continue
             findings.append(_make_finding(
                 filepath, lineno, type='pattern:private key block',
@@ -561,7 +554,7 @@ def _scan_multiline_strings(
     string blocks and runs the value-pattern scan on the combined text.
     """
     already_flagged = {f['line'] for f in existing_findings}
-    min_len = config.min_value_length if config else MIN_VALUE_LENGTH
+    min_len = config.min_value_length if config else MIN_LEN_DEFAULT
     extra_safe = config.extra_safe_values if config else None
     safe_set = SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES
 
@@ -595,7 +588,7 @@ def _scan_multiline_strings(
                     if _evaluate_candidate(
                             val, min_len=min_len, floor=min_ent,
                             filepath=filepath, lineno=block_lineno,
-                            allowlist=allowlist, config=config,
+                            allowlist=allowlist,
                             allow_short=(label == 'private key header'),
                             safe_values=safe_set) is None:
                         continue

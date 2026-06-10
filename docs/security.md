@@ -46,7 +46,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-02** — Untrusted config handling: An implicitly-discovered `.credactor.toml` outside the git project root is refused (`[ERROR]` on stderr, config ignored). An explicit `--config` pointing outside the root is honored with a `[WARN]` in non-CI mode; in CI it is always refused (see SEC-29 / M14).
 - **SEC-03** — Config parse failure surfacing: Warns on stderr instead of silently returning empty config.
 - **SEC-04** — Subprocess path sanitisation: All `subprocess.run(cwd=...)` calls resolve paths via `Path.resolve()` before execution.
-- **SEC-05** — File descriptor exhaustion protection: `EMFILE` errors in the thread pool trigger automatic sequential fallback.
+- **SEC-05** — File descriptor exhaustion: scanning is sequential (one file handle at a time), so descriptor exhaustion cannot occur. (Earlier releases used a thread pool with an `EMFILE` fallback; it measured ≤1.3× and was removed in favour of the simpler, exhaustion-proof sequential scan.)
 - **SEC-06** — ReDoS line-length guard: Lines longer than 4096 characters are truncated before regex pattern matching.
 - **SEC-07** — Temp file leakage prevention: `.credactor.tmp` files are cleaned up via a `finally` block even on crashes.
 - **SEC-08** — Forward-only scanning with expanded protected directories: 30+ system directories blocked across Linux, macOS, and Windows.

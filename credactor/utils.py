@@ -35,15 +35,6 @@ except ImportError:
     chardet = None
 
 
-def log_verbose(msg: str) -> None:
-    """Emit *msg* at DEBUG level via the credactor logger.
-
-    The handler level (WARNING by default, DEBUG after configure(verbose=True))
-    determines whether the message reaches stderr.
-    """
-    logger.debug(msg)
-
-
 def entropy(s: str) -> float:
     """Shannon entropy in bits per character (optimized with Counter)."""
     if not s:

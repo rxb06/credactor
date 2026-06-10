@@ -92,17 +92,14 @@ def _read_file_lines(filepath: str) -> tuple[str, ...]:
 def _synthesise_raw(filepath: str, lineno: int) -> str:
     """Read the source line at *lineno* (1-indexed) from *filepath*.
 
-    Returns the line stripped of trailing whitespace, or ``""`` on any error.
-    ``_read_file_lines`` already absorbs ``OSError`` (returning ``()``); the only
-    failure the guard still needs to catch is a ``TypeError`` from the bounds
-    comparison if a caller passes a non-int *lineno*.
+    Returns the line stripped of trailing whitespace, or ``""`` when the file
+    is unreadable (``_read_file_lines`` absorbs ``OSError``, returning ``()``)
+    or *lineno* is out of range. Both callers validate *lineno* as an
+    ``int >= 1`` before calling.
     """
-    try:
-        lines = _read_file_lines(filepath)
-        if lines and 1 <= lineno <= len(lines):
-            return lines[lineno - 1].rstrip()
-    except TypeError:
-        pass
+    lines = _read_file_lines(filepath)
+    if lines and 1 <= lineno <= len(lines):
+        return lines[lineno - 1].rstrip()
     return ''
 
 

@@ -172,7 +172,7 @@ credactor/
     suppressions.py      # inline ignore, allowlist
     types.py             # Finding TypedDict and shared types
     utils.py             # entropy, encoding detection
-    walker.py            # directory traversal, parallelism
+    walker.py            # directory traversal, git modes
 scripts/
     audit_wheel.py       # supply chain: verify wheel matches repo
 tests/

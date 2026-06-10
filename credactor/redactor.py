@@ -103,11 +103,8 @@ def _env_ref_for_language(var_name: str, ext: str) -> str:
         return f'System.getenv("{var_name}")'
     if ext in ('.php',):
         return f"getenv('{var_name}')"
-    if ext in ('.sh', '.bash', '.env') or ext.startswith('.env'):
-        return f'${{{var_name}}}'
-    if ext in ('.yaml', '.yml', '.toml', '.cfg', '.ini', '.conf'):
-        return f'${{{var_name}}}'
-    # Fallback
+    # Shell, YAML/TOML/INI/config files, and every unrecognised extension all
+    # take the same ${VAR} interpolation — one fallback covers them.
     return f'${{{var_name}}}'
 
 

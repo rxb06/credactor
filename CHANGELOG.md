@@ -139,6 +139,27 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Removed
 
+- The scanning thread pool. Detection is regex-CPU-bound and Python's GIL
+  serialises it, so the 8-worker pool measured only a 1.0–1.3× speedup while
+  carrying the trickiest code in the project (a lock, a futures map, and an
+  EMFILE retry pass). Scanning is now sequential — same progress line, same
+  per-file error handling, and file-descriptor exhaustion is impossible by
+  construction.
+- The interactive `.json` file picker. `--scan-json` is already the explicit
+  opt-in, so the numbered selection prompt in plain interactive mode was a
+  second gate on an already-gated path (~70 lines); all modes now scan every
+  collected `.json` file uniformly. Note for script users: a non-TTY
+  `--scan-json` run without `--ci`/`--dry-run` previously hit EOF at the
+  picker and silently skipped JSON (exiting 0 on JSON-only findings) — the
+  same invocation now scans them and exits 1.
+- Internal simplifications with no behavior change: `load_gitignore_patterns`
+  (a test-only duplicate of the walk that production inlines), the
+  `log_verbose` rename-wrapper (call sites use the logger directly, with lazy
+  %-formatting), scanner's `ENTROPY_THRESHOLD`/`MIN_VALUE_LENGTH` aliases
+  (fallbacks read the config constants directly), `_evaluate_candidate`'s
+  unused `config` parameter, an unreachable `TypeError` guard in
+  `_synthesise_raw`, a no-op `try/except: raise` in `scan_file`, and two
+  duplicate `${VAR}` branches in `_env_ref_for_language`.
 - The legacy repo-root `credential_redactor.py` shim. It was never shipped in
   the wheel or sdist and no documentation referenced it; `credactor` and
   `python -m credactor` cover every documented invocation. The wheel audit's

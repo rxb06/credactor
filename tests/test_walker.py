@@ -1,4 +1,4 @@
-"""Tests for directory walking and parallel scanning."""
+"""Tests for directory walking and file scanning."""
 
 import os
 import shutil
@@ -12,8 +12,6 @@ from credactor.suppressions import AllowList
 from credactor.walker import (
     GitUnavailableError,
     _is_safe_relpath,
-    _parallel_scan,
-    _parse_selection,
     scan_git_history,
     scan_staged_files,
     walk_and_scan,
@@ -112,7 +110,7 @@ class TestWalkAndScan:
         """File-level allowlist suppression logs a clean message; the [SKIP]
         prefix is supplied by the log formatter, not hard-coded in the message.
 
-        Regression guard: log_verbose routes through logger.debug and
+        Regression guard: suppression messages go to logger.debug and
         _BracketFormatter prepends '  [SKIP] ' for DEBUG records, so a literal
         prefix in the message string would render twice.
         """
@@ -358,74 +356,29 @@ class TestStagedScanning:
                        for r in credactor_caplog.records)
 
 
-class TestParallelScanEmfileRecovery:
-    """#17: EMFILE recovery retries ONLY fd-exhausted files and logs retry failures.
+class TestSequentialScanErrors:
+    """The sequential scanner records per-file failures and keeps going —
+    one unreadable file must not abort the rest of the batch."""
 
-    A file that failed for a non-EMFILE reason must stay in ``errored`` and must
-    not be re-scanned; an EMFILE file that succeeds on retry must not be errored.
-    """
-
-    def test_retries_only_emfile_files(self, monkeypatch, credactor_caplog):
-        import collections
-        import errno
-        import threading
-
+    def test_failed_file_recorded_others_scanned(self, monkeypatch, credactor_caplog):
         from credactor import walker
 
-        files = [f'/nonexistent/f{i}.py' for i in range(6)]  # >4 -> threaded branch
-        emfile_file, bad_file = files[0], files[1]
-        calls: collections.Counter = collections.Counter()
-        lock = threading.Lock()
+        files = [f'/nonexistent/f{i}.py' for i in range(3)]
+        bad_file = files[1]
 
         def fake_scan_file(fp, *, config=None, allowlist=None):
-            with lock:
-                calls[fp] += 1
-                n = calls[fp]
-            if fp == emfile_file and n == 1:
-                raise OSError(errno.EMFILE, 'too many open files')
             if fp == bad_file:
-                raise OSError(errno.EACCES, 'permission denied')
+                raise OSError('permission denied')
             return [{'file': fp, 'line': 1, 'type': 'variable:x', 'severity': 'low',
                      'full_value': 'v', 'value_preview': 'v', 'raw': 'x'}]
 
         monkeypatch.setattr(walker, 'scan_file', fake_scan_file)
-        findings, errored = _parallel_scan(files, Config(no_color=True), None)
+        findings, errored = walker._scan_files(files, Config(no_color=True), None)
 
-        # EMFILE file recovered on the sequential retry: scanned twice, not errored.
-        assert calls[emfile_file] == 2
-        assert emfile_file not in errored
-        # Non-EMFILE failure: stays errored and is NOT retried (scanned once).
-        assert bad_file in errored
-        assert calls[bad_file] == 1
-        # 4 healthy files + 1 recovered = 5 findings; the retry failure is logged.
-        assert len(findings) == 5
-        assert any('Too many open files' in r.message
+        assert errored == [bad_file]
+        assert len(findings) == 2            # the other two still scanned
+        assert any('Error scanning' in r.message
                    for r in credactor_caplog.records)
-
-
-class TestParseSelection:
-    """P7/#44: the pure selection parser extracted from select_json_files."""
-
-    def test_comma_list(self):
-        assert _parse_selection('1,3,5', 5) == [1, 3, 5]
-
-    def test_range(self):
-        assert _parse_selection('2-4', 5) == [2, 3, 4]
-
-    def test_mixed_and_deduped_in_order(self):
-        assert _parse_selection('1-3,2,5', 5) == [1, 2, 3, 5]
-
-    def test_number_out_of_bounds(self):
-        assert _parse_selection('9', 5) == 'Number 9 out of bounds (1-5).'
-
-    def test_range_out_of_bounds(self):
-        assert _parse_selection('4-9', 5) == 'Range 4-9 out of bounds (1-5).'
-
-    def test_invalid_range(self):
-        assert _parse_selection('2-x', 5) == 'Invalid range: 2-x'
-
-    def test_unrecognised_token(self):
-        assert _parse_selection('abc', 5) == "Unrecognised token: 'abc'"
 
 
 class TestIsSafeRelpath:

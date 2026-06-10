@@ -335,7 +335,8 @@ class TestReplacementValidation:
 
 def test_threshold_defaults_single_sourced():
     # P8/#4: the field defaults and the _SCALAR_VALIDATORS defaults must come from
-    # the same constants (no triplication drift).
+    # the same constants (no triplication drift). scanner.py has no aliases of
+    # its own any more — its no-Config fallbacks use these constants directly.
     from credactor.config import (
         _SCALAR_VALIDATORS,
         ENTROPY_DEFAULT,
@@ -344,7 +345,3 @@ def test_threshold_defaults_single_sourced():
     defaults = {key: default for key, _coerce, _bounds, default in _SCALAR_VALIDATORS}
     assert Config().entropy_threshold == ENTROPY_DEFAULT == defaults['entropy_threshold']
     assert Config().min_value_length == MIN_LEN_DEFAULT == defaults['min_value_length']
-    # scanner's no-Config fallbacks must single-source from config (panel quick win).
-    from credactor import scanner
-    assert scanner.ENTROPY_THRESHOLD == ENTROPY_DEFAULT
-    assert scanner.MIN_VALUE_LENGTH == MIN_LEN_DEFAULT

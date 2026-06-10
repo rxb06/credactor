@@ -510,22 +510,22 @@ class TestEvaluateCandidate:
         val = 'AKIA' + 'A' * 16  # format-valid, near-zero entropy
         assert _evaluate_candidate(
             val, min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None) == val
+            allowlist=None) == val
 
     def test_positive_floor_drops_low_entropy_value(self):
         from credactor.scanner import _evaluate_candidate
         assert _evaluate_candidate(
             'a' * 16, min_len=8, floor=3.5, filepath='f.py', lineno=1,
-            allowlist=None, config=None) is None
+            allowlist=None) is None
 
     def test_short_value_dropped_unless_allow_short(self):
         from credactor.scanner import _evaluate_candidate
         assert _evaluate_candidate(
             'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None) is None
+            allowlist=None) is None
         assert _evaluate_candidate(
             'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None, allow_short=True) == 'abcd'
+            allowlist=None, allow_short=True) == 'abcd'
 
 
 class TestDynamicLookupAuditTrail:

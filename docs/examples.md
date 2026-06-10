@@ -254,28 +254,13 @@ Value-literal and `file:line` suppressions are intentionally noisy — Credactor
 ## 9. Include JSON files
 
 JSON is excluded by default (API responses cause too many false positives).
+With `--scan-json`, every collected `.json` file is scanned — in CI, dry-run,
+and interactive mode alike.
 
 ```bash
-# CI — scan all JSON
-python -m credactor --ci --scan-json .
-
-# Interactive — pick which ones
-python -m credactor --scan-json .
-```
-
-Interactive selection:
-
-```
-  Found 4 .json file(s):
-
-    [  1]  config/secrets.json
-    [  2]  data/api_response.json
-    [  3]  package.json
-    [  4]  tsconfig.json
-
-  Enter file numbers to scan (e.g. 1,3,5  or  2-4  or  all):
-  Selection: 1,3
-  Selected 2 file(s) for .json scan.
+python -m credactor --ci --scan-json .     # read-only gate including JSON
+python -m credactor --scan-json .          # interactive: findings go straight
+                                           # to the per-finding Replace? prompt
 ```
 
 ## 10. Team config

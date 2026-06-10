@@ -5,14 +5,11 @@ Directory walking, git-staged scanning, git-history scanning, and parallelism.
 
 from __future__ import annotations
 
-import errno
 import os
 import re
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ._log import logger
@@ -22,16 +19,12 @@ from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import scan_file, scan_line, scan_lines, should_scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, log_verbose, relativize, sanitize_for_terminal
+from .utils import is_within_root
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
 _GIT_TIMEOUT_S = 30
 _GIT_LOG_TIMEOUT_S = 120
-# Thread-pool sizing for the parallel file scan (#27): cap workers to avoid fd
-# exhaustion, and scan small batches sequentially.
-_MAX_SCAN_WORKERS = 8
-_SEQUENTIAL_BATCH_THRESHOLD = 4
 
 
 class GitUnavailableError(RuntimeError):
@@ -116,7 +109,7 @@ def walk_and_scan(
 
             # Allowlist file-level suppression
             if allowlist and allowlist.is_file_suppressed(full_path):
-                log_verbose(f'{full_path} suppressed by allowlist (file-level)')
+                logger.debug('%s suppressed by allowlist (file-level)', full_path)
                 continue
 
             p = Path(filename)
@@ -129,87 +122,36 @@ def walk_and_scan(
             if should_scan_file(filename, config.extra_extensions):
                 scannable.append(full_path)
 
-    # #27 — parallel file scanning
-    findings, errored = _parallel_scan(scannable, config, allowlist)
+    findings, errored = _scan_files(scannable, config, allowlist)
 
     return findings, gitignore_skipped, json_files, errored
 
 
-def _parallel_scan(
+def _scan_files(
     files: list[str],
     config: Config,
     allowlist: AllowList | None,
 ) -> tuple[list[Finding], list[str]]:
-    """Scan files using a thread pool (#27).
+    """Scan files sequentially with a progress line.
+
+    Deliberately NOT parallel: scanning is regex-CPU-bound and the GIL
+    serialises it, so the former 8-worker thread pool measured only a
+    1.0-1.3x speedup while carrying a lock, a futures map, and an EMFILE
+    retry pass — concurrency-shaped complexity for a ~5% win. Sequential
+    scanning also makes fd exhaustion impossible (one handle at a time).
 
     Returns (findings, errored_files).
     """
     all_findings: list[Finding] = []
     errored: list[str] = []
-
-    if not files:
-        return all_findings, errored
-
     progress = _progress_callback_factory(len(files), config.no_color)
-    done_count = 0
-
-    # Use threads (I/O-bound); limit to 8 workers to avoid fd exhaustion
-    max_workers = min(_MAX_SCAN_WORKERS, len(files))
-    if max_workers <= 1 or len(files) <= _SEQUENTIAL_BATCH_THRESHOLD:
-        # Sequential for small batches
-        for i, fp in enumerate(files, 1):
-            try:
-                all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error scanning %s: %s', fp, exc)
-            progress(i)
-        return all_findings, errored
-
-    lock = threading.Lock()
-    emfile_files: set[str] = set()
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_file = {
-            executor.submit(scan_file, fp, config=config, allowlist=allowlist): fp
-            for fp in files
-        }
-        for future in as_completed(future_to_file):
-            fp = future_to_file[future]
-            try:
-                result = future.result()
-            except OSError as exc:
-                if exc.errno == errno.EMFILE:
-                    # Record EMFILE-only failures for a post-pool sequential retry;
-                    # warn once (not per fd-exhausted file).
-                    if not emfile_files:
-                        logger.warning(
-                            'Too many open files — remaining files will be scanned sequentially.',
-                        )
-                    emfile_files.add(fp)
-                else:
-                    errored.append(fp)
-                    logger.warning('Error scanning %s: %s', fp, exc)
-                result = []
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error scanning %s: %s', fp, exc)
-                result = []
-            with lock:
-                done_count += 1
-                progress(done_count)
-                all_findings.extend(result)
-
-    # Sequential retry of ONLY the EMFILE-failed files (fds are now freed). A file
-    # that errored for any other reason stays in `errored` and is not re-scanned;
-    # an EMFILE file that fails again is appended to `errored` with a logged reason.
-    if emfile_files:
-        for fp in emfile_files:
-            try:
-                all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error re-scanning %s: %s', fp, exc)
-
+    for i, fp in enumerate(files, 1):
+        try:
+            all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
+        except Exception as exc:
+            errored.append(fp)
+            logger.warning('Error scanning %s: %s', fp, exc)
+        progress(i)
     return all_findings, errored
 
 
@@ -430,73 +372,3 @@ def scan_git_history(
     return findings
 
 
-# ---------------------------------------------------------------------------
-# JSON file selection (interactive, kept from original)
-# ---------------------------------------------------------------------------
-def _parse_selection(answer: str, n: int) -> list[int] | str:
-    """Parse a selection string ('1,3,5', '2-4', or a mix) into ordered,
-    de-duplicated 1-based indices in [1, n]. Returns an error message string on
-    invalid input. Pure (no I/O) so it is unit-testable on its own."""
-    selected: list[int] = []
-    for token in answer.replace(' ', '').split(','):
-        if '-' in token:
-            parts = token.split('-', 1)
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                lo, hi = int(parts[0]), int(parts[1])
-                if 1 <= lo <= hi <= n:
-                    selected.extend(range(lo, hi + 1))
-                else:
-                    return f'Range {token} out of bounds (1-{n}).'
-            else:
-                return f'Invalid range: {token}'
-        elif token.isdigit():
-            idx = int(token)
-            if 1 <= idx <= n:
-                selected.append(idx)
-            else:
-                return f'Number {token} out of bounds (1-{n}).'
-        else:
-            return f'Unrecognised token: {token!r}'
-    return list(dict.fromkeys(selected))
-
-
-def select_json_files(
-    json_files: list[str],
-    root: str,
-) -> list[str]:
-    """Let the user pick which .json files to scan from a numbered list."""
-    root_path = Path(root).resolve()
-
-    if not json_files:
-        print('  No .json files available to scan.\n')
-        return []
-
-    print(f'\n  Found {len(json_files)} .json file(s):\n')
-    for i, path in enumerate(json_files, 1):
-        rel = relativize(path, root_path)
-        print(f'    [{i:>3}]  {sanitize_for_terminal(rel)}')
-
-    print()
-    print('  Enter file numbers to scan (e.g. 1,3,5  or  2-4  or  all):')
-
-    while True:
-        try:
-            answer = input('  Selection: ').strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print('\n  Skipping .json scan.')
-            return []
-
-        if not answer:
-            print('  Skipping .json scan.\n')
-            return []
-
-        if answer == 'all':
-            return json_files
-
-        result = _parse_selection(answer, len(json_files))
-        if isinstance(result, str):
-            print(f'  {result}')
-            continue
-        selected = [json_files[i - 1] for i in result]
-        print(f'  Selected {len(selected)} file(s) for .json scan.\n')
-        return selected

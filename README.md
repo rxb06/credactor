@@ -110,7 +110,7 @@ credactor --from-gitleaks gitleaks.json --fix-all --yes .
 - Interactive or batch redaction; a custom replacement string via `--replacement`; `--scan-history` to scan git commit history
 - Secure backups: `--secure-delete` (overwrite and remove the `.bak`; raises the bar against casual recovery, not a forensic guarantee) or `--secure-backup-dir` to store backups outside the repo
 - Inline `# credactor:ignore` and `.credactorignore` allowlists (globs, `file:line`, value literals)
-- Per-repo config via `.credactor.toml`; concurrent (I/O-bound) file scanning, up to 8 workers
+- Per-repo config via `.credactor.toml`
 - 28 source/config file types out of the box; `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
 
 ## Scanned file types

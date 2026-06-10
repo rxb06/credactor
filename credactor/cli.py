@@ -26,7 +26,6 @@ from .walker import (
     GitUnavailableError,
     scan_git_history,
     scan_staged_files,
-    select_json_files,
     walk_and_scan,
 )
 
@@ -511,12 +510,11 @@ def _collect_findings(
                   f'pass --scan-json to include them.', file=sys.stderr)
 
     if config.scan_json and json_files:
-        if (config.ci_mode or config.dry_run or config.fix_all
-                or config.output_format != 'text'):
-            json_paths = json_files
-        else:
-            json_paths = select_json_files(json_files, target)
-        for path in json_paths:
+        # --scan-json is already the explicit opt-in, so scan every collected
+        # .json in every mode. (A numbered interactive picker used to gate
+        # this again in plain text mode — a second gate on an already-gated
+        # path, ~70 lines, removed.)
+        for path in json_files:
             try:
                 findings.extend(scan_file(path, config=config, allowlist=allowlist))
             except OSError as exc:

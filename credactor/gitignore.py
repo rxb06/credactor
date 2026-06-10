@@ -5,11 +5,8 @@ Extracted from the original single-file script with no logic changes.
 """
 
 import fnmatch
-import os
 from collections.abc import Sequence
 from pathlib import Path
-
-from .patterns import SKIP_DIRS
 
 
 def parse_gitignore_file(gi_path: str, base_dir: Path) -> list[tuple[str, Path]]:
@@ -28,25 +25,6 @@ def parse_gitignore_file(gi_path: str, base_dir: Path) -> list[tuple[str, Path]]
                 patterns.append((stripped, base_dir))
     except OSError:
         pass
-    return patterns
-
-
-def load_gitignore_patterns(root: str) -> list[tuple[str, Path]]:
-    """Walk *root* and collect ``(pattern, base_dir)`` from every ``.gitignore``.
-
-    Retained for callers that want gitignore patterns independently of a
-    full scan.  Internal scanning (``walker.walk_and_scan``) inlines this
-    logic into its main walk pass to avoid a second traversal.
-    """
-    patterns: list[tuple[str, Path]] = []
-    root_path = Path(root).resolve()
-
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        if '.gitignore' in filenames:
-            gi_path = os.path.join(dirpath, '.gitignore')
-            patterns.extend(parse_gitignore_file(gi_path, Path(dirpath).resolve()))
-
     return patterns
 
 
