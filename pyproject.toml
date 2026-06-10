@@ -77,12 +77,12 @@ ignore = ["RUF003"]
 
 [tool.ruff.lint.mccabe]
 # Generous ceiling: the scanner/redactor have a few inherently branchy functions
-# (current worst cyclomatic complexity is 23). This guards against further growth.
+# (current worst cyclomatic complexity is 24, scan_line). Guards further growth.
 max-complexity = 25
 
 [tool.ruff.lint.pylint]
-max-branches = 25     # current worst: 24
-max-statements = 90   # current worst: 88
+max-branches = 25     # current worst: 24 (batch_replace_in_file)
+max-statements = 90   # current worst: 86 (batch_replace_in_file)
 
 [tool.ruff.lint.per-file-ignores]
 # Tests routinely unpack multi-value returns (e.g. walk_and_scan's 4-tuple) and
@@ -98,5 +98,6 @@ python_version = "3.11"
 platform = "linux"
 files = ["credactor", "scripts"]
 strict = true
-# charset_normalizer / chardet are optional, lazily-imported deps with no stubs.
+# For the optional encoding detectors (resolved once at credactor.utils import):
+# chardet has no stubs and is absent from the dev/CI environments.
 ignore_missing_imports = true

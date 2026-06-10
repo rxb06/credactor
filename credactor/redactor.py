@@ -22,10 +22,6 @@ from .utils import (
     sanitize_for_terminal,
 )
 
-_UNSAFE_REPLACEMENT_RE = re.compile(
-    r'[`$\\;|&]|__import__|eval\s*\(|exec\s*\(|system\s*\(|subprocess'
-)
-
 
 # ---------------------------------------------------------------------------
 # Replacement value generation (#5, #30)
@@ -40,8 +36,8 @@ def _make_replacement(
     Returns ``(replacement, takes_quotes)``. ``takes_quotes`` is True only for a
     bare env expression (e.g. ``os.environ["X"]``) that would be left nested
     inside the original quotes if it merely replaced the bare value; it is False
-    for ``${X}`` interpolations (shell/YAML belong inside the quotes), the
-    sentinel fallback, and sentinel/custom modes (which stay quoted).
+    for ``${X}`` interpolations (shell/YAML belong inside the quotes) and for
+    sentinel/custom modes (which stay quoted).
 
     Modes (config.replace_mode):
       - 'env':                 language-aware env var reference
@@ -50,14 +46,13 @@ def _make_replacement(
                                (default 'REDACTED_BY_CREDACTOR').
     """
     if config.replace_mode == 'env':
-        # Derive env var name from the variable name in the finding
+        # Derive env var name from the variable name in the finding.
+        # _derive_env_var_name strips everything outside [A-Za-z0-9_] — that
+        # re.sub is the injection defense for crafted finding types (a prior
+        # regex guard here could never fire on the already-sanitized name and
+        # was removed as dead code).
         var_name = _derive_env_var_name(finding)
         ext = Path(filepath).suffix.lower()
-        # Validate the sanitised var name (not the full replacement, which
-        # intentionally contains shell metacharacters like ${} for
-        # shell/YAML/config files).
-        if _UNSAFE_REPLACEMENT_RE.search(var_name):
-            return 'REDACTED_BY_CREDACTOR', False
         ref = _env_ref_for_language(var_name, ext)
         # ${X} interpolations stay inside the source quotes; bare expressions
         # (os.environ[...], process.env[...], ...) replace the quoted literal.

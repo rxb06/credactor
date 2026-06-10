@@ -9,6 +9,7 @@ import json
 import os
 import urllib.parse
 from pathlib import Path
+from typing import Any
 
 from ._log import logger
 from .types import SEVERITY_RANK, Finding
@@ -362,6 +363,148 @@ def _trufflehog_severity(detector_name: str, verified: bool) -> str:
 # TruffleHog parser
 # ---------------------------------------------------------------------------
 
+def _parse_trufflehog_record(
+    obj: dict[str, Any],
+    lineno_file: int,
+    target_resolved: str,
+    filepath_resolved: str,
+) -> Finding | None:
+    """Validate one TruffleHog NDJSON record and build its Finding.
+
+    Returns ``None`` (with an info log naming the reason) for any record
+    that should be skipped. Extracted verbatim from the read loop so the
+    sequential validation steps are unit-testable in isolation and the
+    loop stays readable.
+    """
+    # --- Raw secret ---
+    raw_secret = obj.get('Raw', '')
+    if not isinstance(raw_secret, str) or not raw_secret:
+        logger.info(
+            'TruffleHog line %d: skipping finding with empty Raw.',
+            lineno_file,
+        )
+        return None
+    if '\ufffd' in raw_secret:
+        logger.info(
+            'TruffleHog line %d: Raw field contains non-UTF-8 bytes '
+            '(replacement character U+FFFD); skipping to avoid corrupted redaction.',
+            lineno_file,
+        )
+        return None
+    # TruffleHog URL-encodes special characters in URI-based credentials
+    # (e.g. '@' → '%40').  Save both forms; the right one is selected
+    # after source-line synthesis to verify which is in the file.
+    _raw_encoded = raw_secret
+    _raw_decoded = urllib.parse.unquote(raw_secret)
+
+    # --- Source metadata ---
+    source_meta = obj.get('SourceMetadata', {})
+    data = source_meta.get('Data', {}) if isinstance(source_meta, dict) else {}
+
+    file_path_raw: str = ''
+    line_num: int = 1
+    commit: str = ''
+    source_found = False
+
+    if isinstance(data, dict):
+        # Filesystem source (preferred)
+        fs = data.get('Filesystem')
+        if isinstance(fs, dict):
+            file_path_raw = fs.get('file', '') or ''
+            line_num = fs.get('line', 1) or 1
+            source_found = True
+        else:
+            # Git source
+            git = data.get('Git')
+            if isinstance(git, dict):
+                file_path_raw = git.get('file', '') or ''
+                line_num = git.get('line', 1) or 1
+                raw_commit = git.get('commit', '') or ''
+                # type-check before slicing — non-string commit
+                # (e.g. int, list) would raise TypeError or produce an
+                # unhashable value that crashes deduplicate_findings.
+                if isinstance(raw_commit, str) and raw_commit:
+                    commit = raw_commit[:12]
+                source_found = True
+
+    if not source_found:
+        supported = {'Filesystem', 'Git'}
+        unsupported = set(data.keys()) - supported if isinstance(data, dict) else set()
+        logger.info(
+            'TruffleHog line %d: unsupported source type %s; skipping.',
+            lineno_file,
+            list(unsupported) if unsupported else '(unknown)',
+        )
+        return None
+
+    if not isinstance(file_path_raw, str) or not file_path_raw:
+        logger.info(
+            'TruffleHog line %d: skipping finding with non-string or empty file path.',
+            lineno_file,
+        )
+        return None
+
+    resolved = _resolve_external_finding_path(
+        file_path_raw, target_resolved, filepath_resolved,
+        scanner_name='TruffleHog',
+    )
+    if resolved is None:
+        return None
+
+    # Validate line number
+    if not isinstance(line_num, int) or line_num < 1:
+        line_num = 1
+
+    # --- Synthesise raw context line ---
+    raw_ctx = _synthesise_raw(resolved, line_num)
+
+    # Select the encoding form that actually appears in the source line.
+    # If TruffleHog URL-encoded the value (e.g. %40 → @) but the source file
+    # contains the literal encoded form, the decoded form won't match and
+    # redaction fails silently.  Prefer decoded; fall back to encoded only when
+    # the encoded form is visible in the source line and the decoded form is not.
+    if _raw_encoded == _raw_decoded:
+        # No percent-encoding in this value — no choice to make.
+        raw_secret = _raw_decoded
+    elif raw_ctx and _raw_decoded in raw_ctx:
+        raw_secret = _raw_decoded
+    elif raw_ctx and _raw_encoded in raw_ctx:
+        raw_secret = _raw_encoded
+    else:
+        # Source line unavailable or neither form matched; default to decoded
+        # (what TruffleHog originally extracted, most likely correct).
+        raw_secret = _raw_decoded
+
+    if not raw_ctx:
+        raw_ctx = raw_secret  # fallback per plan section 3.2.1
+
+    # --- Type ---
+    detector_name = obj.get('DetectorName', 'unknown')
+    if not isinstance(detector_name, str):
+        detector_name = 'unknown'
+    ftype = f'external:trufflehog:{detector_name}'
+
+    # --- Severity ---
+    verified = bool(obj.get('Verified', False))
+    severity = _trufflehog_severity(detector_name, verified)
+
+    # --- Finding dict ---
+    finding: Finding = {
+        'file': resolved,
+        'line': line_num,
+        'type': ftype,
+        'severity': severity,
+        'full_value': raw_secret,
+        'value_preview': preview(raw_secret),
+        'raw': raw_ctx,
+    }
+
+    if commit:
+        finding['commit'] = commit
+
+    return finding
+
+
 def ingest_trufflehog(
     filepath: str,
     target: str,
@@ -414,131 +557,10 @@ def ingest_trufflehog(
                 )
                 break
 
-            # --- Raw secret ---
-            raw_secret = obj.get('Raw', '')
-            if not isinstance(raw_secret, str) or not raw_secret:
-                logger.info(
-                    'TruffleHog line %d: skipping finding with empty Raw.',
-                    lineno_file,
-                )
+            finding = _parse_trufflehog_record(
+                obj, lineno_file, target_resolved, filepath_resolved)
+            if finding is None:
                 continue
-            if '\ufffd' in raw_secret:
-                logger.info(
-                    'TruffleHog line %d: Raw field contains non-UTF-8 bytes '
-                    '(replacement character U+FFFD); skipping to avoid corrupted redaction.',
-                    lineno_file,
-                )
-                continue
-            # TruffleHog URL-encodes special characters in URI-based credentials
-            # (e.g. '@' → '%40').  Save both forms; the right one is selected
-            # after source-line synthesis to verify which is in the file.
-            _raw_encoded = raw_secret
-            _raw_decoded = urllib.parse.unquote(raw_secret)
-
-            # --- Source metadata ---
-            source_meta = obj.get('SourceMetadata', {})
-            data = source_meta.get('Data', {}) if isinstance(source_meta, dict) else {}
-
-            file_path_raw: str = ''
-            line_num: int = 1
-            commit: str = ''
-            source_found = False
-
-            if isinstance(data, dict):
-                # Filesystem source (preferred)
-                fs = data.get('Filesystem')
-                if isinstance(fs, dict):
-                    file_path_raw = fs.get('file', '') or ''
-                    line_num = fs.get('line', 1) or 1
-                    source_found = True
-                else:
-                    # Git source
-                    git = data.get('Git')
-                    if isinstance(git, dict):
-                        file_path_raw = git.get('file', '') or ''
-                        line_num = git.get('line', 1) or 1
-                        raw_commit = git.get('commit', '') or ''
-                        # type-check before slicing — non-string commit
-                        # (e.g. int, list) would raise TypeError or produce an
-                        # unhashable value that crashes deduplicate_findings.
-                        if isinstance(raw_commit, str) and raw_commit:
-                            commit = raw_commit[:12]
-                        source_found = True
-
-            if not source_found:
-                supported = {'Filesystem', 'Git'}
-                unsupported = set(data.keys()) - supported if isinstance(data, dict) else set()
-                logger.info(
-                    'TruffleHog line %d: unsupported source type %s; skipping.',
-                    lineno_file,
-                    list(unsupported) if unsupported else '(unknown)',
-                )
-                continue
-
-            if not isinstance(file_path_raw, str) or not file_path_raw:
-                logger.info(
-                    'TruffleHog line %d: skipping finding with non-string or empty file path.',
-                    lineno_file,
-                )
-                continue
-
-            resolved = _resolve_external_finding_path(
-                file_path_raw, target_resolved, filepath_resolved,
-                scanner_name='TruffleHog',
-            )
-            if resolved is None:
-                continue
-
-            # Validate line number
-            if not isinstance(line_num, int) or line_num < 1:
-                line_num = 1
-
-            # --- Synthesise raw context line ---
-            raw_ctx = _synthesise_raw(resolved, line_num)
-
-            # Select the encoding form that actually appears in the source line.
-            # If TruffleHog URL-encoded the value (e.g. %40 → @) but the source file
-            # contains the literal encoded form, the decoded form won't match and
-            # redaction fails silently.  Prefer decoded; fall back to encoded only when
-            # the encoded form is visible in the source line and the decoded form is not.
-            if _raw_encoded == _raw_decoded:
-                # No percent-encoding in this value — no choice to make.
-                raw_secret = _raw_decoded
-            elif raw_ctx and _raw_decoded in raw_ctx:
-                raw_secret = _raw_decoded
-            elif raw_ctx and _raw_encoded in raw_ctx:
-                raw_secret = _raw_encoded
-            else:
-                # Source line unavailable or neither form matched; default to decoded
-                # (what TruffleHog originally extracted, most likely correct).
-                raw_secret = _raw_decoded
-
-            if not raw_ctx:
-                raw_ctx = raw_secret  # fallback per plan section 3.2.1
-
-            # --- Type ---
-            detector_name = obj.get('DetectorName', 'unknown')
-            if not isinstance(detector_name, str):
-                detector_name = 'unknown'
-            ftype = f'external:trufflehog:{detector_name}'
-
-            # --- Severity ---
-            verified = bool(obj.get('Verified', False))
-            severity = _trufflehog_severity(detector_name, verified)
-
-            # --- Finding dict ---
-            finding: Finding = {
-                'file': resolved,
-                'line': line_num,
-                'type': ftype,
-                'severity': severity,
-                'full_value': raw_secret,
-                'value_preview': preview(raw_secret),
-                'raw': raw_ctx,
-            }
-
-            if commit:
-                finding['commit'] = commit
 
             findings.append(finding)
             count += 1

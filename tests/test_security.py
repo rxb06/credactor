@@ -600,9 +600,28 @@ class TestUnconfirmedEncodingWarns:
     def _no_detectors(monkeypatch):
         # Simulate neither charset_normalizer nor chardet being installed, so the
         # last-resort latin-1 branch is exercised deterministically regardless of
-        # what the test environment happens to have available.
-        monkeypatch.setitem(sys.modules, 'charset_normalizer', None)
-        monkeypatch.setitem(sys.modules, 'chardet', None)
+        # what the test environment happens to have available. The libraries are
+        # imported once at credactor.utils module load (not per call), so patch
+        # the module-level bindings, not sys.modules.
+        monkeypatch.setattr('credactor.utils.charset_normalizer', None)
+        monkeypatch.setattr('credactor.utils.chardet', None)
+
+    def test_bomless_utf16_not_short_circuited_to_utf8(self, tmp_path):
+        # BOM-less UTF-16 with an ASCII payload is NUL-interleaved ASCII bytes,
+        # and bytes.isascii() is True for NUL — the fast path must NOT claim
+        # utf-8 for it, or the installed detector never runs and every secret
+        # in the file decodes to NUL-riddled text no pattern can match.
+        pytest.importorskip('charset_normalizer')
+        p = tmp_path / 'config.env'
+        secret_line = 'db_password = "hunter2secret"\n'
+        p.write_bytes((secret_line * 50).encode('utf-16-le'))  # no BOM
+
+        enc = detect_encoding(str(p))
+
+        # The detector must identify a UTF-16 family encoding; decoding with
+        # its answer must surface the secret as scannable text.
+        decoded = p.read_bytes().decode(enc)
+        assert 'db_password' in decoded
 
     def test_utf16_falls_back_to_latin1_and_warns(
         self, tmp_path, monkeypatch, credactor_caplog
@@ -624,7 +643,9 @@ class TestUnconfirmedEncodingWarns:
     ):
         self._no_detectors(monkeypatch)
         p = tmp_path / 'ok.py'
-        p.write_text('x = "hello world"\n', encoding='utf-8')
+        # Non-ASCII content: pure ASCII would return at the isascii() fast
+        # path and never reach the no-detector utf-8 heuristic under test.
+        p.write_text('x = "héllo wörld"\n', encoding='utf-8')
 
         enc = detect_encoding(str(p))
 

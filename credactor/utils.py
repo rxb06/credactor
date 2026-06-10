@@ -18,6 +18,22 @@ from ._log import logger
 if TYPE_CHECKING:
     from .types import Finding
 
+# Optional encoding-detection libraries, resolved ONCE at import. The previous
+# per-call `import` inside detect_encoding re-ran the failed lookup twice for
+# every scanned file when neither library is installed (the default).
+try:
+    import charset_normalizer
+except ImportError:
+    charset_normalizer = None  # type: ignore[assignment]
+try:
+    import chardet
+except ImportError:
+    # No ignore needed here: chardet is absent from the dev/CI environments,
+    # so mypy types it as Any via ignore_missing_imports (an ignore would trip
+    # warn_unused_ignores). charset_normalizer above IS installed and typed,
+    # hence its ignore is real.
+    chardet = None
+
 
 def log_verbose(msg: str) -> None:
     """Emit *msg* at DEBUG level via the credactor logger.
@@ -51,23 +67,29 @@ def detect_encoding(filepath: str) -> str:
     if not raw:
         return 'utf-8'
 
+    # Fast path: a pure-ASCII sample is always valid UTF-8, so skip the
+    # statistical detectors entirely (they dominate per-file cost and may
+    # answer 'ascii', which would then fail on non-ASCII bytes later in a
+    # file whose first 8 KB happens to be plain ASCII). The NUL check is
+    # load-bearing: bytes.isascii() is True for \x00, and BOM-less UTF-16
+    # with an ASCII payload is exactly NUL-interleaved ASCII — without it,
+    # such a file would short-circuit to utf-8 and its secrets would decode
+    # to NUL-riddled text no pattern can match, silently. Genuine ASCII text
+    # never contains NUL.
+    if raw.isascii() and b'\x00' not in raw:
+        return 'utf-8'
+
     # Try charset_normalizer (lighter, no C deps)
-    try:
-        import charset_normalizer
+    if charset_normalizer is not None:
         result = charset_normalizer.from_bytes(raw).best()
         if result and result.encoding:
             return str(result.encoding)
-    except ImportError:
-        pass
 
     # Try chardet
-    try:
-        import chardet
+    if chardet is not None:
         det = chardet.detect(raw)
         if det and det.get('encoding') and det.get('confidence', 0) > 0.7:
             return str(det['encoding'])
-    except ImportError:
-        pass
 
     # Heuristic: try to decode as utf-8
     try:

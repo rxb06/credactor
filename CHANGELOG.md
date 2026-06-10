@@ -85,6 +85,32 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- Scan-speed fixes in three hot paths (no behavior change on normal input;
+  all measured before/after):
+  - The assignment regex's variable-name capture is bounded to 128 chars —
+    unbounded, it backtracked quadratically on long unbroken word runs
+    (minified JS, embedded blobs): a worst-case 4 KiB line cost ~288 ms,
+    now ~31 ms.
+  - `detect_encoding` resolves the optional charset libraries once at import
+    instead of re-attempting the failed import twice per scanned file, and a
+    pure-ASCII, NUL-free sample now short-circuits to UTF-8 before the
+    statistical detectors (337 → 45 µs per file; also avoids a detector
+    answering 'ascii' for a file whose first 8 KB merely happens to be
+    ASCII). The NUL exclusion keeps BOM-less UTF-16 — whose ASCII payload is
+    NUL-interleaved and passes `bytes.isascii()` — flowing to the detectors.
+  - `.gitignore` matching computes the file's relative path once per
+    `.gitignore` base directory instead of once per rule (278 → 44 µs per
+    file at 25 rules; the gap grows linearly with rule count).
+- `ingest_trufflehog`'s 126-line per-record parse was extracted verbatim into
+  `_parse_trufflehog_record` — same validation steps and log messages, now
+  unit-testable in isolation, and the template future detector parsers will
+  copy is a readable loop instead of a monolith.
+- Removed an unreachable "unsafe replacement" regex guard in the redactor:
+  it ran on the output of `_derive_env_var_name`, which is already stripped
+  to `[A-Za-z0-9_]`, so its lowercase keywords and shell metacharacters could
+  never match — the `re.sub` sanitizer is (and was) the actual defense.
+- `_log.configure` no longer takes a `no_color` parameter it never used —
+  log output has no color; the flag only ever controlled report output.
 - CI now runs on the `develop` branch (push and pull request), where
   day-to-day work happens — previously only `main` was checked, so commits
   landed on the integration branch with zero automated verification.

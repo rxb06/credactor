@@ -115,6 +115,15 @@ class TestAssignmentRegex:
         assert m
         assert m.group('val_q') == 'sk-abc123xyz'
 
+    def test_oversized_var_name_truncates_without_dropping_match(self):
+        # The var capture is bounded to {1,128} (quadratic-backtracking guard).
+        # A longer identifier must still match — with the captured name
+        # truncated to its trailing 128 chars — so the value is never lost.
+        m = ASSIGNMENT_RE.search('x' * 129 + ' = "v1secret"')
+        assert m
+        assert len(m.group('var')) == 128
+        assert m.group('val_q') == 'v1secret'
+
 
 # ---------------------------------------------------------------------------
 # XML attribute (#21)

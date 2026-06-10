@@ -207,7 +207,10 @@ VALUE_PATTERNS: list[ValuePattern] = [
 ASSIGNMENT_RE = re.compile(
     r'''
         ["']?                          # optional quote around key name
-        (?P<var>[\w.\-]+)              # variable or key name
+        (?P<var>[\w.\-]{1,128})        # variable or key name — bounded: no real
+                                       # name is longer, and an unbounded + here
+                                       # backtracks quadratically on a 4 KiB
+                                       # unbroken word run (~280 ms per line)
         ["']?                          # optional closing quote around key name
         \s*(?::=|[:=])\s*              # assignment, dict colon, or Go := (M4)
         (?:

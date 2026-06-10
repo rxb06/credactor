@@ -576,7 +576,7 @@ def _ingest_external(
 def _main_inner(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     config = _config_from_args(args)
-    _configure_log(verbose=config.verbose, no_color=config.no_color)
+    _configure_log(verbose=config.verbose)
 
     target = config.target
     target_resolved_path = _validate_target(target)
