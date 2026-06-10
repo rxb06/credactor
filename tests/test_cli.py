@@ -445,6 +445,30 @@ class TestScanHistoryReadOnly:
                    for r in credactor_caplog.records)
 
 
+class TestReplacementEnvModeWarning:
+    """--replacement is never consulted in env mode (which generates
+    language-aware references) — passing both must warn, not silently ignore."""
+
+    def test_replacement_with_env_mode_warns(self, tmp_dir, credactor_caplog):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with pytest.raises(SystemExit):
+            main(['--dry-run', '--replace-with', 'env',
+                  '--replacement', 'CUSTOM', tmp_dir])
+        assert any('--replacement has no effect' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_no_warning_without_env_mode(self, tmp_dir, credactor_caplog):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with pytest.raises(SystemExit):
+            main(['--dry-run', '--replacement', 'CUSTOM', tmp_dir])
+        assert not any('--replacement has no effect' in r.message
+                       for r in credactor_caplog.records)
+
+
 class TestReplacementPrecedence:
     """M10: an explicit --replacement overrides a config-file 'replacement'
     (precedence CLI > config > default)."""

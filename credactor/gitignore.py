@@ -20,7 +20,7 @@ def parse_gitignore_file(gi_path: str, base_dir: Path) -> list[tuple[str, Path]]
         with open(gi_path, encoding='utf-8', errors='replace') as fh:
             for line in fh:
                 stripped = line.strip()
-                if not stripped or stripped.startswith('#') or stripped.startswith('!'):
+                if not stripped or stripped.startswith(('#', '!')):
                     continue
                 patterns.append((stripped, base_dir))
     except OSError:

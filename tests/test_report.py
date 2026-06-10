@@ -27,10 +27,16 @@ class TestMaskSecret:
 
 
 class TestTextReport:
-    def test_no_findings(self):
+    def test_no_findings_prints_nothing(self):
+        # The 'clean scan' message has exactly one owner: cli._emit_report
+        # (which returns early on empty findings in text mode and is tested in
+        # test_cli). print_report's own empty-branch copy had drifted from it
+        # and was removed — empty input prints nothing at all, so neither a
+        # duplicate clean message nor a misleading 0-finding report frame can
+        # come back.
         buf = io.StringIO()
         print_report([], '/tmp', no_color=True, stream=buf)
-        assert 'No hardcoded credentials detected' in buf.getvalue()
+        assert buf.getvalue() == ''
 
     def test_secrets_masked_in_output(self):
         findings = [{

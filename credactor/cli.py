@@ -81,6 +81,7 @@ def _fatal(msg: str, *args: object) -> NoReturn:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Define every CLI flag, grouped: mode, output, replacement, config, ingest."""
     parser = argparse.ArgumentParser(
         prog='credactor',
         description=(
@@ -239,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Console entry point: run the scan and exit (130 on Ctrl-C)."""
     try:
         _main_inner(argv)
     except KeyboardInterrupt:
@@ -592,6 +594,13 @@ def _main_inner(argv: list[str] | None = None) -> None:
     # (precedence CLI > config > default). argparse default is None, so a
     # non-None args.replacement means the flag was actually passed.
     if args.replacement is not None:
+        if config.replace_mode == 'env':
+            # env mode generates language-aware references; a fixed replacement
+            # string is never consulted — say so instead of silently ignoring it.
+            logger.warning(
+                '--replacement has no effect with --replace-with env; '
+                'env mode generates language-aware references, not a fixed string.',
+            )
         config.custom_replacement = args.replacement
 
     # Validate the EFFECTIVE replacement (after config load) so a

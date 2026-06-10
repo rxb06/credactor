@@ -1,6 +1,5 @@
 """
-Directory walking, git-staged scanning, git-history scanning, and parallelism.
-
+Directory walking, git-staged scanning, and git-history scanning.
 """
 
 from __future__ import annotations
@@ -57,7 +56,8 @@ def walk_and_scan(
     config: Config,
     allowlist: AllowList | None = None,
 ) -> tuple[list[Finding], list[str], list[str], list[str]]:
-    """Single-pass directory walk
+    """Single-pass directory walk.
+
     Returns (findings, gitignore_skipped, json_files_available, errored_files).
     """
     root_path = Path(root).resolve()

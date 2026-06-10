@@ -64,10 +64,15 @@ def print_report(
     no_color: bool = False,
     stream: TextIO = sys.stdout,
 ) -> None:
-    if not findings:
-        print('\n[OK] No hardcoded credentials detected.\n', file=stream)
-        return
+    """Print the human-readable text report (secrets masked, paths sanitized).
 
+    Prints nothing for empty findings: the 'clean scan' message is owned by
+    ``cli._emit_report`` alone, so a second (drift-prone) copy of that message
+    does not live here — and a 0-finding report frame with the 'rotate your
+    credentials' footer would be misleading.
+    """
+    if not findings:
+        return
     color = _should_use_color(no_color)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
@@ -238,6 +243,7 @@ def _sarif_level(severity: str) -> str:
 # ---------------------------------------------------------------------------
 def print_gitignore_skipped(skipped: list[str], root: str, *, no_color: bool = False,
                             stream: TextIO = sys.stdout) -> None:
+    """List the files a ``.gitignore`` pattern excluded from the scan."""
     if not skipped:
         return
     root_path = Path(root).resolve()

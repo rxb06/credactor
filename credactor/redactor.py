@@ -72,7 +72,7 @@ def _derive_env_var_name(finding: Finding) -> str:
             name = name.rsplit('.', 1)[1]
         raw = name.upper().replace('-', '_')
     # pattern:AWS access key -> AWS_ACCESS_KEY
-    elif ftype.startswith('pattern:') or ftype.startswith('xml-attr:'):
+    elif ftype.startswith(('pattern:', 'xml-attr:')):
         label = ftype.split(':', 1)[1]
         raw = label.upper().replace(' ', '_').replace('-', '_')
     # external:gitleaks:aws-access-token -> AWS_ACCESS_TOKEN

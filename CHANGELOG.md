@@ -116,6 +116,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   never match — the `re.sub` sanitizer is (and was) the actual defense.
 - `_log.configure` no longer takes a `no_color` parameter it never used —
   log output has no color; the flag only ever controlled report output.
+- `--replacement` combined with `--replace-with env` now warns that the fixed
+  string is never consulted (env mode generates language-aware references) —
+  previously the flag was silently ignored.
+- The 'clean scan' message has a single owner (`cli._emit_report`):
+  `report.print_report`'s own empty-findings copy had already drifted from it
+  and was removed (the CLI never reached it — it returns early on empty
+  findings in text mode).
 - CI now runs on the `develop` branch (push and pull request), where
   day-to-day work happens — previously only `main` was checked, so commits
   landed on the integration branch with zero automated verification.

@@ -168,8 +168,7 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None,
 
     # File paths: ./, ~/, Windows drive letter
     # NOTE: bare / prefix is NOT safe (could hide creds); require ./ or ~/
-    if (cleaned.startswith('./')
-            or cleaned.startswith('~/')
+    if (cleaned.startswith(('./', '~/'))
             or (len(cleaned) >= 3 and cleaned[1:3] in (':\\', ':/'))):
         return True
 
@@ -293,7 +292,7 @@ def scan_line(
     # Merge the safe-value set once per line instead of per candidate (#34).
     safe_set = SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES
 
-    is_comment = stripped.startswith('#') or stripped.startswith('//')
+    is_comment = stripped.startswith(('#', '//'))
 
     # Candidates carry a transient (start, end) char span alongside each Finding
     # for cross-pass span dedup (L2). The span lives in a parallel tuple so the
@@ -448,9 +447,8 @@ def scan_file(
     config: Config | None = None,
     allowlist: AllowList | None = None,
 ) -> list[Finding]:
-    """Scan a single file for credential findings.
-    """
-    #file size guard to prevent OOM on huge files | Hard-Cap at 50MB
+    """Scan a single file for credential findings."""
+    # File size guard to prevent OOM on huge files — hard cap at 50 MB.
     try:
         file_size = Path(filepath).stat().st_size
         if file_size > _MAX_FILE_SIZE:
@@ -605,8 +603,7 @@ def should_scan_file(
     filename: str,
     extra_extensions: set[str] | None = None,
 ) -> bool:
-    """Return True if the filename's extension (or name) is in the scan list.
-    """
+    """Return True if the filename's extension (or name) is in the scan list."""
     p = Path(filename)
     suffix = p.suffix.lower() or p.name.lower()
 
@@ -622,4 +619,4 @@ def should_scan_file(
     name_lower = p.name.lower()
     if name_lower == '.env' or name_lower == 'env':
         return True
-    return name_lower.startswith('.env.') or name_lower.startswith('.env-')
+    return name_lower.startswith(('.env.', '.env-'))
