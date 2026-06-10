@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
 ]
@@ -90,7 +91,12 @@ max-statements = 90   # current worst: 88
 
 [tool.mypy]
 python_version = "3.11"
-files = ["credactor"]
+# Pin the check platform: typeshed's fcntl stub is empty under win32, so an
+# unpinned mypy on a Windows runner errors on redactor.py's lazy fcntl use
+# (the runtime ImportError guard isn't narrowing mypy understands). One
+# platform keeps the type-check deterministic across the CI matrix.
+platform = "linux"
+files = ["credactor", "scripts"]
 strict = true
 # charset_normalizer / chardet are optional, lazily-imported deps with no stubs.
 ignore_missing_imports = true

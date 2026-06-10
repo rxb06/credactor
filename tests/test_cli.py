@@ -361,7 +361,10 @@ class TestPhase1Fixes:
         from pathlib import Path
 
         from credactor.cli import _PROTECTED_DIRS_RESOLVED
-        if Path('/etc').resolve() != Path('/etc'):   # only where /etc is a symlink
+        # Require /etc to EXIST as well as resolve differently: on Windows
+        # '/etc' also resolves to something else (C:\etc), which would run the
+        # macOS-symlink assertion against a path that was never protected.
+        if Path('/etc').exists() and Path('/etc').resolve() != Path('/etc'):
             assert str(Path('/etc').resolve()) in _PROTECTED_DIRS_RESOLVED
 
     # --- H5: a dangerous replacement supplied via .credactor.toml is rejected ---

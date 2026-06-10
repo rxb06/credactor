@@ -5,8 +5,8 @@ import sys
 import zipfile
 
 
-def audit(dist_dir='dist'):
-    errors = []
+def audit(dist_dir: str = 'dist') -> None:
+    errors: list[str] = []
 
     # An empty or missing dist/ must fail loudly: this gate runs right before
     # "Publish to PyPI", and a half-failed build (sdist only, or nothing)
@@ -45,22 +45,17 @@ def audit(dist_dir='dist'):
             }
 
             unexpected = wheel_files - wheel_pkg_files - expected_non_pkg
-            if unexpected:
-                for uf in sorted(unexpected):
-                    errors.append(f"UNEXPECTED: {uf}")
+            errors.extend(f"UNEXPECTED: {uf}" for uf in sorted(unexpected))
 
             extra_in_wheel = wheel_pkg_files - repo_files
-            if extra_in_wheel:
-                for ef in sorted(extra_in_wheel):
-                    errors.append(f"NOT IN REPO: {ef}")
+            errors.extend(f"NOT IN REPO: {ef}" for ef in sorted(extra_in_wheel))
 
             # Symmetric check: a tracked source file that failed to make it
             # into the wheel would otherwise pass the audit and break for
             # every installer — the docstring promises an exact match.
             missing_from_wheel = repo_files - wheel_pkg_files
-            if missing_from_wheel:
-                for mf in sorted(missing_from_wheel):
-                    errors.append(f"MISSING FROM WHEEL: {mf}")
+            errors.extend(f"MISSING FROM WHEEL: {mf}"
+                          for mf in sorted(missing_from_wheel))
 
     if errors:
         for e in errors:

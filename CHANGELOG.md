@@ -14,6 +14,21 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Added
 
+- Windows CI: the test job now runs on Linux **and Windows** across Python
+  3.11–3.13. The package always carried deliberate Windows code paths
+  (drive-root guard, fcntl fallback, path-case handling) that no automated
+  test had ever executed. Three tests gained platform guards to make the
+  matrix green (POSIX permission bits, the macOS symlinked-`/etc` check, and
+  a case-sensitivity assertion that inverts on NTFS by design); the platform
+  support statement is now explicit: an `Operating System :: OS Independent`
+  classifier and a README line (Linux, macOS, Windows — CI-tested on Linux
+  and Windows).
+- CI installs `charset-normalizer`, so the `encoding` extra's real detection
+  path is finally exercised by the test suite — an upstream API change would
+  previously have first surfaced as a crash on users' machines.
+- `scripts/` is now covered by ruff and mypy strict in CI and `make lint`
+  (the release-gating audit script was held to a lower bar than the package
+  and had accumulated two lint errors and missing annotations, now fixed).
 - PyPI sidebar links: `[project.urls]` now declares Issues, Changelog, and
   Documentation alongside Repository.
 - The wheel audit gate (`scripts/audit_wheel.py`) now also fails when `dist/`
@@ -47,6 +62,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   `--scan-json`, so a staged `credentials.json` with real secrets passed the
   pre-commit gate with a false all-clear. Lockfiles (`package-lock.json`)
   remain excluded either way, matching the directory walk.
+- Git subprocess output is now decoded as UTF-8 explicitly (`--staged` listing,
+  rev-parse, `--scan-history` log). On Windows the default decode uses the
+  ANSI code page, which mojibakes non-ASCII staged filenames — the follow-up
+  `git show` then fails and a staged secret in such a file landed in the
+  error list instead of being scanned. History-scan decoding additionally
+  degrades stray non-UTF-8 bytes to U+FFFD instead of crashing.
 - README links now use absolute GitHub URLs. The README is the PyPI landing
   page, and its relative links (Docs table, Manual, CI guide, LICENSE)
   resolved against pypi.org and returned 404s on the live project page.
@@ -64,6 +85,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- CI now runs on the `develop` branch (push and pull request), where
+  day-to-day work happens — previously only `main` was checked, so commits
+  landed on the integration branch with zero automated verification.
+- `make lint` runs the type checker as well as ruff, matching what CI
+  enforces; CONTRIBUTING's checks section was aligned, and its Code Style
+  section no longer claims the code is "Formatted with Ruff" (no
+  auto-formatter is used — the codebase is linted, not formatted).
 - The version is now single-sourced from `credactor.__version__` (pyproject
   declares `dynamic = ["version"]`), so pip metadata and `credactor --version`
   cannot drift apart on a release bump.

@@ -2,20 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
   actions: read
   security-events: write
 
+# One run per ref: a PR from develop to main would otherwise run the full
+# matrix twice per commit (push + pull_request), and stacked pushes would
+# leave stale runs burning Windows runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # windows-latest: the package has deliberate Windows code paths
+        # (drive-root guard, fcntl fallback, path-case handling) that were
+        # never executed by CI before.
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
@@ -29,10 +40,10 @@ jobs:
         run: pip install --require-hashes -r requirements-ci.txt
 
       - name: Lint
-        run: ruff check credactor/ tests/
+        run: ruff check credactor/ tests/ scripts/
 
       - name: Type check
-        run: mypy credactor/
+        run: mypy credactor/ scripts/
 
       - name: Test
         run: pytest tests/ -v

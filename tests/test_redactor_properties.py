@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import random
 import string
+import sys
 
 import pytest
 
@@ -84,6 +85,8 @@ def test_no_temp_leak(tmp_path, name, tmpl):
     assert leaks == []
 
 
+@pytest.mark.skipif(sys.platform == 'win32',
+                    reason='POSIX permission bits are not honoured on Windows')
 def test_permissions_preserved(tmp_path):
     """#5b — original file mode is restored after redaction."""
     p = tmp_path / 'perm.py'

@@ -7,6 +7,10 @@ build
 # the same hash pinning as everything else (an isolated build would download
 # setuptools fresh and unpinned at publish time). >=77 per build-system.requires.
 setuptools>=77
+# Exercise the 'encoding' extra in CI: detect_encoding's charset_normalizer
+# path is otherwise never executed by any automated test, so an upstream API
+# change would first surface as a crash on users' machines.
+charset-normalizer>=3.0
 pytest>=8.0
 ruff>=0.5
 mypy>=1.10

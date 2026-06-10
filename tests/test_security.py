@@ -44,6 +44,8 @@ class TestPathContainment:
     def test_unrelated_path_blocked(self):
         assert not is_within_root('/etc/passwd', '/tmp/repo/')
 
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='normcase folds case on Windows by design (NTFS)')
     def test_case_differs_treated_as_distinct_on_case_sensitive_fs(self):
         """On Linux, paths differing only in case are distinct — not within root."""
         assert not is_within_root('/tmp/REPO/file.py', '/tmp/repo/')

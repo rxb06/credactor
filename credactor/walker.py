@@ -232,9 +232,12 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
     which the caller may ignore)."""
     sub = '--show-toplevel' if want_toplevel else '--git-dir'
     try:
+        # encoding='utf-8': git emits UTF-8; bare text=True would decode with
+        # the ANSI code page on Windows and mojibake non-ASCII paths.
         probe = subprocess.run(
             ['git', 'rev-parse', sub],
-            capture_output=True, text=True, cwd=root, timeout=_GIT_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8',
+            cwd=root, timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
@@ -261,9 +264,15 @@ def scan_staged_files(
     # tree, hence want_toplevel.
     toplevel = Path(_require_git_repo(str(root_path), want_toplevel=True))
     try:
+        # encoding='utf-8': -z emits raw UTF-8 path bytes; bare text=True would
+        # decode them with the ANSI code page on Windows, mojibake any
+        # non-ASCII staged filename, and the later `git show :<path>` would
+        # fail — a staged secret in that file would land in errored_files
+        # instead of being scanned.
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8',
+            cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         # rev-parse already proved git is usable; a diff failure here is a
@@ -368,10 +377,14 @@ def scan_git_history(
     # that stays a non-fatal empty result. See _require_git_repo.
     _require_git_repo(str(root_path))
     try:
+        # encoding='utf-8' + errors='replace': pin the decode so Windows's
+        # ANSI code page can't mojibake paths, and a stray non-UTF-8 byte in
+        # historical diff content degrades to U+FFFD instead of crashing.
         result = subprocess.run(
             ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
              '--no-color', '--format=commit %H'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
         )
         if result.returncode != 0:
             # e.g. a valid repo with no commits yet — nothing to scan, not fatal.

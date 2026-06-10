@@ -38,7 +38,8 @@ db_password = os.environ["DB_PASSWORD"]
 pip install credactor
 ```
 
-Requires Python 3.11+. No other dependencies.
+Requires Python 3.11+. No other dependencies. Runs on Linux, macOS, and
+Windows (CI-tested on Linux and Windows).
 
 From source:
 
