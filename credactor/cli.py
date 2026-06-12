@@ -326,6 +326,16 @@ def _validate_invocation(config: Config) -> None:
         if not config.dry_run:
             config.dry_run = True
 
+    if config.dry_run and config.fix_all and not config.staged_only and not config.scan_history:
+        # --staged/--scan-history warn about an ignored --fix-all below and
+        # --ci rejects it above; the plain combination was the only one that
+        # preferred dry-run silently. dry-run winning is the safe outcome —
+        # this is consistency of signal, not a behaviour change.
+        logger.warning(
+            '--dry-run takes precedence; ignoring --fix-all — no files will '
+            'be modified.',
+        )
+
     if config.staged_only:
         # M7: --staged is documented read-only (pre-commit hook use), so force
         # dry-run — a staged scan never rewrites the working tree out from under

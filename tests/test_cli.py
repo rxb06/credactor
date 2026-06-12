@@ -139,6 +139,29 @@ class TestMainExitCodes:
             main(['--format', 'sarif', tmp_dir])
         assert exc_info.value.code == 0
 
+    def test_dry_run_fix_all_warns_and_modifies_nothing(self, make_file, credactor_caplog):
+        # --dry-run winning IS the safe outcome, but silently ignoring
+        # --fix-all was inconsistent: --staged/--scan-history warn on the
+        # same combination and --ci rejects it outright.
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'  # credactor:ignore
+        path = make_file('secret.py', f'aws_key = "{key}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+        with open(path) as f:
+            assert key in f.read()
+        assert not os.path.exists(path + '.bak')
+        assert any('--dry-run takes precedence' in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_staged_dry_run_fix_all_warns_once_via_staged_only(self, credactor_caplog):
+        # The staged message already covers the ignored --fix-all; the
+        # generic precedence warning must not double up on top of it.
+        _validate_invocation(Config(staged_only=True, dry_run=True, fix_all=True))
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any('--staged is read-only' in m for m in msgs)
+        assert not any('--dry-run takes precedence' in m for m in msgs)
+
     def test_missing_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
         # An explicit --config that doesn't exist must be fatal: silently
         # scanning at default sensitivity would drop every intended setting

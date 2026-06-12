@@ -532,6 +532,7 @@ Verified rules:
 |-------------|--------|
 | `--ci` (any) | forces `--dry-run`; no prompts |
 | `--ci --fix-all` | **rejected, exit 2** (CI is read-only) |
+| `--dry-run --fix-all` | dry-run wins; `--fix-all` is ignored (warned), nothing modified |
 | `--staged` (any) | forces dry-run; `--fix-all` is ignored (warned), file not modified |
 | `--staged --ci` | read-only gate over staged files |
 | `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |

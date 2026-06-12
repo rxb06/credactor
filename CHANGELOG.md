@@ -57,6 +57,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- `--dry-run --fix-all` now warns that dry-run takes precedence and
+  `--fix-all` is ignored. The combination already behaved safely (report
+  only, nothing modified) but did so silently, while the equivalent
+  `--staged`/`--scan-history` combinations warn and `--ci --fix-all` is
+  rejected — the signal is now consistent across all four.
 - The post-redaction "SECURITY: .bak backup files contain original
   credentials in PLAINTEXT" footer now reflects the backup mode. It printed
   unconditionally — under `--no-backup` it warned about files that never
