@@ -13,7 +13,7 @@ from credactor.cli import main
 from credactor.config import Config, apply_config_file, load_config_file
 from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
-from credactor.scanner import _is_safe_value
+from credactor.scanner import _is_safe_value, scan_file
 from credactor.suppressions import AllowList
 from credactor.utils import detect_encoding, is_within_root
 from credactor.walker import walk_and_scan
@@ -641,12 +641,85 @@ class TestUnconfirmedEncodingWarns:
         decoded = p.read_bytes().decode(enc)
         assert 'db_password' in decoded
 
-    def test_utf16_falls_back_to_latin1_and_warns(
-        self, tmp_path, monkeypatch, credactor_caplog
+    def test_bomless_utf16le_detected_without_detectors(
+        self, tmp_path, monkeypatch
+    ):
+        # NUL-interleaved ASCII is *valid UTF-8*, so the no-detector heuristic
+        # claimed utf-8 and the secret decoded to NUL-riddled text no pattern
+        # could match — silently, despite the manual promising a WARN. NULs
+        # confined to one byte parity are the UTF-16 byte-order signature.
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'utf16le.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le'))
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')
+        assert 'aws_key' in p.read_bytes().decode(enc)
+
+    def test_bomless_utf16be_detected_without_detectors(
+        self, tmp_path, monkeypatch
     ):
         self._no_detectors(monkeypatch)
+        p = tmp_path / 'utf16be.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-be'))
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')
+        assert 'aws_key' in p.read_bytes().decode(enc)
+
+    def test_utf16_secret_found_end_to_end_without_detectors(
+        self, tmp_path, monkeypatch
+    ):
+        # The full scan path: a BOM-less UTF-16LE secret must produce a
+        # finding on a stock install (no encoding extra).
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'cfg.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le'))
+
+        findings = scan_file(str(p), config=Config(no_color=True))
+
+        assert [f for f in findings if f['type'] == 'pattern:AWS access key']
+
+    def test_truncated_utf16_is_errored_not_crash(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        # An odd-length BOM-less UTF-16LE file decodes as utf-16-le until the
+        # incomplete final unit raises mid-stream. That must follow the
+        # unreadable-file contract (warning + errored, --fail-on-error exit
+        # 2), never a traceback and never a silent clean exit 0.
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'trunc.py'
+        data = 'aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1]
+        p.write_bytes(data)
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--fail-on-error', str(tmp_path)])
+
+        assert exc.value.code == 2
+        assert any('trunc.py' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_truncated_utf16_single_file_target_no_crash(
+        self, tmp_path, monkeypatch
+    ):
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'trunc.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1])
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', str(p)])
+
+        assert exc.value.code == 0  # errored-but-warned, not found, not fatal
+
+    def test_utf32_falls_back_to_latin1_and_warns(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        # UTF-32 has NULs at both byte parities, so it fails the UTF-16
+        # signature and must keep taking the loud latin-1 fallback.
+        self._no_detectors(monkeypatch)
         p = tmp_path / 'config.env'
-        p.write_bytes('API_KEY="AKIAZ7XK4PQR2WNDLMT3"\n'.encode('utf-16'))
+        p.write_bytes('API_KEY="AKIAZ7XK4PQR2WNDLMT3"\n'.encode('utf-32'))
 
         enc = detect_encoding(str(p))
 

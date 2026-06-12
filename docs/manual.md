@@ -290,13 +290,17 @@ journaling filesystems.
   full secret never appears in text, JSON, or SARIF.
 - **Symlink boundary** — a file symlink resolving outside the scan root is
   skipped.
-- **Encoding** — UTF-8 (including BOM) and Latin-1 work out of the box. ⚠ Other
-  encodings (e.g. UTF-16) need the optional `charset-normalizer` / `chardet`
-  extra (`pip install 'credactor[encoding]'`). Without it such a file is read as
-  Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
-  whenever it cannot confirm a file's encoding and falls back to Latin-1, so the
-  miss is not silent. Install the extra for reliable detection on a non-UTF-8
-  codebase.
+- **Encoding** — UTF-8 (including BOM), Latin-1, and UTF-16 with an
+  ASCII-dominant payload (with or without BOM — recognised by its NUL
+  byte-parity signature) work out of the box. ⚠ Other encodings (e.g. UTF-32,
+  mixed-script UTF-16) need the optional `charset-normalizer` / `chardet`
+  extra (`pip install 'credactor[encoding]'`). Without it such a file is read
+  as Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
+  whenever it cannot confirm a file's encoding and falls back to Latin-1, so
+  the miss is not silent. A file whose detected multibyte encoding fails to
+  decode mid-stream (e.g. truncated UTF-16) is treated as unreadable: warned,
+  counted for `--fail-on-error`, never a silent all-clear. Install the extra
+  for reliable detection on a non-UTF-8 codebase.
 
 ---
 
@@ -580,7 +584,7 @@ detail; these are the behaviours most likely to surprise.)
   before pattern matching — a secret past that column (e.g. at the end of a
   minified one-liner) is not detected. A `[WARN]` names every affected file;
   the warning also fires for staged blobs and history scans.
-- **UTF-8 / Latin-1 only by default.** Other encodings (UTF-16, …) require the
-  optional `charset-normalizer` / `chardet` extra; without it such files are read
-  as Latin-1 and their secrets can be missed (Credactor prints a `[WARN]` when it
-  falls back to Latin-1).
+- **UTF-8 / Latin-1 / ASCII-payload UTF-16 by default.** Other encodings
+  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer` /
+  `chardet` extra; without it such files are read as Latin-1 and their secrets
+  can be missed (Credactor prints a `[WARN]` when it falls back to Latin-1).

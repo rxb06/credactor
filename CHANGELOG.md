@@ -57,6 +57,21 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- BOM-less UTF-16 files are no longer a *silent* miss on stock installs —
+  they are now detected and scanned. NUL-interleaved ASCII (exactly what
+  BOM-less UTF-16 with an ASCII payload is) is valid UTF-8, so the
+  no-detector heuristic claimed `utf-8`, the secrets dissolved into
+  NUL-riddled text no pattern can match, and the `[WARN]` the manual
+  promises never fired — `--fail-on-error` passed too. NULs confined to one
+  byte parity are now recognised as the UTF-16 byte-order signature (both
+  endiannesses, BOM or not); other NUL-bearing content (UTF-32, stray NULs)
+  keeps the loud Latin-1 fallback. With the `[encoding]` extra installed
+  nothing changes (charset-normalizer already answered correctly). A
+  truncated UTF-16 file that fails mid-decode now follows the
+  unreadable-file contract (warning, `--fail-on-error` exit 2) instead of
+  crashing the single-file/`--scan-json` paths. **Note on upgrade:** repos
+  with real secrets in UTF-16 files will newly flag — a false-negative
+  converted to a true positive.
 - `min_value_length` no longer gates deterministic critical patterns. The
   PEM-header exemption is now keyed on severity, so AWS/GitHub/Stripe/…
   provider tokens — whose regexes pin their own length — are found even at

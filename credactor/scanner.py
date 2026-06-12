@@ -245,8 +245,9 @@ def _evaluate_candidate(
     Order (identical across all scan passes): safe-value heuristic -> minimum
     length -> entropy floor -> allowlist. The ``floor > 0`` short-circuit is
     load-bearing: VALUE_PATTERNS provider keys pass ``floor=0.0`` and must NOT
-    acquire an entropy gate. ``allow_short`` skips the length check (deterministic
-    critical-severity patterns, whose regexes pin their own length). ``safe_values`` is the pre-merged safe set (#34).
+    acquire an entropy gate. ``allow_short`` skips the length check
+    (deterministic critical-severity patterns, whose regexes pin their own
+    length). ``safe_values`` is the pre-merged safe set (#34).
     """
     if _is_safe_value(val, safe_values=safe_values, skip_dotted_access=skip_dotted_access):
         logger.debug('%s:%d suppressed by safe value heuristic', filepath, lineno)

@@ -517,7 +517,10 @@ def _collect_findings(
     if Path(target).is_file():
         try:
             return scan_file(target, config=config, allowlist=allowlist), []
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a confidently-detected multibyte encoding
+            # (e.g. truncated UTF-16) that fails mid-stream is an unreadable
+            # file, not a crash — same errored-files contract as OSError.
             logger.warning('Cannot read %s: %s', target, exc)
             return [], [target]
 
@@ -541,7 +544,7 @@ def _collect_findings(
         for path in json_files:
             try:
                 findings.extend(scan_file(path, config=config, allowlist=allowlist))
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 logger.warning('Cannot read %s: %s', path, exc)
                 errored_files.append(path)
 
