@@ -497,6 +497,31 @@ class TestSummaryBackupFooter:
         out = capsys.readouterr().out
         assert 'SECURITY: .bak' in out
 
+    def test_interrupt_under_secure_delete_does_not_claim_baks_exist(
+            self, make_file, monkeypatch, capsys):
+        # The Ctrl-C path said '.bak backups exist for modified files.' even
+        # under --secure-delete, which wipes each .bak right after its
+        # replacement — pointing an interrupted user at a recovery artifact
+        # that is not there.
+        p1 = make_file('a.py', f'api_key = "{_AWS_KEY}"\n')
+        p2 = make_file('b.py', f'api_key = "{_AWS_KEY}"\n')
+        answers = iter(['y', KeyboardInterrupt])
+
+        def fake_input(*a):
+            v = next(answers)
+            if v is KeyboardInterrupt:
+                raise KeyboardInterrupt
+            return v
+
+        monkeypatch.setattr('builtins.input', fake_input)
+        interactive_review(
+            [_mk_finding(p1, _AWS_KEY), _mk_finding(p2, _AWS_KEY)],
+            os.path.dirname(p1), Config(no_backup=False, secure_delete=True))
+        out = capsys.readouterr().out
+        assert 'Interrupted' in out
+        assert '.bak backups exist' not in out
+        assert not os.path.exists(p1 + '.bak')
+
 
 class TestFixAllSummary:
     """#8: fix_all must report write/lookup FAILURES as 'failed', not 'skipped'."""

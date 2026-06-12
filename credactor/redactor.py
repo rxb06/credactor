@@ -479,7 +479,10 @@ def interactive_review(
             except (KeyboardInterrupt, EOFError):
                 print(f'\n\n  Interrupted — {replaced} replacement(s) already '
                       f'applied. No further changes will be made.')
-                if replaced and not config.no_backup:
+                if replaced and not config.no_backup and not config.secure_delete:
+                    # Same invariant as the summary footer: under
+                    # --secure-delete each .bak was wiped after its
+                    # replacement, so there is nothing to point at.
                     print('  .bak backups exist for modified files.')
                 _print_summary(replaced, skipped, total, config)
                 return total - replaced
