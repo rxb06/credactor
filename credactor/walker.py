@@ -24,7 +24,7 @@ from .scanner import (
 )
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root
+from .utils import is_within_root, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -304,7 +304,18 @@ def scan_staged_files(
         # path: without it, CRLF blobs leak literal \r into multiline raw
         # previews and lone-\r endings break the multiline pass's \n-based
         # line numbering.
-        content = blob.stdout.decode('utf-8', errors='surrogateescape')
+        # UTF-16 parity: the working-tree path detects NUL-interleaved blobs
+        # via detect_encoding; the staged blob must match or a UTF-16 secret
+        # passes the pre-commit gate that the tree scan flags.
+        raw = blob.stdout
+        try:
+            content = raw.decode(utf16_variant(raw) or 'utf-8',
+                                 errors='surrogateescape')
+        except UnicodeDecodeError:
+            # Truncated UTF-16 blob: never crash a pre-commit hook — keep the
+            # historical utf-8 reading (lossy for this blob, but loud is the
+            # working-tree scan's job; the hook must stay usable).
+            content = raw.decode('utf-8', errors='surrogateescape')
         content = content.replace('\r\n', '\n').replace('\r', '\n')
         findings.extend(scan_lines(full_path, content.splitlines(keepends=True),
                                    config=config, allowlist=allowlist))

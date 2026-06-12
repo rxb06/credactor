@@ -43,6 +43,27 @@ def entropy(s: str) -> float:
     return -sum((f / n) * math.log2(f / n) for f in Counter(s).values())
 
 
+def utf16_variant(raw: bytes) -> str | None:
+    """Return ``'utf-16-le'``/``'utf-16-be'`` when *raw* carries the UTF-16
+    byte-order signature — NULs confined to one byte parity — else ``None``.
+
+    Genuine text never contains NUL, yet NUL-interleaved ASCII (BOM-less
+    UTF-16 with an ASCII-dominant payload) is *valid UTF-8*, so any UTF-8
+    probe must run this check first or the secrets dissolve into NUL-riddled
+    text no pattern can match. Shared by ``detect_encoding`` and the staged
+    blob decode so working-tree and ``--staged`` scans cannot drift.
+    """
+    if b'\x00' not in raw:
+        return None
+    nul_even = raw[::2].count(0)
+    nul_odd = raw[1::2].count(0)
+    if nul_even == 0 and nul_odd > len(raw) // 4:
+        return 'utf-16-le'
+    if nul_odd == 0 and nul_even > len(raw) // 4:
+        return 'utf-16-be'
+    return None
+
+
 def detect_encoding(filepath: str) -> str:
     """Detect the encoding of a file, falling back to utf-8.
 
@@ -82,23 +103,13 @@ def detect_encoding(filepath: str) -> str:
         if det and det.get('encoding') and det.get('confidence', 0) > 0.7:
             return str(det['encoding'])
 
-    if b'\x00' in raw:
-        # Genuine text never contains NUL (the fast path above relies on the
-        # same invariant), yet NUL-interleaved ASCII — BOM-less UTF-16 with
-        # an ASCII-dominant payload — is *valid UTF-8*, so the decode below
-        # would claim utf-8 and every secret would dissolve into NUL-riddled
-        # text no pattern can match, silently. NULs confined to one byte
-        # parity are the UTF-16 byte-order signature; any other NUL-bearing
-        # content (UTF-32, stray NULs) falls through to the loud latin-1
-        # fallback.
-        nul_even = raw[::2].count(0)
-        nul_odd = raw[1::2].count(0)
-        if nul_even == 0 and nul_odd > len(raw) // 4:
-            return 'utf-16-le'
-        if nul_odd == 0 and nul_even > len(raw) // 4:
-            return 'utf-16-be'
-    else:
-        # Heuristic: try to decode as utf-8
+    variant = utf16_variant(raw)
+    if variant:
+        return variant
+    if b'\x00' not in raw:
+        # Heuristic: try to decode as utf-8 — but only for NUL-free bytes.
+        # NUL-bearing content that isn't UTF-16 (UTF-32, stray NULs) must
+        # fall through to the loud latin-1 fallback, never claim utf-8.
         try:
             raw.decode('utf-8')
             return 'utf-8'

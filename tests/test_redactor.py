@@ -458,6 +458,22 @@ class TestEnvRefForLanguage:
         assert _env_ref_for_language('API_KEY', '.go') == 'os.Getenv("API_KEY")'
 
 
+class TestUnreadableFileFailsAlone:
+    """A read failure (incl. UnicodeDecodeError from a truncated multibyte
+    encoding) must fail THAT file only — an ingested finding pointing at a
+    corrupt UTF-16 file previously aborted the whole redaction run."""
+
+    def test_truncated_utf16_counts_failed_not_crash(self, tmp_dir, monkeypatch):
+        monkeypatch.setattr('credactor.utils.charset_normalizer', None)
+        monkeypatch.setattr('credactor.utils.chardet', None)
+        path = os.path.join(tmp_dir, 'trunc.py')
+        with open(path, 'wb') as f:
+            f.write(f'aws_key = "{_AWS_KEY}"\n'.encode('utf-16-le')[:-1])
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True))
+        assert (replaced, failed) == (0, 1)
+
+
 class TestSummaryBackupFooter:
     """The plaintext-.bak SECURITY footer must reflect the backup mode: under
     --no-backup no .bak ever exists, and --secure-delete wipes it — telling

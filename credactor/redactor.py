@@ -315,7 +315,11 @@ def batch_replace_in_file(
             # redaction never normalizes line endings on untouched lines.
             with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
                 lines = fh.readlines()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a detected multibyte encoding (e.g.
+            # truncated UTF-16) failing mid-stream must fail THIS file only —
+            # an ingested finding pointing at such a file previously aborted
+            # the whole redaction run mid-loop.
             logger.error('Cannot read %s: %s', filepath, exc)
             return 0, len(file_findings)
 

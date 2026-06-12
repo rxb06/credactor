@@ -197,8 +197,12 @@ class TestCredVarPatterns:
         'database_url', 'db_conn_string',
         # bare `token` is in the manual's verified high-tier examples
         'token', 'TOKEN',
-        # hyphen-delimited keys are word-boundary-visible (k8s/YAML manifests)
-        'vault-token',
+        # hyphen-delimited keys are word-boundary-visible (k8s/YAML
+        # manifests): vault/session/id tokens are genuine secrets —
+        # fail-closed. Kebab pagination cursors ride along as an ACCEPTED
+        # false-positive tradeoff (suppressible); pinned here so the
+        # behaviour is deliberate, not accidental.
+        'vault-token', 'session-token', 'next-page-token',
         # prefixed api_key forms: \b cannot match after '_', so these need
         # the explicit prefix alternative (manual: "a real secret in a
         # variable merely named test_api_key is still flagged")

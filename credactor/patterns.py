@@ -125,9 +125,13 @@ CRED_VAR_PATTERNS = re.compile(
     r'webhook[_\-]?secret|bot[_\-]?token|'
     r'consumer[_\-]?key|consumer[_\-]?secret|'
     # bare `token` last: a literal alternative only — \b cannot match after
-    # '_' or inside camelCase, so csrf_token / next_page_token / pageToken /
-    # max_tokens stay unmatched (a prefix-tolerant variant would drag
-    # pagination cursors into HIGH; rejected, see tests)
+    # '_' or inside camelCase, so snake/camel compounds (csrf_token,
+    # next_page_token, pageToken, max_tokens) stay unmatched; a
+    # prefix-tolerant variant that would catch them was rejected. \b DOES
+    # match after '-'/'.' though, so kebab keys flag: vault-token /
+    # session-token / id-token are genuine secrets (fail-closed), at the
+    # accepted cost that kebab cursors (next-page-token:) with high-entropy
+    # values flag too — suppressible via the usual mechanisms; see tests.
     r'refresh[_\-]?token|oauth[_\-]?token|token'
     r')\b',
     re.IGNORECASE,

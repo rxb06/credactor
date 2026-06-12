@@ -358,6 +358,34 @@ class TestStagedScanning:
                        capture_output=True)
         return key
 
+    def test_staged_utf16_blob_scanned(self, tmp_dir):
+        # Staged/working-tree parity for UTF-16: the tree path detects
+        # NUL-interleaved files via detect_encoding, so the staged blob
+        # decode must too — or a UTF-16 secret sails through the pre-commit
+        # gate that the tree scan flags.
+        repo = self._init_repo(tmp_dir)
+        path = os.path.join(repo, 'u16.py')
+        with open(path, 'wb') as f:
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
+                    .encode('utf-16-le'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert [f for f in findings if f['type'] == 'variable:secret_key']
+
+    def test_staged_truncated_utf16_blob_no_crash(self, tmp_dir):
+        # A truncated UTF-16 blob must never crash the pre-commit hook —
+        # it falls back to the historical utf-8 reading.
+        repo = self._init_repo(tmp_dir)
+        path = os.path.join(repo, 'trunc.py')
+        with open(path, 'wb') as f:
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
+                    .encode('utf-16-le')[:-1])
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        # No exception is the contract; finding presence is not promised.
+
     def test_staged_json_scanned_with_scan_json(self, tmp_dir):
         # A staged .json secret must be caught when --scan-json is set — the
         # staged path previously never consulted config.scan_json at all.
