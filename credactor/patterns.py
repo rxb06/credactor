@@ -120,7 +120,11 @@ CRED_VAR_PATTERNS = re.compile(
     r'smtp[_\-]?password|mail[_\-]?password|'
     r'webhook[_\-]?secret|bot[_\-]?token|'
     r'consumer[_\-]?key|consumer[_\-]?secret|'
-    r'refresh[_\-]?token|oauth[_\-]?token'
+    # bare `token` last: a literal alternative only — \b cannot match after
+    # '_' or inside camelCase, so csrf_token / next_page_token / pageToken /
+    # max_tokens stay unmatched (a prefix-tolerant variant would drag
+    # pagination cursors into HIGH; rejected, see tests)
+    r'refresh[_\-]?token|oauth[_\-]?token|token'
     r')\b',
     re.IGNORECASE,
 )

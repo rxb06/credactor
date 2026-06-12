@@ -17,6 +17,30 @@ from credactor.scanner import (
 )
 
 
+class TestBareTokenVariable:
+    """The manual's high tier lists bare `token = …` as a verified example;
+    the variable regex had every prefixed form but not `token` itself."""
+
+    def test_bare_token_high_entropy_flags_high(self):
+        findings = scan_line(1, 'token = "x9Kp2mQv8rT4wYbN7jHs3fLd6gZc1aEu"',
+                             'a.py', config=Config(no_color=True))
+        assert len(findings) == 1
+        assert findings[0]['type'] == 'variable:token'
+        assert findings[0]['severity'] == 'high'
+
+    def test_bare_token_placeholder_stays_clean(self):
+        findings = scan_line(1, 'token = "xxxxxxxx"', 'a.py',
+                             config=Config(no_color=True))
+        assert findings == []
+
+    def test_unquoted_vault_token_env_ref_clean(self):
+        # Dependency guard on the ${VAR} capture fix: without it, this line
+        # would have become a fresh HIGH FP the moment bare `token` landed.
+        findings = scan_line(1, 'token: ${VAULT_TOKEN}', 'config.yml',
+                             config=Config(no_color=True))
+        assert findings == []
+
+
 class TestEnvInterpolationUnquoted:
     """An unquoted, complete ${VAR} is a runtime reference (the standard
     docker-compose/CI idiom), not a hardcoded secret — while unclosed and

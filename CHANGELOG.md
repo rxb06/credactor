@@ -57,6 +57,19 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- Bare `token = "<value>"` is now detected (high severity), as the manual's
+  severity table has always claimed. The variable-name detector carried
+  every prefixed form (`api_token`, `auth_token`, `bot_token`, …) but not
+  `token` itself, so a file whose only secret sat on a bare `token`
+  assignment scanned clean with exit 0. The addition is deliberately a
+  literal alternative: word boundaries cannot match after `_` or inside
+  camelCase, so `csrf_token`, `next_page_token`, `pageToken`, `max_tokens`,
+  `token_count` and `tokenizer` stay unmatched (pinned by tests — a
+  prefix-tolerant variant would have dragged pagination cursors into HIGH).
+  Hyphen/dot-delimited keys (`vault-token:` in k8s manifests) holding
+  hardcoded high-entropy values now flag, which is the fail-closed
+  direction; placeholder fixtures remain suppressible via the existing
+  `.credactorignore` / `extra_safe_values` / inline mechanisms.
 - Unquoted `password: ${DB_PASSWORD}` — the standard docker-compose/CI
   idiom — is no longer flagged. The unquoted-value capture stopped at `}`,
   so the safe-value check saw an *unclosed* `${DB_PASSWORD` and treated it

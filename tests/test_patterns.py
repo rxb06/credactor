@@ -195,6 +195,10 @@ class TestCredVarPatterns:
         'client_secret', 'secret_key', 'private_key',
         'webhook_secret', 'bot_token',
         'database_url', 'db_conn_string',
+        # bare `token` is in the manual's verified high-tier examples
+        'token', 'TOKEN',
+        # hyphen-delimited keys are word-boundary-visible (k8s/YAML manifests)
+        'vault-token',
     ])
     def test_matches(self, name):
         assert CRED_VAR_PATTERNS.search(name)
@@ -202,6 +206,12 @@ class TestCredVarPatterns:
     @pytest.mark.parametrize('name', [
         'username', 'email', 'name', 'description',
         'is_active', 'count', 'filepath',
+        # \b cannot match after '_' or inside camelCase: the bare `token`
+        # alternative must NOT drag in compound names — especially
+        # pagination cursors, whose opaque high-entropy values would
+        # otherwise become a standing FP source.
+        'csrf_token', 'next_page_token', 'pageToken', 'max_tokens',
+        'token_count', 'tokenizer',
     ])
     def test_no_match(self, name):
         assert not CRED_VAR_PATTERNS.search(name)
