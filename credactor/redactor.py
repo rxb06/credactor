@@ -328,11 +328,12 @@ def _sweep_stray_copies(
     preserved: set[int],
     filepath: str,
 ) -> None:
-    """Clear remaining exact copies of redacted values on UNREPORTED lines.
+    """Clear remaining exact copies of redacted values beyond the
+    adjudicated findings.
 
     The per-finding replace handles one occurrence each, but the same secret
-    literal can survive on lines no finding cited — a trailing comment, a
-    second non-credential variable, or (the common case) a detector that
+    literal can survive — a second occurrence on the finding's own line, a
+    trailing comment elsewhere, or (the common case) a detector that
     DEDUPLICATED repeated copies and reported the value only once. Lines in
     ``preserved`` (1-based) are never touched: they belong to known findings
     whose own adjudication — an explicit interactive skip, a pending prompt,

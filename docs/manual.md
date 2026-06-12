@@ -243,7 +243,10 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   including any copy of a *different* redacted value on it (recoverable from
   the `.bak`) — and the `replaced/skipped` summary always matches the file
   state. Two same-value findings on one line are prompted **once**; the
-  answer covers every occurrence there.
+  answer covers every occurrence there. One edge: when a line carries both a
+  skipped and an approved finding, the approval releases the line for the
+  sweep of *approved* values (disclosed by the `[WARN]`) — the skipped
+  finding's own value is never cleared.
 
 ---
 

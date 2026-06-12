@@ -569,6 +569,25 @@ class TestSweepRespectsAdjudication:
         with open(path) as fh:
             assert _AWS_KEY not in fh.read()
 
+    def test_same_line_same_value_single_n_keeps_both(
+            self, make_file, monkeypatch, capsys):
+        # The other branch of the dedupe contract: one 'n' keeps every
+        # occurrence on the line.
+        content = f'password = "{_AWS_KEY}"; token = "{_AWS_KEY}"\n'
+        path = make_file('twin_n.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _AWS_KEY, 'variable:token', line=1),
+        ]
+        answers = iter(['n'])
+        monkeypatch.setattr('builtins.input', lambda *a: next(answers))
+        unresolved = interactive_review(findings, os.path.dirname(path),
+                                        Config(no_backup=True))
+        assert unresolved == 1
+        assert '0 replaced  |  1 skipped  |  1 total' in capsys.readouterr().out
+        with open(path) as fh:
+            assert fh.read().count(_AWS_KEY) == 2
+
     def test_interrupt_preserves_pending_lines_in_final_sweep(
             self, make_file, monkeypatch):
         # Ctrl-C with finding B pending: B's line (holding a copy of approved
