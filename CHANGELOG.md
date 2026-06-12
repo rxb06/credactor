@@ -12,6 +12,21 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ## [Unreleased]
 
+### Changed (behaviour)
+
+- `.txt` files are now scanned by default (previously skipped unless added
+  via `extra_extensions`), in directory walks and `--staged` alike. Notes
+  and scratch files are a classic leak vector — the team's own efficacy
+  benchmark flagged this blind spot — and a measured false-positive corpus
+  (prose, TODO lists, LICENSE text, lorem, meeting notes, robots.txt,
+  CMakeLists.txt, and a 338-hash-pin `requirements.txt`) produced **zero**
+  `.txt`-specific findings: hash pins are protected by the quote-prefix and
+  hash-context guards, a property now pinned by a regression test.
+  Upgrading repos with credential-shaped *example* text in `.txt` notes may
+  see new findings (suppress via `.credactorignore`, e.g. `docs/*.txt`, or
+  `extra_safe_values`). `.md` remains out by default — it is
+  example-credential-dense by convention; use `extra_extensions` to opt in.
+
 ### Added
 
 - Windows CI: the test job now runs on Linux **and Windows** across Python

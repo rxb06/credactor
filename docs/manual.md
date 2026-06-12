@@ -395,7 +395,7 @@ During a directory walk only these extensions are read:
 
 `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini`
 `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl`
-`.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+`.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt` `.txt`
 
 plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`,
 `id_ed25519`). `.json` is read only with `--scan-json` (in directory walks and
@@ -559,9 +559,9 @@ Verified rules:
 detail; these are the behaviours most likely to surprise.)
 
 - **Recognised file types only.** Credactor scans a fixed extension allowlist
-  (code/config types); secrets in unrecognised text types (`.txt`, `.md`, custom)
-  are skipped unless added via `extra_extensions`. General-purpose scanners read
-  every file.
+  (code/config types, plus `.txt` as of 2.5.0); secrets in unrecognised text
+  types (`.md`, custom) are skipped unless added via `extra_extensions`.
+  General-purpose scanners read every file.
 - **False positives are rewritten under `--fix-all`.** Redaction acts on every
   finding, so a non-secret that matches a pattern (a git commit SHA, an example
   key, a format-valid placeholder) is replaced with the sentinel — silently

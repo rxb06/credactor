@@ -111,7 +111,7 @@ credactor --from-gitleaks gitleaks.json --fix-all --yes .
 - Secure backups: `--secure-delete` (overwrite and remove the `.bak`; raises the bar against casual recovery, not a forensic guarantee) or `--secure-backup-dir` to store backups outside the repo
 - Inline `# credactor:ignore` and `.credactorignore` allowlists (globs, `file:line`, value literals)
 - Per-repo config via `.credactor.toml`
-- 28 source/config file types out of the box; `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
+- 29 source/config/notes file types out of the box (`.txt` included); `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
 
 ## Scanned file types
 

@@ -5,6 +5,8 @@ documentation.  They MUST NOT be redacted — add this directory to
 .credactorignore to prevent self-redaction.
 """
 
+import os
+
 import pytest
 
 from credactor.config import Config
@@ -93,6 +95,40 @@ class TestBareTokenVariable:
         # would have become a fresh HIGH FP the moment bare `token` landed.
         findings = scan_line(1, 'token: ${VAULT_TOKEN}', 'config.yml',
                              config=Config(no_color=True))
+        assert findings == []
+
+
+class TestTxtScanning:
+    """.txt is scanned by default as of 2.5.0. The viability of default-on
+    rests on the hash-pin/quote-prefix guards keeping requirements.txt-style
+    content clean — that property is load-bearing and pinned here."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_secret_in_txt_found_in_directory_walk(self, make_file):
+        # Through the walker, not scan_file — a directly-named file always
+        # bypasses the extension list; the walk is what changes here.
+        from credactor.walker import walk_and_scan
+        path = make_file('deploy-notes.txt', f'aws_key = "{self._KEY}"\n')
+        findings, _, _, _ = walk_and_scan(os.path.dirname(path),
+                                          config=Config(no_color=True))
+        assert [f for f in findings if f['type'] == 'pattern:AWS access key']
+
+    def test_hash_pinned_requirements_txt_stays_clean(self, make_file):
+        # The exact shape pip-compile emits: hash pins are 64-char hex —
+        # protected by the quote-prefix guard plus the hash-context rule.
+        h1 = '4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6'
+        h2 = '08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44'
+        h3 = '965370d062bce11e73868e0335abac31b4d3de0e82f4007408d242b4f8610761'
+        content = (
+            f'colorama==0.4.6 \\\n'
+            f'    --hash=sha256:{h1} \\\n'
+            f'    --hash=sha256:{h2}\n'
+            f'pytest==8.3.4 \\\n'
+            f'    --hash=sha256:{h3}\n'
+        )
+        path = make_file('requirements.txt', content)
+        findings = scan_file(path, config=Config(no_color=True))
         assert findings == []
 
 
@@ -390,7 +426,12 @@ class TestRecallCoverage:
 
     def test_public_key_and_unrelated_files_not_scanned(self):
         assert not should_scan_file('id_rsa.pub')
-        assert not should_scan_file('notes.txt')
+        # .txt is scanned by default as of 2.5.0 (measured clean on prose
+        # and hash-pinned requirements; notes files are a real leak vector).
+        assert should_scan_file('notes.txt')
+        # .md stays out: example-credential-dense by convention — this pin
+        # keeps the deferred boundary deliberate and test-visible.
+        assert not should_scan_file('notes.md')
 
     def test_extensionless_private_key_file_detected(self, make_file, config):
         content = ('-----BEGIN RSA PRIVATE KEY-----\n'

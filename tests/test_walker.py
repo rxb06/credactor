@@ -358,6 +358,19 @@ class TestStagedScanning:
                        capture_output=True)
         return key
 
+    def test_staged_txt_scanned(self, tmp_dir):
+        # .txt parity for the pre-commit gate: a staged notes file with a
+        # secret previously passed silently (unlike .json, with no warning).
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = os.path.join(repo, 'notes.txt')
+        with open(path, 'w') as f:
+            f.write(f'prod key: aws_key = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert [f for f in findings if f.get('full_value') == key]
+
     def test_staged_utf16_blob_scanned(self, tmp_dir):
         # Staged/working-tree parity for UTF-16: the tree path detects
         # NUL-interleaved files via detect_encoding, so the staged blob
