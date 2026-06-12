@@ -139,6 +139,22 @@ class TestMainExitCodes:
             main(['--format', 'sarif', tmp_dir])
         assert exc_info.value.code == 0
 
+    def test_missing_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
+        # An explicit --config that doesn't exist must be fatal: silently
+        # scanning at default sensitivity would drop every intended setting
+        # (thresholds, extra_extensions, [ingest]) and can flip a failing
+        # CI gate to a pass via a filename typo.
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', os.path.join(tmp_dir, 'missing.toml'),
+                  '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'Config file not found' in credactor_caplog.text
+
+    def test_directory_as_explicit_config_exits_2(self, tmp_dir):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', tmp_dir, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+
 
 class TestGitleaksFileTargetRejection:
     """--from-gitleaks with a file target must be rejected with exit code 2."""

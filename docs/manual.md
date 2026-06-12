@@ -371,7 +371,8 @@ sensitivity).
 
 Use a specific config file (verified: `--config cfg.toml` with
 `min_value_length = 200` drops findings to 0). An explicit `--config` is honored
-even outside the project root (non-CI).
+even outside the project root (non-CI). A `--config` path that does not exist
+(or is not a file) is a **fatal error, exit 2** — it is never silently ignored.
 
 ### `--scan-json`
 

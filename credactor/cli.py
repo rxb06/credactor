@@ -581,6 +581,12 @@ def _main_inner(argv: list[str] | None = None) -> None:
     target = config.target
     target_resolved_path = _validate_target(target)
 
+    # An explicit --config that doesn't resolve to a file is fatal: silently
+    # falling back to defaults would drop every intended setting (thresholds,
+    # extra_extensions, [ingest]) and can flip a failing gate to a pass via a
+    # filename typo. Implicit discovery finding nothing stays a normal no-op.
+    if config.config_path and not Path(config.config_path).is_file():
+        _fatal('Config file not found: %s', config.config_path)
     file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
     if file_data:
         apply_config_file(config, file_data)

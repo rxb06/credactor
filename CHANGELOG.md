@@ -57,6 +57,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- An explicit `--config` path that does not exist (or is not a file) is now a
+  fatal error (exit 2). It was previously ignored without any message — the
+  scan silently ran at default sensitivity, so a typo'd `--config` in CI could
+  drop `extra_extensions`/threshold settings and flip a failing secret gate to
+  a pass. Scripts that relied on a sometimes-absent config falling back to
+  defaults must now guard the flag themselves.
 - Redaction now clears **every** copy of a secret in a file it rewrites, not
   just the reported occurrence. When a detector deduplicates a value repeated
   on several lines (e.g. TruffleHog reports it once) and that report is ingested,
