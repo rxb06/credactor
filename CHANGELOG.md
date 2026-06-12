@@ -196,10 +196,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   within each touched file, so all such copies go in one pass (verified
   end-to-end: a 4-line duplicated secret → TruffleHog re-scan clean after
   one pass, was four). The sweep never overrides a finding's own
-  adjudication: a copy the user explicitly skipped in interactive review —
-  or one whose replacement failed — keeps its line, so the
-  `replaced/skipped` summary always matches the file state. When the sweep
-  does clear unreported copies, a `[WARN]` states the count. Scope stays
+  adjudication, at line granularity: a copy the user explicitly skipped in
+  interactive review — or one whose replacement failed — keeps its whole
+  line (including copies of other redacted values on it), so the
+  `replaced/skipped` summary always matches the file state; an end-of-review
+  pass then clears approved values from lines whose own findings were also
+  approved. Two same-value findings on one line are prompted once. When the
+  sweep clears additional copies, a `[WARN]` states the count. Scope stays
   bounded to files being rewritten — other files are never opened by the
   sweep, and word-boundary anchoring still protects substrings of larger
   tokens.

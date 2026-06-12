@@ -234,13 +234,16 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   The duplicate-copy sweep also uses the sentinel in env mode, so a single
   env-mode run can legitimately leave a mix of `os.environ[…]` and sentinel
   styles in one file.
-- **The duplicate-copy sweep clears *unreported* copies only.** When a
-  rewritten file still holds exact copies of a redacted value on lines no
-  finding cited (e.g. a detector deduplicated a repeated value), they are
-  cleared in the same pass and a `[WARN]` states how many. A copy that *is*
-  a known finding keeps its own adjudication: answering `n` in interactive
-  review leaves that copy untouched, and the `replaced/skipped` summary
-  always matches the file state.
+- **The duplicate-copy sweep never overrides an adjudication.** When a
+  rewritten file still holds exact copies of a redacted value beyond the
+  adjudicated findings (e.g. a detector deduplicated a repeated value, or a
+  second occurrence sits on the finding's own line), they are cleared in the
+  same pass and a `[WARN]` states how many. Adjudication owns the **line**:
+  answering `n` in interactive review preserves that finding's whole line —
+  including any copy of a *different* redacted value on it (recoverable from
+  the `.bak`) — and the `replaced/skipped` summary always matches the file
+  state. Two same-value findings on one line are prompted **once**; the
+  answer covers every occurrence there.
 
 ---
 

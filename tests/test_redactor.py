@@ -495,9 +495,9 @@ class TestSweepRespectsAdjudication:
         with open(path) as fh:
             assert _AWS_KEY not in fh.read()
         notes = [r for r in credactor_caplog.records
-                 if 'unreported' in r.getMessage()]
+                 if 'value-global sweep' in r.getMessage()]
         assert len(notes) == 1
-        assert '2 unreported' in notes[0].getMessage()
+        assert '2 additional' in notes[0].getMessage()
 
     def test_no_sweep_note_when_nothing_unreported(
             self, make_file, credactor_caplog):
@@ -505,7 +505,110 @@ class TestSweepRespectsAdjudication:
         fix_all([_mk_finding(path, _AWS_KEY, line=1)], os.path.dirname(path),
                 Config(no_backup=True))
         assert not [r for r in credactor_caplog.records
-                    if 'unreported' in r.getMessage()]
+                    if 'value-global sweep' in r.getMessage()]
+
+    def test_all_approved_cross_value_copy_swept(self, make_file, monkeypatch):
+        # Value A approved on line 1; line 2 holds finding B (different
+        # value, also approved) PLUS a bare copy of A. Once B is resolved its
+        # line is no longer owned by a pending adjudication — the approved
+        # A-copy must not silently survive the session (exit 0, no warn).
+        content = (f'password = "{_AWS_KEY}"\n'
+                   f'token = "{_PASSWORD}"  # legacy {_AWS_KEY}\n')
+        path = make_file('cross.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _PASSWORD, 'variable:token', line=2),
+        ]
+        answers = iter(['y', 'y'])
+        monkeypatch.setattr('builtins.input', lambda *a: next(answers))
+        unresolved = interactive_review(findings, os.path.dirname(path),
+                                        Config(no_backup=True))
+        assert unresolved == 0
+        with open(path) as fh:
+            text = fh.read()
+        assert _AWS_KEY not in text
+        assert _PASSWORD not in text
+
+    def test_skipped_line_preserves_other_values_copies(self, make_file, monkeypatch):
+        # Contract pin: adjudication owns the LINE. Skipping finding B
+        # preserves B's line wholesale — including a bare copy of approved
+        # value A sitting on it. The .bak/manual document this boundary.
+        content = (f'password = "{_AWS_KEY}"\n'
+                   f'token = "{_PASSWORD}"  # legacy {_AWS_KEY}\n')
+        path = make_file('skipline.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _PASSWORD, 'variable:token', line=2),
+        ]
+        answers = iter(['y', 'n'])
+        monkeypatch.setattr('builtins.input', lambda *a: next(answers))
+        interactive_review(findings, os.path.dirname(path),
+                           Config(no_backup=True))
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+        assert _AWS_KEY not in lines[0]
+        assert _PASSWORD in lines[1] and _AWS_KEY in lines[1]
+
+    def test_same_line_same_value_single_prompt(self, make_file, monkeypatch, capsys):
+        # Two findings, one line, one value: line-granularity adjudication
+        # cannot represent them separately — they are deduplicated into one
+        # prompt, and a 'y' clears both occurrences / an 'n' keeps both.
+        content = f'password = "{_AWS_KEY}"; token = "{_AWS_KEY}"\n'
+        path = make_file('twin.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _AWS_KEY, 'variable:token', line=1),
+        ]
+        answers = iter(['y'])
+        monkeypatch.setattr('builtins.input', lambda *a: next(answers))
+        unresolved = interactive_review(findings, os.path.dirname(path),
+                                        Config(no_backup=True))
+        assert unresolved == 0
+        out = capsys.readouterr().out
+        assert '1 replaced  |  0 skipped  |  1 total' in out
+        with open(path) as fh:
+            assert _AWS_KEY not in fh.read()
+
+    def test_interrupt_preserves_pending_lines_in_final_sweep(
+            self, make_file, monkeypatch):
+        # Ctrl-C with finding B pending: B's line (holding a copy of approved
+        # value A) stays preserved — pending adjudication owns it.
+        content = (f'password = "{_AWS_KEY}"\n'
+                   f'token = "{_PASSWORD}"  # legacy {_AWS_KEY}\n')
+        path = make_file('intr.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _PASSWORD, 'variable:token', line=2),
+        ]
+        answers = iter(['y', KeyboardInterrupt])
+
+        def fake_input(*a):
+            v = next(answers)
+            if v is KeyboardInterrupt:
+                raise KeyboardInterrupt
+            return v
+
+        monkeypatch.setattr('builtins.input', fake_input)
+        interactive_review(findings, os.path.dirname(path),
+                           Config(no_backup=True))
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+        assert _AWS_KEY not in lines[0]
+        assert _AWS_KEY in lines[1]               # pending line untouched
+
+    def test_fix_all_cross_value_copy_swept(self, make_file):
+        # The batch path has no such hole (one call, full knowledge) — pin it.
+        content = (f'password = "{_AWS_KEY}"\n'
+                   f'token = "{_PASSWORD}"  # legacy {_AWS_KEY}\n')
+        path = make_file('batchcross.py', content)
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _PASSWORD, 'variable:token', line=2),
+        ]
+        fix_all(findings, os.path.dirname(path), Config(no_backup=True))
+        with open(path) as fh:
+            text = fh.read()
+        assert _AWS_KEY not in text and _PASSWORD not in text
 
     def test_failed_finding_line_not_swept(self, make_file):
         # Line 2's own finding fails (value drifted since scan); the line

@@ -265,6 +265,62 @@ def _secure_delete(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 # Batch replacement per file (#14)
 # ---------------------------------------------------------------------------
+def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
+    """Write *lines* via a temp file + ``os.replace`` so a mid-write crash
+    leaves the original intact. Returns False (after logging) on failure."""
+    dir_name = os.path.dirname(filepath) or '.'
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
+        with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
+            fh.writelines(lines)
+        os.replace(tmp_path, filepath)
+        tmp_path = None  # rename succeeded — nothing to clean up
+        return True
+    except OSError as exc:
+        logger.error('Cannot write %s: %s', filepath, exc)
+        return False
+    finally:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+
+
+def _final_file_sweep(
+    filepath: str,
+    approved: list[Finding],
+    preserve_lines: set[int],
+    config: Config,
+) -> None:
+    """End-of-review sweep over one file with the session's full knowledge.
+
+    The per-approval sweeps exclude every other known finding line statically
+    (a prompt may still be pending), so a copy of approved value A sitting on
+    finding B's line survives even after B itself is approved. This pass
+    re-sweeps the file for ALL approved values, preserving only the lines
+    whose findings were skipped, failed, or never adjudicated (interrupt).
+    Changes remain covered by the .bak taken at the first replacement.
+    """
+    try:
+        encoding = detect_encoding(filepath)
+        with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.error('Cannot read %s: %s', filepath, exc)
+        return
+    before = list(lines)
+    _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
+    if lines == before:
+        return
+    try:
+        orig_mode: int | None = os.stat(filepath).st_mode
+    except OSError:
+        orig_mode = None
+    if _write_atomic(filepath, lines, encoding) and orig_mode is not None:
+        with contextlib.suppress(OSError):
+            os.chmod(filepath, orig_mode)
+
+
 def _sweep_stray_copies(
     lines: list[str],
     file_findings: list[Finding],
@@ -308,9 +364,11 @@ def _sweep_stray_copies(
     if stray_count:
         # Default-visible (stderr): the file was modified beyond the
         # adjudicated findings — the summary alone would under-report it.
+        # ("additional", not "unreported": a second occurrence on a finding's
+        # own line is also cleared here.)
         logger.warning(
-            '%s: also cleared %d unreported cop%s of redacted secret(s) on '
-            'lines no finding cited (value-global sweep).',
+            '%s: also cleared %d additional cop%s of redacted value(s) '
+            'beyond the adjudicated finding(s) (value-global sweep).',
             filepath, stray_count, 'y' if stray_count == 1 else 'ies',
         )
 
@@ -429,23 +487,8 @@ def batch_replace_in_file(
                                 set(sweep_exclude_lines) | failed_lines,
                                 filepath)
 
-        # Atomic write: write to temp file, then rename over original.
-        # Prevents corruption if process crashes mid-write.
-        dir_name = os.path.dirname(filepath) or '.'
-        tmp_path: str | None = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
-            with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
-                fh.writelines(lines)
-            os.replace(tmp_path, filepath)
-            tmp_path = None  # rename succeeded — nothing to clean up
-        except OSError as exc:
-            logger.error('Cannot write %s: %s', filepath, exc)
+        if not _write_atomic(filepath, lines, encoding):
             return 0, len(file_findings)
-        finally:
-            if tmp_path is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
 
         # Restore original file permissions
         if orig_mode is not None:
@@ -490,6 +533,20 @@ def interactive_review(
     Returns the number of unresolved findings (for exit-code use).
     """
     root_path = Path(root).resolve()
+
+    # Two same-value findings on one line cannot be adjudicated separately —
+    # line-granularity exclusion can't represent them, and the first 'y'
+    # would clear the copy a later 'n' refers to. One prompt owns the
+    # (file, line, value) triple; its answer covers every occurrence there.
+    seen: set[tuple[str, int, str]] = set()
+    deduped: list[Finding] = []
+    for f in findings:
+        key = (f['file'], f['line'], f['full_value'])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+    findings = deduped
+
     total = len(findings)
     replaced = 0
     skipped = 0
@@ -500,6 +557,17 @@ def interactive_review(
     lines_by_file: dict[str, set[int]] = {}
     for f in findings:
         lines_by_file.setdefault(f['file'], set()).add(f['line'])
+
+    # Approved findings per file, for the end-of-review sweep: a copy of an
+    # approved value on ANOTHER approved finding's line is preserved by the
+    # static per-approval exclusion above and must be cleared once that
+    # line's own adjudication has resolved.
+    approved_by_file: dict[str, list[Finding]] = {}
+
+    def _run_final_sweeps() -> None:
+        for fp, approved in approved_by_file.items():
+            preserve = lines_by_file[fp] - {f['line'] for f in approved}
+            _final_file_sweep(fp, approved, preserve, config)
 
     replacement_desc = config.custom_replacement
     if config.replace_mode == 'env':
@@ -529,6 +597,9 @@ def interactive_review(
             try:
                 answer = input("  Replace? [y/N]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
+                # Completes the already-approved adjudications only: pending
+                # and skipped findings' lines are preserved by construction.
+                _run_final_sweeps()
                 print(f'\n\n  Interrupted — {replaced} replacement(s) already '
                       f'applied. No further changes will be made.')
                 if replaced and not config.no_backup and not config.secure_delete:
@@ -546,6 +617,7 @@ def interactive_review(
                 if ok:
                     print('  -> Replaced.\n')
                     replaced += 1
+                    approved_by_file.setdefault(finding['file'], []).append(finding)
                 else:
                     print('  -> Replacement failed -- skipping.\n')
                     skipped += 1
@@ -557,6 +629,7 @@ def interactive_review(
             else:
                 print("  Please enter 'y' or 'n'.")
 
+    _run_final_sweeps()
     _print_summary(replaced, skipped, total, config)
     return total - replaced
 
