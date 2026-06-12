@@ -431,8 +431,10 @@ only) and **2** with it.
 
 Logs scan activity to stderr, including why findings were suppressed. Verified
 sample: `[SKIP] …/app.py:2 suppressed by inline credactor:ignore`. Suppression
-breadcrumbs name the kind (`inline`, `allowlist (glob|file:line|value-literal)`,
-`safe value heuristic`, `hash context`).
+breadcrumbs name the kind: `inline`, `allowlist
+(file-level|glob|file:line|value-literal)`, `safe value heuristic`, or
+`hash context`. A whole-file allowlist match in a directory walk logs
+`file-level`; the same entry matching on the per-line path logs `glob`.
 
 ---
 

@@ -76,7 +76,7 @@ python -m credactor --fix-all /path/to/project
   Proceed? [y/N]: y
 
 ======================================================================
-  Summary:  5 replaced  |  0 skipped  |  5 total
+  Summary:  5 replaced  |  0 failed  |  5 total
   Reminder: rotate / revoke any credentials that were just redacted.
 ======================================================================
 ```
