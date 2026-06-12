@@ -115,6 +115,22 @@ class TestAssignmentRegex:
         assert m
         assert m.group('val_q') == 'sk-abc123xyz'
 
+    def test_unquoted_env_interpolation_captures_closing_brace(self):
+        # A complete ${POSIX_NAME} must reach the safe-value check intact;
+        # stopping at '}' delivered '${DB_PASSWORD' — unclosed, so the
+        # compose/CI idiom flagged as a hardcoded secret.
+        m = ASSIGNMENT_RE.search('password: ${DB_PASSWORD}')
+        assert m
+        assert m.group('val_u') == '${DB_PASSWORD}'
+
+    def test_unquoted_shell_default_still_stops_at_brace(self):
+        # ${VAR:-fallback} is NOT a pure name interpolation — the fallback
+        # can be a real secret, so it must keep arriving unclosed (and flag).
+        # Pins that the broad \$\{[^}]+\} capture variant can never land.
+        m = ASSIGNMENT_RE.search('password: ${PW:-hunter2secret99}')
+        assert m
+        assert m.group('val_u') == '${PW:-hunter2secret99'
+
     def test_oversized_var_name_truncates_without_dropping_match(self):
         # The var capture is bounded to {1,128} (quadratic-backtracking guard).
         # A longer identifier must still match — with the captured name

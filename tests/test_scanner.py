@@ -17,6 +17,37 @@ from credactor.scanner import (
 )
 
 
+class TestEnvInterpolationUnquoted:
+    """An unquoted, complete ${VAR} is a runtime reference (the standard
+    docker-compose/CI idiom), not a hardcoded secret — while unclosed and
+    fallback-bearing forms must keep flagging."""
+
+    def test_unquoted_yaml_env_ref_clean(self):
+        findings = scan_line(1, 'password: ${DB_PASSWORD}', 'compose.yml',
+                             config=Config(no_color=True))
+        assert findings == []
+
+    def test_unclosed_brace_still_flags(self):
+        findings = scan_line(1, 'password: ${DB_PASSWORD', 'compose.yml',
+                             config=Config(no_color=True))
+        assert findings
+
+    def test_shell_default_fallback_still_flags(self):
+        # The fallback after :- can be a real secret.
+        findings = scan_line(1, 'password: ${PW:-hunter2secret99}',
+                             'compose.yml', config=Config(no_color=True))
+        assert findings
+
+    def test_interpolation_with_suffix_is_clean_known_limit(self):
+        # Known limit: the capture ends at the interpolation's closing brace,
+        # so a secret glued directly onto ${VAR} is not seen. Accepted —
+        # provider-prefixed values in that position are still caught by the
+        # value-pattern pass, and the idiom is vanishingly rare.
+        findings = scan_line(1, 'password: ${DB_PASSWORD}realSecretSuffix99x',
+                             'compose.yml', config=Config(no_color=True))
+        assert findings == []
+
+
 class TestLongLineTruncationWarning:
     """Content past _MAX_LINE_LENGTH is not pattern-matched; the truncation
     must be loud (once per file) instead of a silent false negative."""

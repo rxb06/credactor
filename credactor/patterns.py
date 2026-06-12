@@ -218,7 +218,16 @@ ASSIGNMENT_RE = re.compile(
             (?P<val_q>(?:(?!(?P=q)).)+)  # value: everything up to matching quote
             (?P=q)                     # closing quote
         |
-            (?P<val_u>[^\s#;,\]}"']+)  # unquoted: stop at whitespace/comment/delimiters/quotes
+            (?P<val_u>
+                \$\{[A-Za-z_][A-Za-z0-9_]*\}   # complete ${POSIX_NAME}: keep the
+                                               # closing brace so the safe-value
+                                               # check sees a closed env ref —
+                                               # ONLY the pure-name form; ${VAR:-x}
+                                               # must keep arriving unclosed (the
+                                               # fallback can be a real secret)
+            |
+                [^\s#;,\]}"']+         # unquoted: stop at whitespace/comment/delimiters/quotes
+            )
         )
     ''',
     re.VERBOSE,

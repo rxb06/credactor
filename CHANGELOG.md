@@ -57,6 +57,15 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- Unquoted `password: ${DB_PASSWORD}` — the standard docker-compose/CI
+  idiom — is no longer flagged. The unquoted-value capture stopped at `}`,
+  so the safe-value check saw an *unclosed* `${DB_PASSWORD` and treated it
+  as a hardcoded secret: a false positive that broke `--ci` gates and that
+  `--fix-all` would have rewritten into a corrupted compose file. Only the
+  complete pure-name form `${POSIX_NAME}` is newly safe; `${VAR:-fallback}`
+  (the fallback can be a real secret) and unclosed `${…` keep flagging, both
+  pinned by tests. This also stops credactor's own env-mode output on
+  unquoted YAML from re-flagging on rescan.
 - Interactive mode and the `--fix-all` confirmation now actually require a
   TTY on stdin, as the manual has always stated. There was no `isatty()`
   check anywhere: piping y-prefixed text into default mode answered the
