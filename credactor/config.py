@@ -112,10 +112,12 @@ def load_config_file(
         # Limit traversal depth to prevent picking up config files
         # from shared parent directories (e.g. /tmp/.credactor.toml).
         # Walk up at most 5 levels — enough for monorepo nesting.
+        # +1: the first iteration is the target directory itself; max_depth
+        # counts parent levels, matching the manual's "up to 5 parents".
         max_depth = 5
         candidates = []
         p = Path(root).resolve()
-        for _ in range(max_depth):
+        for _ in range(max_depth + 1):
             candidates.append(p / '.credactor.toml')
             if p.parent == p:
                 break

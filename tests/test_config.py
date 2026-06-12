@@ -97,6 +97,28 @@ class TestLoadConfigFile:
         result = load_config_file(child)
         assert result['min_value_length'] == 15
 
+    def test_parent_dir_discovery_five_levels(self, tmp_dir):
+        # The documented contract is the target dir plus up to FIVE parent
+        # directories. The walk's first iteration is the target itself, so
+        # this needs max_depth + 1 iterations — pins the boundary at 5.
+        os.makedirs(os.path.join(tmp_dir, '.git'))
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = 15\n')
+        child = os.path.join(tmp_dir, 's1', 's2', 's3', 's4', 's5')
+        os.makedirs(child)
+        result = load_config_file(child)
+        assert result['min_value_length'] == 15
+
+    def test_parent_dir_discovery_stops_after_five_levels(self, tmp_dir):
+        # Companion boundary: 6 parent levels up is out of reach, so the next
+        # off-by-one in either direction fails one of this pair.
+        os.makedirs(os.path.join(tmp_dir, '.git'))
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = 15\n')
+        child = os.path.join(tmp_dir, 's1', 's2', 's3', 's4', 's5', 's6')
+        os.makedirs(child)
+        assert load_config_file(child) == {}
+
     def test_explicit_missing_returns_empty(self, tmp_dir):
         result = load_config_file(tmp_dir, '/nonexistent/.credactor.toml')
         assert result == {}

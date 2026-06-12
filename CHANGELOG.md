@@ -57,6 +57,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- `.credactor.toml` discovery now reaches the documented five parent
+  directories. An off-by-one (the walk's first iteration was the target
+  directory itself) silently stopped at four, so a root config in a deep
+  monorepo was ignored without any diagnostic when scanning five levels down.
+  The outside-project-root refusal is depth-independent and unaffected.
 - An explicit `--config` path that does not exist (or is not a file) is now a
   fatal error (exit 2). It was previously ignored without any message — the
   scan silently ran at default sensitivity, so a typo'd `--config` in CI could
