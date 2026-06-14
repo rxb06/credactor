@@ -23,6 +23,15 @@ MIN_LEN_DEFAULT: int = 8
 TomlData = dict[str, Any]
 
 
+class ConfigError(Exception):
+    """An explicitly-named config (``--config``) could not be loaded.
+
+    Raised only for an *explicit* path; implicit discovery of a malformed
+    config warns and falls back to defaults instead. The CLI converts this to
+    a fatal exit 2 so a content typo is as loud as a filename typo.
+    """
+
+
 @dataclass
 class Config:
     """Runtime configuration — populated from CLI flags and/or config file."""
@@ -155,21 +164,40 @@ def load_config_file(
                         '%s (project root: %s).%s', candidate, ref, hint,
                     )
                     return {}
-            return _parse_toml(candidate)
+            # An explicit --config that won't parse is fatal (ConfigError);
+            # a discovered one warns and is skipped. When explicit_path is set
+            # this is the only candidate, so it carries the explicit signal.
+            return _parse_toml(candidate, fatal=bool(explicit_path))
 
     return {}
 
 
-def _parse_toml(path: Path) -> TomlData:
-    """Parse a TOML file using stdlib tomllib (Python 3.11+)."""
+def _parse_toml(path: Path, *, fatal: bool = False) -> TomlData:
+    """Parse a TOML file using stdlib tomllib (Python 3.11+).
+
+    With ``fatal=True`` (an explicit ``--config`` path) a read or parse failure
+    raises :class:`ConfigError` instead of warning and degrading to defaults —
+    silently scanning at the wrong sensitivity is the exact CI-gate-flip risk
+    the explicit-path guards exist to prevent. With ``fatal=False`` (implicit
+    discovery) a stray malformed config warns and is skipped.
+
+    Callers must gate on ``Path.is_file()`` first: it is load-bearing for
+    non-regular-file safety (a FIFO would block this ``open()`` forever). Both
+    entry points do — the implicit walk's ``candidate.is_file()`` and the CLI's
+    explicit-path guard — so a pipe/socket never reaches here.
+    """
     import tomllib
     try:
         with open(path, 'rb') as fh:
             return tomllib.load(fh)
     except OSError as exc:
+        if fatal:
+            raise ConfigError(f'cannot read config {path}: {exc}') from exc
         logger.warning('Could not read config %s: %s', path, exc)
         return {}
     except tomllib.TOMLDecodeError as exc:
+        if fatal:
+            raise ConfigError(f'invalid TOML in {path}: {exc}') from exc
         logger.warning('Invalid TOML in %s: %s', path, exc)
         return {}
 

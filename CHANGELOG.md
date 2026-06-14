@@ -72,6 +72,15 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Fixed
 
+- An explicit `--config` that exists but cannot be parsed — invalid TOML or an
+  unreadable file — is now a fatal error (exit 2), matching the missing-file
+  guard. It previously warned and silently scanned at default sensitivity, the
+  same CI-gate-flip threat as a `--config` typo: a content typo in a tuned
+  config dropped its `extra_extensions`/threshold settings and could flip a
+  failing secret gate to a pass. Scoped to the explicit path only — a
+  *discovered* `.credactor.toml` that fails to parse still warns and falls back
+  to defaults, so a stray broken config elsewhere in the tree never aborts a
+  scan.
 - BOM-less UTF-16 files are no longer a *silent* miss on stock installs —
   they are now detected and scanned. NUL-interleaved ASCII (exactly what
   BOM-less UTF-16 with an ASCII payload is) is valid UTF-8, so the

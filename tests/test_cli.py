@@ -179,6 +179,57 @@ class TestMainExitCodes:
             main(['--config', tmp_dir, '--dry-run', tmp_dir])
         assert exc_info.value.code == 2
 
+    def test_invalid_toml_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
+        # An explicit --config that exists but is unparseable is the same
+        # CI-gate-flip threat as a missing one: silently scanning at defaults
+        # drops every intended setting. A content typo must be as loud as a
+        # filename typo.
+        cfg = os.path.join(tmp_dir, 'cfg.toml')
+        with open(cfg, 'w') as f:
+            f.write('entropy_threshold = = 4.0\n')  # syntactically invalid TOML
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', cfg, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'invalid TOML' in credactor_caplog.text.lower() \
+            or 'invalid toml' in credactor_caplog.text.lower()
+
+    def test_invalid_toml_config_does_not_silently_skip_settings(self, tmp_dir):
+        # The worst case spelled out: a config whose extra_extensions makes a
+        # secret in a .custom file visible. Valid -> exit 1 (found). Invalid
+        # -> must be exit 2 (fatal), NOT exit 0 (silent miss at defaults).
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'  # credactor:ignore
+        with open(os.path.join(tmp_dir, 'secret.custom'), 'w') as f:
+            f.write(f'aws_key = "{key}"\n')
+        good = os.path.join(tmp_dir, 'good.toml')
+        with open(good, 'w') as f:
+            f.write('extra_extensions = [".custom"]\n')
+        with pytest.raises(SystemExit) as found:
+            main(['--config', good, '--dry-run', tmp_dir])
+        assert found.value.code == 1            # config honored -> secret found
+
+        bad = os.path.join(tmp_dir, 'bad.toml')
+        with open(bad, 'w') as f:
+            f.write('extra_extensions = [".custom"\n')  # unterminated array
+        with pytest.raises(SystemExit) as broken:
+            main(['--config', bad, '--dry-run', tmp_dir])
+        assert broken.value.code == 2          # fatal, not a silent exit 0
+
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='chmod 000 unreadable semantics are POSIX-only')
+    def test_unreadable_explicit_config_exits_2(self, tmp_dir):
+        cfg = os.path.join(tmp_dir, 'noperm.toml')
+        with open(cfg, 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        os.chmod(cfg, 0o000)
+        try:
+            if os.access(cfg, os.R_OK):   # running as root reads it anyway
+                pytest.skip('cannot make file unreadable (running as root?)')
+            with pytest.raises(SystemExit) as exc_info:
+                main(['--config', cfg, '--dry-run', tmp_dir])
+            assert exc_info.value.code == 2
+        finally:
+            os.chmod(cfg, 0o644)
+
 
 class TestTtyGates:
     """Interactive mode and the --fix-all confirmation require a real TTY on

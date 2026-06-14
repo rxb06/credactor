@@ -4,7 +4,13 @@ import os
 
 import pytest
 
-from credactor.config import ENTROPY_DEFAULT, Config, apply_config_file, load_config_file
+from credactor.config import (
+    ENTROPY_DEFAULT,
+    Config,
+    ConfigError,
+    apply_config_file,
+    load_config_file,
+)
 
 
 class TestConfigPostInit:
@@ -122,6 +128,25 @@ class TestLoadConfigFile:
     def test_explicit_missing_returns_empty(self, tmp_dir):
         result = load_config_file(tmp_dir, '/nonexistent/.credactor.toml')
         assert result == {}
+
+    def test_explicit_invalid_toml_raises(self, tmp_dir):
+        # An explicitly named config that exists but won't parse must signal
+        # the caller (which exits 2) rather than silently degrade to defaults.
+        cfg = os.path.join(tmp_dir, 'bad.toml')
+        with open(cfg, 'w') as f:
+            f.write('min_value_length = = 9\n')
+        with pytest.raises(ConfigError):
+            load_config_file(tmp_dir, explicit_path=cfg)
+
+    def test_implicit_invalid_toml_warns_and_skips(self, tmp_dir, credactor_caplog):
+        # Scoped to --config only: a malformed config found by DISCOVERY must
+        # not abort the scan — a stray broken .credactor.toml shouldn't take a
+        # repo down. It warns and falls back to defaults (no raise).
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = = 9\n')
+        result = load_config_file(tmp_dir)          # implicit discovery
+        assert result == {}
+        assert 'invalid toml' in credactor_caplog.text.lower()
 
     def test_load_config_ingest_section(self, tmp_dir):
         config_path = os.path.join(tmp_dir, '.credactor.toml')

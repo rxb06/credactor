@@ -15,7 +15,7 @@ from typing import NoReturn
 from . import __version__
 from ._log import configure as _configure_log
 from ._log import logger
-from .config import Config, apply_config_file, load_config_file
+from .config import Config, ConfigError, apply_config_file, load_config_file
 from .redactor import fix_all, interactive_review
 from .report import json_report, print_gitignore_skipped, print_report, sarif_report
 from .scanner import scan_file
@@ -612,7 +612,13 @@ def _main_inner(argv: list[str] | None = None) -> None:
     # filename typo. Implicit discovery finding nothing stays a normal no-op.
     if config.config_path and not Path(config.config_path).is_file():
         _fatal('Config file not found: %s', config.config_path)
-    file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+    try:
+        file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+    except ConfigError as exc:
+        # An explicit --config that exists but won't parse (invalid TOML /
+        # unreadable) is fatal for the same reason a missing one is: degrading
+        # to defaults silently drops every intended setting.
+        _fatal('%s', exc)
     if file_data:
         apply_config_file(config, file_data)
 

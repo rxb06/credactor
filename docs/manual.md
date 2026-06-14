@@ -406,8 +406,12 @@ sensitivity).
 
 Use a specific config file (verified: `--config cfg.toml` with
 `min_value_length = 200` suppresses a generic password assignment). An explicit `--config` is honored
-even outside the project root (non-CI). A `--config` path that does not exist
-(or is not a file) is a **fatal error, exit 2** — it is never silently ignored.
+even outside the project root (non-CI). A `--config` path that cannot be
+honored — it does not exist, is not a file, is unreadable, or contains invalid
+TOML — is a **fatal error, exit 2**; it is never silently ignored. (A
+*discovered* `.credactor.toml` that fails to parse is a different case: it
+warns and the scan falls back to defaults, so a stray broken config elsewhere
+in the tree never aborts a scan.)
 
 ### `--scan-json`
 
@@ -560,7 +564,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
 
 ---
 
