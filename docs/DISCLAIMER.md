@@ -17,7 +17,7 @@ Credactor is a static analysis tool that uses regex patterns and entropy heurist
 ### Detection
 
 - **Regex-based.** Credactor matches known patterns (AWS keys, GitHub tokens, JWTs, etc.) and heuristics (entropy, variable names). Novel or obfuscated credential formats will be missed.
-- **Recognised file types only.** Credactor scans a fixed set of source/config extensions (`.py`, `.js`, `.env`, `.yaml`, `.toml`, `.txt`, …), **not every file**. Binaries, images, archives, encrypted blobs, and text files of unrecognised types (e.g. `.md`, custom extensions) are skipped unless added via `extra_extensions` in `.credactor.toml`. General-purpose scanners that read every file will catch secrets in types Credactor skips.
+- **Recognised file types only.** Credactor scans a fixed set of source/config extensions (`.py`, `.js`, `.env`, `.yaml`, `.toml`, `.txt`, …), **not every file**. Binaries, images, archives, encrypted blobs, and text files of unrecognised types (e.g. `.md`, custom extensions) are skipped **during directory scans** unless added via `extra_extensions` in `.credactor.toml` (a file named explicitly as the scan target is always scanned, whatever its extension). General-purpose scanners that read every file will catch secrets in types Credactor skips.
 - **No cross-file tracking.** A credential split across two files (e.g. key in one, secret in another) is not detected.
 - **Entropy thresholds are tunable, not perfect.** Lowering them catches more but increases false positives. The defaults balance precision and recall for common codebases.
 - **No semantic analysis.** The tool does not understand code execution flow. A credential constructed at runtime from multiple variables will not be detected.

@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects the 2.4.0 release. For limitations and safe usage see the
+Reflects the 2.4.1 release. For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -109,8 +109,8 @@ Exactly one *behaviour* applies per run; the precedence/forcing rules are in
 Requires a TTY — piped stdin is rejected with exit 1 (use `--dry-run`/`--ci`
 to report, or `--fix-all --yes` to redact unattended). Git Bash/mintty on
 Windows is seen as a pipe by native Python; run `winpty credactor …` there.
-Exit code = number of unresolved findings → 0 if all resolved/none,
-1 otherwise.
+Exit code is **1** if any finding is left unresolved, and **0** if all are
+resolved or none were found.
 
 Each finding is shown before its prompt (verified output):
 
@@ -468,7 +468,12 @@ test_key = "abc123"  # credactor:ignore
 
 ### `.credactorignore`
 
-In the scan root. Entry types (verified against a 2-secret file, baseline 2):
+In the scan root — a `.credactorignore` is loaded only for a **directory scan**
+(its root is the scanned directory). A single-file target (`credactor app.py`)
+does **not** apply one; point Credactor at the directory instead, or use inline
+`# credactor:ignore` (which works on any target). A single-file run that finds a
+`.credactorignore` beside the target **warns** rather than silently ignoring it.
+Entry types (verified against a 2-secret file, baseline 2):
 
 | Entry | Example | Effect |
 |-------|---------|--------|
@@ -500,8 +505,15 @@ locations. Verified — each of the following yields 0 findings:
   Doppler, 1Password `op://`), property access (`self.config.password`), function
   calls/defs (`get_secret()`, `def get_password(password="default")`), and
   Terraform refs (`var.password`, `local.secret`, `module.db.password`, `data.*`).
-- **Hashes, not secrets** — variables named `*_hash` / `*_digest` / `*_checksum`
-  (and `sha*` / `md5*`), and hash values (`$2b$…` bcrypt, `$argon2id$…`).
+- **Hashes, not secrets** — three cases. (1) A credential-named variable whose
+  name ends in `_hash`, `_hashed`, `_digest`, `_checksum`, `_fingerprint`,
+  `_hmac`, `_encrypted`, or `_cipher` (e.g. `secret_hash`). (2) Hash *values*
+  (`$2b$…` bcrypt, `$argon2id$…`). (3) A quoted hex / high-entropy **value** on
+  a line keyed like a digest — a key ending in one of those `_hash`-family
+  suffixes, or being `md5` / `sha<digits>` (`md5 = "<hex>"`, `sha256: <hex>`).
+  Case 3 gates the **value** detector only: it is not an open `sha*` / `md5*`
+  prefix (`md5sum`, `shasum`, bare `sha`, `sha256_value` still flag), and it
+  does **not** override a credential keyword — `secret_md5 = "…"` is flagged.
 - **Non-credential shapes** — file paths, credential-free URLs, values under 8
   characters, and low-entropy values.
 
@@ -542,13 +554,30 @@ Verified behaviour and **requirements**:
 
 - Ingested findings are **merged** with native findings and **deduplicated**; on
   a same-location/value/commit duplicate the **higher severity is kept**.
-- The target **must be a directory** (report paths are resolved relative to it) —
+- The target **must be a directory** (a *relative* report path resolves against the current working directory, not the target) —
   a **file target exits 2** (verified).
 - Ingestion **cannot be combined with `--scan-history`** — **exits 2** (verified).
-- Report paths can instead be set in `.credactor.toml` under `[ingest]`.
-- The report file is **untrusted input**: paths are confined to the target
-  (traversal rejected), missing/invalid paths are skipped, and the report is
-  size/finding-count capped.
+- Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
+  discovered `[ingest]` entry takes **precedence over** a same-kind CLI
+  `--from-*` flag (the flag does not override or merge with it), and a broken
+  `[ingest]` path is fatal (exit 2) even alongside a valid CLI flag — keep one
+  source per kind.
+- The report is **untrusted input**, with two distinct contracts:
+  - *The report file itself* is read from the path you supply — **not** confined
+    to the target. A **missing or unreadable** report path is a **fatal error,
+    exit 2** (never silently ignored), for either scanner. For **Gitleaks** (one
+    JSON document) invalid JSON or a wrong top-level type is **also fatal, exit
+    2**. For **TruffleHog** (line-delimited NDJSON) each line is parsed
+    independently and a malformed line is skipped (a mixed report still ingests
+    its valid findings), but a **wholly-unparseable** report — content with no
+    JSON object on any line (an HTML error page, a typo'd file, or a Gitleaks
+    JSON array fed to `--from-trufflehog`) — is likewise **fatal, exit 2**,
+    never a silent zero-findings all-clear; an empty report is a legitimate "no
+    findings". Report size and finding count are capped.
+  - *Each finding inside the report* has its secret-location path **confined to
+    the target**: a finding whose path resolves outside is rejected as possible
+    traversal (warned and skipped). A malformed individual finding entry is
+    likewise skipped, and the run continues.
 
 > Marginal value: Credactor redacts the **union** of (its native findings + the
 > ingested ones). A secret only a *third* tool detects is not redacted — pair
@@ -564,7 +593,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable ingestion report file; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
 
 ---
 
@@ -597,7 +626,7 @@ Verified rules:
 detail; these are the behaviours most likely to surprise.)
 
 - **Recognised file types only.** Credactor scans a fixed extension allowlist
-  (code/config types, plus `.txt` as of 2.5.0); secrets in unrecognised text
+  (code/config types, plus `.txt` as of 2.4.1); secrets in unrecognised text
   types (`.md`, custom) are skipped unless added via `extra_extensions`.
   General-purpose scanners read every file.
 - **False positives are rewritten under `--fix-all`.** Redaction acts on every

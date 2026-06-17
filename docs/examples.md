@@ -103,11 +103,11 @@ DB_PASSWORD = "s3cretP@ssw0rd"
 After:
 
 ```python
-AWS_KEY = os.environ["AWS_KEY"]
+AWS_KEY = os.environ["AWS_ACCESS_KEY"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 ```
 
-Language-aware — `.js` gets `process.env["AWS_KEY"]`, `.go` gets `os.Getenv("AWS_KEY")`, etc.
+Language-aware — `.js` gets `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, etc. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
 
 ## 5. Pre-commit hook
 
@@ -314,7 +314,7 @@ MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB...
 
 ```
   Line   1  [CRITICAL]  [pattern:private key block]
-           PRIVATE_KEY = """-----[REDACTED]
+           PRIV[REDACTED]
 ```
 
 Lines inside the block aren't scanned separately.

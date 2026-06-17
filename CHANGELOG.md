@@ -22,9 +22,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   CMakeLists.txt, and a 338-hash-pin `requirements.txt`) produced **zero**
   `.txt`-specific findings: hash pins are protected by the quote-prefix and
   hash-context guards, a property now pinned by a regression test.
-  Upgrading repos with credential-shaped *example* text in `.txt` notes may
-  see new findings (suppress via `.credactorignore`, e.g. `docs/*.txt`, or
-  `extra_safe_values`). `.md` remains out by default — it is
+  **Upgrade blast radius:** repos with credential-shaped *example* text in
+  `.txt` notes will see new findings on first run — those flip a `--ci` /
+  `--staged` gate to a fail (exit 1) and become `--fix-all` rewrite targets
+  (the example value is replaced in place, `.bak` kept). Preview with
+  `--dry-run`, and suppress via `.credactorignore` (e.g. `docs/*.txt`) or
+  `extra_safe_values` before redacting. `.md` remains out by default — it is
   example-credential-dense by convention; use `extra_extensions` to opt in.
 
 ### Added
@@ -69,9 +72,23 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   security tool that can mean scanning at the wrong sensitivity unnoticed.
   The same guard now covers the `[ingest]` table (a typo'd `from_gitleaks`
   meant ingestion silently never ran).
+- A single-file target (`credactor app.py`) that finds a `.credactorignore`
+  beside it now warns. A `.credactorignore` is loaded only for a directory
+  scan (its root is the scanned directory), so a file target applied none —
+  previously silently, so a user expecting their allowlist to apply got no
+  suppression and no signal. Inline `# credactor:ignore` still works on a file
+  target; the manual now documents the directory-scan scope.
 
 ### Fixed
 
+- A TruffleHog report (`--from-trufflehog`) that is wholly unparseable —
+  content with no JSON object on any line (an HTML error page, a typo'd file,
+  or a Gitleaks JSON array fed to the NDJSON path) — is now a fatal error
+  (exit 2), matching the Gitleaks path. It previously skipped each bad line
+  with only a `--verbose` `[INFO]` and exited 0 with `[OK] No hardcoded
+  credentials` — a silent false-clean on a wrong/typo'd report for one of the
+  two supported scanners. A *mixed* report still ingests its valid findings
+  (per-line tolerance), and an empty report is still a legitimate "no findings".
 - An explicit `--config` that exists but cannot be parsed — invalid TOML or an
   unreadable file — is now a fatal error (exit 2), matching the missing-file
   guard. It previously warned and silently scanned at default sensitivity, the
@@ -89,11 +106,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   promises never fired — `--fail-on-error` passed too. NULs confined to one
   byte parity are now recognised as the UTF-16 byte-order signature (both
   endiannesses, BOM or not); other NUL-bearing content (UTF-32, stray NULs)
-  keeps the loud Latin-1 fallback. With the `[encoding]` extra installed
-  nothing changes (charset-normalizer already answered correctly). A
-  truncated UTF-16 file that fails mid-decode now follows the
-  unreadable-file contract (warning, `--fail-on-error` exit 2) instead of
-  crashing the single-file/`--scan-json` paths. **Note on upgrade:** repos
+  keeps the loud Latin-1 fallback. A truncated / odd-length UTF-16 file that
+  fails mid-decode now follows the unreadable-file contract (warning,
+  `--fail-on-error` exit 2, never a silent all-clear) in **both** configs:
+  with the `[encoding]` extra installed, charset-normalizer reports such a
+  file as `utf-8` on its NUL-interleaved bytes, so a `utf-8`/`ascii` verdict
+  on NUL-bearing content is now distrusted (genuine UTF-8/ASCII never contains
+  NUL) and the UTF-16-signature / Latin-1 path decides — closing a silent
+  false-negative the detector path otherwise hid. **Note on upgrade:** repos
   with real secrets in UTF-16 files will newly flag — a false-negative
   converted to a true positive.
 - `min_value_length` no longer gates deterministic critical patterns. The
@@ -131,8 +151,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   prefix-tolerant variant would have dragged pagination cursors into HIGH).
   Hyphen/dot-delimited keys (`vault-token:` in k8s manifests) holding
   hardcoded high-entropy values now flag, which is the fail-closed
-  direction; placeholder fixtures remain suppressible via the existing
-  `.credactorignore` / `extra_safe_values` / inline mechanisms.
+  direction. **Known FP from this:** a kebab/dot *cursor* key carrying a
+  high-entropy but non-secret value — e.g. a `next-page-token` /
+  `x-request-token` captured in an HTTP fixture — now flags HIGH, where the
+  snake/camel forms (`next_page_token`, `pageToken`) do not; that is the
+  deliberate cost of the literal `token` match. Placeholder fixtures and these
+  cursor keys remain suppressible via the existing `.credactorignore` /
+  `extra_safe_values` / inline mechanisms.
 - Unquoted `password: ${DB_PASSWORD}` — the standard docker-compose/CI
   idiom — is no longer flagged. The unquoted-value capture stopped at `}`,
   so the safe-value check saw an *unclosed* `${DB_PASSWORD` and treated it
@@ -213,8 +238,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   approved. Two same-value findings on one line are prompted once. When the
   sweep clears additional copies, a `[WARN]` states the count. Scope stays
   bounded to files being rewritten — other files are never opened by the
-  sweep, and word-boundary anchoring still protects substrings of larger
-  tokens.
+  sweep. Word-boundary anchoring protects a secret embedded in a larger *word*
+  token (`<secret>more` is left alone), but a copy bounded by a non-word char
+  (`<secret>-extended`, `<secret>.bak`) is swept too — over-redaction that
+  fails safe, since the `.bak` keeps the original.
 - `--staged` now runs the same full scan as a working-tree scan. The staged
   path previously used a reduced per-line loop that skipped the PEM-block and
   multi-line passes, so a secret inside a triple-quoted / template-literal

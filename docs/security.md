@@ -70,7 +70,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-23** — File symlink boundary enforcement: File symlinks resolving outside the scan root are skipped.
 - **SEC-24** — SARIF output: `json.dumps` provides the injection safety; the masked preview in `message.text` is additionally HTML-escaped as defence-in-depth.
 - **SEC-25** — Git history path traversal guard: Paths with `..` traversal sequences are rejected.
-- **SEC-26** — CI read-only enforcement: `--ci` blocks `--fix-all` and forces `--dry-run`.
+- **SEC-26** — CI read-only enforcement: `--ci` forces read-only operation (`--dry-run`); combining it with `--fix-all` is rejected as a hard error (exit 2), never a silent downgrade.
 - **SEC-27** — Suppression audit trail: `--verbose` emits `[SKIP]` notices for every suppressed finding.
 - **SEC-28** — Plaintext backup warning: One-time warning when backups are created without secure options.
 - **SEC-29** — Config trust boundary enforcement in CI: External configs refused in CI mode.
@@ -87,7 +87,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-34** — Template safe-value closing delimiter: Requires matching `}`, `%}`, or `}}`. Fixes `$`-prefix bypass.
 - **SEC-20** — Secure backup dir symlink (updated): Returns error and skips redaction instead of silent fallback.
 
-### TTP Chain Audit (SEC-35 through SEC-39)
+### v2.3.3 (TTP Chain Audit — SEC-35 through SEC-39)
 
 - **SEC-35** — SARIF output injection: HTML-escape the finding type in all SARIF rule fields (`id`, `shortDescription`, `fullDescription`) and the masked preview in the result message. Prevents XSS via attacker-controlled XML attribute names in downstream SARIF viewers. The whole document is JSON-encoded and only a short preview (first 4 chars + the literal `[REDACTED]`) ever appears; `artifactLocation.uri` is intentionally **not** HTML-escaped (it is a filesystem path consumed as data, not rendered as HTML).
 - **SEC-36** — Terminal escape injection: Apply `sanitize_for_terminal()` to file paths, finding types, and raw source lines in text report output. Prevents ANSI escape-sequence injection via crafted filenames or source content.
@@ -132,4 +132,4 @@ This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 - **NTFS alternate data streams:** On Windows, `--secure-delete` does not clear alternate data streams. Python has no cross-platform API for ADS enumeration.
 - **Windows file locking:** Advisory locking (`fcntl`) is unavailable on Windows. Concurrent credactor processes modifying the same file are not protected.
 - **String concatenation bypass:** `api_key = "sk_live_" + "rest"` evades detection. This is an architectural limitation of line-by-line scanning.
-- **JSON excluded by default:** Credentials in `.json` files are not scanned unless `--scan-json` is passed. This is intentional to reduce false positives from API response data.
+- **JSON excluded from directory scans:** `.json` files are skipped during a directory/recursive scan unless `--scan-json` is passed — intentional, to reduce false positives from API response data. A `.json` file named explicitly as the scan target is still scanned.
