@@ -6,3 +6,6 @@
   types: [text]
   stages: [pre-commit]
   pass_filenames: false
+  # 'stages: [pre-commit]' is the post-3.2 stage spelling; older pre-commit
+  # fails manifest validation with a cryptic error unless told the floor.
+  minimum_pre_commit_version: '3.2.0'

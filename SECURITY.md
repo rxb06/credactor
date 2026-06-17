@@ -85,7 +85,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-02 | `.credactor.toml` trust boundary: load only from project root (`.git` ancestor) | `config.py:69,108,113` |
 | SEC-03 | Surface config-file read failures instead of silently ignoring | `config.py:159` |
 | SEC-04 | Resolve path before passing to subprocess (`git diff`, `git log`) | `walker.py:231,292` |
-| SEC-05 | EMFILE fallback: re-scan files that failed to open due to fd exhaustion sequentially | `walker.py:183,205` |
+| SEC-05 | File-descriptor exhaustion impossible by construction: files are scanned sequentially, one handle at a time (the former thread pool and its EMFILE fallback were removed) | `walker.py:138` |
 | SEC-06 | Cap line length (4096) to bound regex backtracking on adversarial input | `scanner.py:83,215` |
 | SEC-07 | Finally-block temp-file cleanup prevents plaintext credential residue on crash | `redactor.py:281,295` |
 | SEC-09 | Atomic backup via `mkstemp` (`O_CREAT\|O_EXCL`) closes the symlink-race TOCTOU gap | `redactor.py:117` |
@@ -148,4 +148,4 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 
 Each row above was reviewed and marked **K** (keep inline) where the source comment explains a non-obvious invariant *while reading that code* — for example "Append separator AFTER normpath to prevent prefix collision", which would otherwise look redundant. Rows were marked **P** (purge) where the inline comment was motivation/history now captured by this ledger and the source comment added nothing beyond the ticket prefix (e.g. "SEC-04: Resolve path before passing to subprocess", immediately followed by code that resolves the path). An automated sweep then removed the `SEC-XX:` / `CVE-XX:` / etc. prefixes from P-marked sites, preserving any substantive trailing comment text and deleting lines that had none.
 
-**Stage B/C complete 2026-05-24**: 15 invariants retained inline (K); remaining tags purged from source (P). The test suite passed (425 tests at the time of the sweep; it has since grown to 600, all green).
+**Stage B/C complete 2026-05-24**: 15 invariants retained inline (K); remaining tags purged from source (P). The test suite passed (425 tests at the time of the sweep; it has since grown substantially, all green).

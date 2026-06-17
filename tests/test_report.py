@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 
 from credactor.report import (
     json_report,
@@ -27,10 +28,16 @@ class TestMaskSecret:
 
 
 class TestTextReport:
-    def test_no_findings(self):
+    def test_no_findings_prints_nothing(self):
+        # The 'clean scan' message has exactly one owner: cli._emit_report
+        # (which returns early on empty findings in text mode and is tested in
+        # test_cli). print_report's own empty-branch copy had drifted from it
+        # and was removed — empty input prints nothing at all, so neither a
+        # duplicate clean message nor a misleading 0-finding report frame can
+        # come back.
         buf = io.StringIO()
         print_report([], '/tmp', no_color=True, stream=buf)
-        assert 'No hardcoded credentials detected' in buf.getvalue()
+        assert buf.getvalue() == ''
 
     def test_secrets_masked_in_output(self):
         findings = [{
@@ -158,14 +165,18 @@ class TestSarifReport:
 
 
 class TestPrintGitignoreSkipped:
-    def test_writes_to_configurable_stream(self):
-        # P8/#60: a configurable stream like print_report.
+    def test_writes_to_configurable_stream(self, tmp_path):
+        # P8/#60: a configurable stream like print_report. Real paths under
+        # tmp_path so relativize() works identically on every platform — the
+        # old hardcoded '/tmp/...' passed on Windows only via the
+        # outside-root fallback printing the original string by coincidence.
         buf = io.StringIO()
-        print_gitignore_skipped(['/tmp/a/secret.json'], '/tmp',
+        skipped = str(tmp_path / 'a' / 'secret.json')
+        print_gitignore_skipped([skipped], str(tmp_path),
                                 no_color=True, stream=buf)
         out = buf.getvalue()
         assert 'not scanned' in out
-        assert 'a/secret.json' in out
+        assert str(Path('a') / 'secret.json') in out
 
     def test_empty_is_noop(self):
         buf = io.StringIO()

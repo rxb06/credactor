@@ -73,7 +73,7 @@ pip install 'credactor[encoding]'
 
 ### Config File
 
-`.credactor.toml` in your project root, or a parent directory up to the repository root (the tool walks upward from the scan target, at most 5 levels). A config discovered **above** the repository root is refused — silently ignored unless you point `--config` at it explicitly, and always refused in `--ci` mode.
+`.credactor.toml` in your project root, or a parent directory up to the repository root (the tool walks upward from the scan target, at most 5 levels). A config discovered **above** the repository root is refused — skipped with an `[ERROR]` on stderr ("Refusing to load config from outside project root"), not silently, unless you point `--config` at it explicitly, and always refused in `--ci` mode.
 
 ```toml
 # .credactor.toml
@@ -85,8 +85,8 @@ min_value_length = 8       # Ignore shorter values
 skip_dirs = [".terraform", "vendor"]
 skip_files = ["generated_config.py"]
 
-# Extra extensions to scan
-extra_extensions = [".env.encrypted"]
+# Extra extensions to scan (final suffix only — ".encrypted", not ".env.encrypted")
+extra_extensions = [".encrypted"]
 
 # Values to never flag
 extra_safe_values = ["test_fixture_token_abc123"]
@@ -172,7 +172,7 @@ credactor/
     suppressions.py      # inline ignore, allowlist
     types.py             # Finding TypedDict and shared types
     utils.py             # entropy, encoding detection
-    walker.py            # directory traversal, parallelism
+    walker.py            # directory traversal, git modes
 scripts/
     audit_wheel.py       # supply chain: verify wheel matches repo
 tests/
@@ -192,6 +192,7 @@ tests/
     test_scanner.py
     test_security.py
     test_suppressions.py
+    test_utils.py
     test_walker.py
 requirements-ci.in       # CI dependency source (human-readable)
 requirements-ci.txt      # CI dependency lockfile (hash-pinned)

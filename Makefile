@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint scan scan-dry clean
+.PHONY: help install dev test lint scan scan-fix clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -12,8 +12,9 @@ dev: ## Install with dev dependencies
 test: ## Run tests
 	python -m pytest tests/ -v
 
-lint: ## Run linter
-	ruff check credactor/ tests/
+lint: ## Run linter and type checker (same checks as CI)
+	ruff check credactor/ tests/ scripts/
+	mypy credactor/ scripts/
 
 scan: ## Run credactor on the project
 	python -m credactor --dry-run .

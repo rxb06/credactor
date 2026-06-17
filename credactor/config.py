@@ -23,6 +23,15 @@ MIN_LEN_DEFAULT: int = 8
 TomlData = dict[str, Any]
 
 
+class ConfigError(Exception):
+    """An explicitly-named config (``--config``) could not be loaded.
+
+    Raised only for an *explicit* path; implicit discovery of a malformed
+    config warns and falls back to defaults instead. The CLI converts this to
+    a fatal exit 2 so a content typo is as loud as a filename typo.
+    """
+
+
 @dataclass
 class Config:
     """Runtime configuration — populated from CLI flags and/or config file."""
@@ -112,10 +121,12 @@ def load_config_file(
         # Limit traversal depth to prevent picking up config files
         # from shared parent directories (e.g. /tmp/.credactor.toml).
         # Walk up at most 5 levels — enough for monorepo nesting.
+        # +1: the first iteration is the target directory itself; max_depth
+        # counts parent levels, matching the manual's "up to 5 parents".
         max_depth = 5
         candidates = []
         p = Path(root).resolve()
-        for _ in range(max_depth):
+        for _ in range(max_depth + 1):
             candidates.append(p / '.credactor.toml')
             if p.parent == p:
                 break
@@ -153,21 +164,38 @@ def load_config_file(
                         '%s (project root: %s).%s', candidate, ref, hint,
                     )
                     return {}
-            return _parse_toml(candidate)
+            # An explicit --config that won't parse is fatal (ConfigError);
+            # a discovered one warns and is skipped. When explicit_path is set
+            # this is the only candidate, so it carries the explicit signal.
+            return _parse_toml(candidate, fatal=bool(explicit_path))
 
     return {}
 
 
-def _parse_toml(path: Path) -> TomlData:
-    """Parse a TOML file using stdlib tomllib (Python 3.11+)."""
+def _parse_toml(path: Path, *, fatal: bool = False) -> TomlData:
+    """Parse a TOML file using stdlib tomllib (Python 3.11+).
+
+    With ``fatal=True`` (an explicit ``--config`` path) a read or parse failure
+    raises :class:`ConfigError` instead of warning and degrading to defaults —
+    silently scanning at the wrong sensitivity is the exact CI-gate-flip risk
+    the explicit-path guards exist to prevent. With ``fatal=False`` (implicit
+    discovery) a stray malformed config warns and is skipped.
+
+    Callers must gate on ``Path.is_file()`` first (a FIFO would block this
+    ``open()`` forever); both entry points do.
+    """
     import tomllib
     try:
         with open(path, 'rb') as fh:
             return tomllib.load(fh)
     except OSError as exc:
+        if fatal:
+            raise ConfigError(f'cannot read config {path}: {exc}') from exc
         logger.warning('Could not read config %s: %s', path, exc)
         return {}
     except tomllib.TOMLDecodeError as exc:
+        if fatal:
+            raise ConfigError(f'invalid TOML in {path}: {exc}') from exc
         logger.warning('Invalid TOML in %s: %s', path, exc)
         return {}
 
@@ -222,12 +250,19 @@ def _coerce_str_list(key: str, raw: object, *, lower: bool = False) -> list[str]
     return out
 
 
+_KNOWN_INGEST_KEYS = frozenset({'from_gitleaks', 'from_trufflehog'})
+
+
 def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
     """Apply the optional ``[ingest]`` table (from_gitleaks / from_trufflehog)."""
     ingest = file_data.get('ingest', {})
     if not isinstance(ingest, dict):
         logger.warning('[ingest] config section must be a table, ignoring')
         return
+    # Same typo guard as the top-level keys: a misspelled from_gitleaks means
+    # ingestion silently never runs.
+    for key in sorted(ingest.keys() - _KNOWN_INGEST_KEYS):
+        logger.warning("Unknown config key 'ingest.%s' ignored — check for typos.", key)
     if 'from_gitleaks' in ingest:
         val = ingest['from_gitleaks']
         if not isinstance(val, str):
@@ -242,8 +277,20 @@ def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
             config.from_trufflehog = val
 
 
+# Top-level keys apply_config_file consumes. Anything else warns: every
+# MALFORMED known key already warns, so a silently dropped typo (e.g.
+# 'entropy_treshold') was the one config mistake with no signal — for a
+# security tool that can mean scanning at the wrong sensitivity unnoticed.
+_KNOWN_KEYS = frozenset({
+    'entropy_threshold', 'min_value_length', 'skip_dirs', 'skip_files',
+    'extra_extensions', 'extra_safe_values', 'replacement', 'ingest',
+})
+
+
 def apply_config_file(config: Config, file_data: TomlData) -> None:
     """Merge values from a parsed config file into the Config object."""
+    for key in sorted(file_data.keys() - _KNOWN_KEYS):
+        logger.warning('Unknown config key %r ignored — check for typos.', key)
     for key, coerce, bounds, default in _SCALAR_VALIDATORS:
         if key in file_data:
             setattr(config, key, _coerce_scalar(key, file_data[key], coerce, bounds, default))

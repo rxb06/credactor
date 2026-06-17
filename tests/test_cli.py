@@ -2,6 +2,8 @@
 
 import json
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -138,6 +140,190 @@ class TestMainExitCodes:
             main(['--format', 'sarif', tmp_dir])
         assert exc_info.value.code == 0
 
+    def test_dry_run_fix_all_warns_and_modifies_nothing(self, make_file, credactor_caplog):
+        # --dry-run winning IS the safe outcome, but silently ignoring
+        # --fix-all was inconsistent: --staged/--scan-history warn on the
+        # same combination and --ci rejects it outright.
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'  # credactor:ignore
+        path = make_file('secret.py', f'aws_key = "{key}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+        with open(path) as f:
+            assert key in f.read()
+        assert not os.path.exists(path + '.bak')
+        assert any('--dry-run takes precedence' in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_staged_dry_run_fix_all_warns_once_via_staged_only(self, credactor_caplog):
+        # The staged message already covers the ignored --fix-all; the
+        # generic precedence warning must not double up on top of it.
+        _validate_invocation(Config(staged_only=True, dry_run=True, fix_all=True))
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any('--staged is read-only' in m for m in msgs)
+        assert not any('--dry-run takes precedence' in m for m in msgs)
+
+    def test_missing_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
+        # An explicit --config that doesn't exist must be fatal: silently
+        # scanning at default sensitivity would drop every intended setting
+        # (thresholds, extra_extensions, [ingest]) and can flip a failing
+        # CI gate to a pass via a filename typo.
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', os.path.join(tmp_dir, 'missing.toml'),
+                  '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'Config file not found' in credactor_caplog.text
+
+    def test_directory_as_explicit_config_exits_2(self, tmp_dir):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', tmp_dir, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+
+    def test_invalid_toml_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
+        # An explicit --config that exists but is unparseable is the same
+        # CI-gate-flip threat as a missing one: silently scanning at defaults
+        # drops every intended setting. A content typo must be as loud as a
+        # filename typo.
+        cfg = os.path.join(tmp_dir, 'cfg.toml')
+        with open(cfg, 'w') as f:
+            f.write('entropy_threshold = = 4.0\n')  # syntactically invalid TOML
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', cfg, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'invalid TOML' in credactor_caplog.text.lower() \
+            or 'invalid toml' in credactor_caplog.text.lower()
+
+    def test_invalid_toml_config_does_not_silently_skip_settings(self, tmp_dir):
+        # The worst case spelled out: a config whose extra_extensions makes a
+        # secret in a .custom file visible. Valid -> exit 1 (found). Invalid
+        # -> must be exit 2 (fatal), NOT exit 0 (silent miss at defaults).
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'  # credactor:ignore
+        with open(os.path.join(tmp_dir, 'secret.custom'), 'w') as f:
+            f.write(f'aws_key = "{key}"\n')
+        good = os.path.join(tmp_dir, 'good.toml')
+        with open(good, 'w') as f:
+            f.write('extra_extensions = [".custom"]\n')
+        with pytest.raises(SystemExit) as found:
+            main(['--config', good, '--dry-run', tmp_dir])
+        assert found.value.code == 1            # config honored -> secret found
+
+        bad = os.path.join(tmp_dir, 'bad.toml')
+        with open(bad, 'w') as f:
+            f.write('extra_extensions = [".custom"\n')  # unterminated array
+        with pytest.raises(SystemExit) as broken:
+            main(['--config', bad, '--dry-run', tmp_dir])
+        assert broken.value.code == 2          # fatal, not a silent exit 0
+
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='chmod 000 unreadable semantics are POSIX-only')
+    def test_unreadable_explicit_config_exits_2(self, tmp_dir):
+        cfg = os.path.join(tmp_dir, 'noperm.toml')
+        with open(cfg, 'w') as f:
+            f.write('entropy_threshold = 4.0\n')
+        os.chmod(cfg, 0o000)
+        try:
+            if os.access(cfg, os.R_OK):   # running as root reads it anyway
+                pytest.skip('cannot make file unreadable (running as root?)')
+            with pytest.raises(SystemExit) as exc_info:
+                main(['--config', cfg, '--dry-run', tmp_dir])
+            assert exc_info.value.code == 2
+        finally:
+            os.chmod(cfg, 0o644)
+
+
+class TestTtyGates:
+    """Interactive mode and the --fix-all confirmation require a real TTY on
+    stdin — a script accidentally piping y-prefixed text must not rewrite
+    files. --fix-all --yes remains the unattended path."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_interactive_non_tty_exits_1_untouched(
+            self, make_file, monkeypatch, credactor_caplog):
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
+        with pytest.raises(SystemExit) as exc_info:
+            main([os.path.dirname(path)])
+        assert exc_info.value.code == 1
+        with open(path) as f:
+            assert self._KEY in f.read()
+        assert not os.path.exists(path + '.bak')
+        assert any('requires a TTY' in r.getMessage()
+                   for r in credactor_caplog.records)
+
+    def test_fix_all_without_yes_non_tty_aborts(
+            self, make_file, monkeypatch, capsys):
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+        with open(path) as f:
+            assert self._KEY in f.read()
+        assert 'pass --yes' in capsys.readouterr().out
+
+    def test_interactive_with_tty_redacts(self, make_file, monkeypatch):
+        # Control: a real TTY (pty wrappers included) keeps working.
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+        with pytest.raises(SystemExit) as exc_info:
+            main([os.path.dirname(path)])
+        assert exc_info.value.code == 0
+        with open(path) as f:
+            assert self._KEY not in f.read()
+
+    def test_fix_all_yes_non_tty_proceeds(self, make_file, monkeypatch):
+        # Control: the documented unattended path is unaffected by the gate.
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 0
+        with open(path) as f:
+            assert self._KEY not in f.read()
+
+
+class TestNonTextFixAllStreamPurity:
+    """-f json/sarif + --fix-all --yes: stdout must stay a single parseable
+    document; confirmation banners and the summary belong on stderr."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_json_fix_all_stdout_is_pure_json(self, make_file, capsys):
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['-f', 'json', '--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 0
+        out, err = capsys.readouterr()
+        data = json.loads(out)  # was: JSON followed by human text
+        assert data['count'] == 1
+        assert '--fix-all will modify' in err
+        assert 'Summary' in err
+        with open(path) as f:
+            assert self._KEY not in f.read()
+
+    def test_sarif_fix_all_stdout_is_pure_sarif(self, make_file, capsys):
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['-f', 'sarif', '--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 0
+        out, err = capsys.readouterr()
+        data = json.loads(out)
+        assert data['version'] == '2.1.0'
+        assert 'Summary' in err
+
+    def test_text_fix_all_summary_stays_on_stdout(self, make_file, capsys):
+        path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', os.path.dirname(path)])
+        assert exc_info.value.code == 0
+        out, _ = capsys.readouterr()
+        assert '--fix-all will modify' in out
+        assert 'Summary' in out
+
 
 class TestGitleaksFileTargetRejection:
     """--from-gitleaks with a file target must be rejected with exit code 2."""
@@ -187,7 +373,9 @@ class TestConfigFileIngestCLI:
             json.dump([finding], f)
         with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
             f.write('[ingest]\n')
-            f.write(f'from_gitleaks = "{report}"\n')
+            # as_posix(): a Windows path's backslashes are escape sequences inside a
+            # double-quoted TOML string (tomllib parse error -> config ignored).
+            f.write(f'from_gitleaks = "{Path(report).as_posix()}"\n')
         with pytest.raises(SystemExit) as exc_info:
             main(['--dry-run', repo])
         assert exc_info.value.code == 1
@@ -206,7 +394,7 @@ class TestConfigFileIngestCLI:
             f.write(json.dumps(finding) + '\n')
         with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
             f.write('[ingest]\n')
-            f.write(f'from_trufflehog = "{report}"\n')
+            f.write(f'from_trufflehog = "{Path(report).as_posix()}"\n')
         with pytest.raises(SystemExit) as exc_info:
             main(['--dry-run', repo])
         assert exc_info.value.code == 1
@@ -221,7 +409,9 @@ class TestConfigFileIngestCLI:
             json.dump([], f)
         with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
             f.write('[ingest]\n')
-            f.write(f'from_gitleaks = "{report}"\n')
+            # as_posix(): a Windows path's backslashes are escape sequences inside a
+            # double-quoted TOML string (tomllib parse error -> config ignored).
+            f.write(f'from_gitleaks = "{Path(report).as_posix()}"\n')
         with pytest.raises(SystemExit) as exc_info:
             main(['--scan-history', repo])
         assert exc_info.value.code == 2
@@ -361,7 +551,10 @@ class TestPhase1Fixes:
         from pathlib import Path
 
         from credactor.cli import _PROTECTED_DIRS_RESOLVED
-        if Path('/etc').resolve() != Path('/etc'):   # only where /etc is a symlink
+        # Require /etc to EXIST as well as resolve differently: on Windows
+        # '/etc' also resolves to something else (C:\etc), which would run the
+        # macOS-symlink assertion against a path that was never protected.
+        if Path('/etc').exists() and Path('/etc').resolve() != Path('/etc'):
             assert str(Path('/etc').resolve()) in _PROTECTED_DIRS_RESOLVED
 
     # --- H5: a dangerous replacement supplied via .credactor.toml is rejected ---
@@ -424,6 +617,48 @@ class TestStagedReadOnly:
                    for r in credactor_caplog.records)
 
 
+class TestScanHistoryReadOnly:
+    """--scan-history is read-only — history findings carry synthetic
+    'file (commit abc123)' paths no write pass can open, so dry-run is forced
+    and a redaction pass (which could only fail per finding) is never offered."""
+
+    def test_scan_history_forces_dry_run(self):
+        config = Config(scan_history=True, dry_run=False)
+        _validate_invocation(config)
+        assert config.dry_run is True
+
+    def test_scan_history_fix_all_warns_and_forces_dry_run(self, credactor_caplog):
+        config = Config(scan_history=True, fix_all=True, dry_run=False)
+        _validate_invocation(config)
+        assert config.dry_run is True
+        assert any('--scan-history is read-only' in r.message
+                   for r in credactor_caplog.records)
+
+
+class TestReplacementEnvModeWarning:
+    """--replacement is never consulted in env mode (which generates
+    language-aware references) — passing both must warn, not silently ignore."""
+
+    def test_replacement_with_env_mode_warns(self, tmp_dir, credactor_caplog):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with pytest.raises(SystemExit):
+            main(['--dry-run', '--replace-with', 'env',
+                  '--replacement', 'CUSTOM', tmp_dir])
+        assert any('--replacement has no effect' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_no_warning_without_env_mode(self, tmp_dir, credactor_caplog):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with pytest.raises(SystemExit):
+            main(['--dry-run', '--replacement', 'CUSTOM', tmp_dir])
+        assert not any('--replacement has no effect' in r.message
+                       for r in credactor_caplog.records)
+
+
 class TestReplacementPrecedence:
     """M10: an explicit --replacement overrides a config-file 'replacement'
     (precedence CLI > config > default)."""
@@ -452,6 +687,7 @@ class TestReplacementPrecedence:
         src, key = self._make_repo(tmp_dir)
         with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
             f.write('replacement = "FROM_CONFIG"\n')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
         monkeypatch.setattr('builtins.input', lambda *a: 'y')
         with pytest.raises(SystemExit):
             main(['--fix-all', '--replace-with', 'custom',
@@ -464,6 +700,7 @@ class TestReplacementPrecedence:
         src, key = self._make_repo(tmp_dir)
         with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
             f.write('replacement = "FROM_CONFIG"\n')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
         monkeypatch.setattr('builtins.input', lambda *a: 'y')
         with pytest.raises(SystemExit):
             main(['--fix-all', '--replace-with', 'custom', tmp_dir])
@@ -482,8 +719,12 @@ class TestFixAllYes:
             f.write(f'api_key = "{key}"\n')
         return src, key
 
-    def test_fix_all_without_yes_aborts_on_non_tty(self, tmp_dir, monkeypatch):
+    def test_fix_all_without_yes_aborts_on_eof_at_tty(self, tmp_dir, monkeypatch):
+        # isatty=True so this pins the EOF (Ctrl-D at the prompt) handler —
+        # the non-TTY pipe case is owned by TestTtyGates and would otherwise
+        # gate first, leaving this branch uncovered.
         src, key = self._repo(tmp_dir)
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
 
         def _raise_eof(*_a):
             raise EOFError()
@@ -599,3 +840,141 @@ class TestJsonSkippedNotice:
             main(['--dry-run', tmp_dir])
         err = capsys.readouterr().err
         assert '.json file(s) present but not scanned' in err
+
+
+class TestExitCodeEdgeBranches:
+    """Three small exit paths that had no coverage: a non-text format WITH
+    findings exits 1; Ctrl-C anywhere in main exits 130; declining the
+    --fix-all confirmation aborts with exit 1 and touches nothing."""
+
+    def _make_secret(self, tmp_dir):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = os.path.join(tmp_dir, 'app.py')
+        with open(path, 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        return path, key
+
+    def test_json_format_with_findings_exits_1(self, tmp_dir, capsys):
+        self._make_secret(tmp_dir)
+        with pytest.raises(SystemExit) as exc:
+            main(['--format', 'json', tmp_dir])
+        assert exc.value.code == 1
+        assert '"count": 1' in capsys.readouterr().out
+
+    def test_keyboard_interrupt_exits_130(self, monkeypatch, capsys):
+        def boom(argv=None):
+            raise KeyboardInterrupt
+        monkeypatch.setattr('credactor.cli._main_inner', boom)
+        with pytest.raises(SystemExit) as exc:
+            main([])
+        assert exc.value.code == 130
+        assert 'Interrupted' in capsys.readouterr().err
+
+    def test_fix_all_decline_aborts_exit_1(self, tmp_dir, monkeypatch, capsys):
+        # isatty=True so the answer branch is what's covered here — without
+        # it the TTY gate aborts first and 'n' is never read.
+        path, key = self._make_secret(tmp_dir)
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--fix-all', tmp_dir])
+        assert exc.value.code == 1
+        assert 'Aborted' in capsys.readouterr().out
+        with open(path) as f:
+            assert key in f.read()       # nothing was redacted
+
+
+class TestScanJsonEndToEnd:
+    """S33: --scan-json detection end-to-end — a secret whose only home is a
+    .json file flips the exit code only when the flag is passed (the flag's
+    actual scanning branch was previously untested; only the skip notice was)."""
+
+    def _make_json_secret(self, tmp_dir):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'cfg.json'), 'w') as f:
+            f.write(f'{{"aws_key": "{key}"}}\n')
+
+    def test_json_secret_found_with_flag(self, tmp_dir):
+        self._make_json_secret(tmp_dir)
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--scan-json', tmp_dir])
+        assert exc.value.code == 1
+
+    def test_json_secret_missed_without_flag(self, tmp_dir):
+        self._make_json_secret(tmp_dir)
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', tmp_dir])
+        assert exc.value.code == 0
+
+    def test_interactive_mode_scans_json_without_picker(
+            self, tmp_dir, monkeypatch, capsys):
+        # --scan-json is the explicit opt-in: interactive mode scans all
+        # collected .json like every other mode. The former numbered
+        # file-picker prompt is gone — the only prompt is Replace?.
+        self._make_json_secret(tmp_dir)
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--scan-json', tmp_dir])
+        assert exc.value.code == 1           # found, then skipped at the prompt
+        out = capsys.readouterr().out
+        assert 'Selection' not in out        # no picker prompt
+        assert 'INTERACTIVE REDACTION' in out  # went straight to review
+
+
+class TestCredactorignoreFileTarget:
+    """MV-2: .credactorignore loads only for a directory scan (its root is the
+    scanned dir). A single-file target never applies one, so warn when an ignore
+    file sits beside the target instead of suppressing nothing silently."""
+
+    _KEY = 'AKIA4HJR6WPT3XLQ8NVB'
+
+    def test_file_target_warns_credactorignore_inert(
+        self, make_file, tmp_dir, credactor_caplog
+    ):
+        # The glob would suppress this file on a DIR scan (-> 0), but is inert
+        # for the file target (finding stays -> exit 1). The miss must not be
+        # silent: a default-visible WARN names it.
+        path = make_file('app.py', f'aws_key = "{self._KEY}"\n')
+        Path(tmp_dir, '.credactorignore').write_text('app.py\n', encoding='utf-8')
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', path])
+
+        assert exc.value.code == 1   # NOT suppressed — proves the inertness
+        assert any(
+            'single-file target' in r.getMessage() and r.levelname == 'WARNING'
+            for r in credactor_caplog.records
+        )
+
+    def test_file_target_no_warn_without_ignore_file(
+        self, make_file, credactor_caplog
+    ):
+        # No .credactorignore present -> no spurious warning on a normal scan.
+        path = make_file('app.py', f'aws_key = "{self._KEY}"\n')
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', path])
+
+        assert exc.value.code == 1
+        assert not any(
+            'single-file target' in r.getMessage()
+            for r in credactor_caplog.records
+        )
+
+    def test_dir_target_applies_credactorignore_and_no_warn(
+        self, make_file, tmp_dir, credactor_caplog
+    ):
+        # The directory scan still loads and applies .credactorignore (-> 0) and
+        # does NOT emit the single-file-target warning.
+        make_file('app.py', f'aws_key = "{self._KEY}"\n')
+        Path(tmp_dir, '.credactorignore').write_text('app.py\n', encoding='utf-8')
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', tmp_dir])
+
+        assert exc.value.code == 0   # suppressed by the glob
+        assert not any(
+            'single-file target' in r.getMessage()
+            for r in credactor_caplog.records
+        )

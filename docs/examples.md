@@ -76,7 +76,7 @@ python -m credactor --fix-all /path/to/project
   Proceed? [y/N]: y
 
 ======================================================================
-  Summary:  5 replaced  |  0 skipped  |  5 total
+  Summary:  5 replaced  |  0 failed  |  5 total
   Reminder: rotate / revoke any credentials that were just redacted.
 ======================================================================
 ```
@@ -103,11 +103,11 @@ DB_PASSWORD = "s3cretP@ssw0rd"
 After:
 
 ```python
-AWS_KEY = os.environ["AWS_KEY"]
+AWS_KEY = os.environ["AWS_ACCESS_KEY"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 ```
 
-Language-aware — `.js` gets `process.env["AWS_KEY"]`, `.go` gets `os.Getenv("AWS_KEY")`, etc.
+Language-aware — `.js` gets `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, etc. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
 
 ## 5. Pre-commit hook
 
@@ -254,28 +254,13 @@ Value-literal and `file:line` suppressions are intentionally noisy — Credactor
 ## 9. Include JSON files
 
 JSON is excluded by default (API responses cause too many false positives).
+With `--scan-json`, every collected `.json` file is scanned — in CI, dry-run,
+and interactive mode alike.
 
 ```bash
-# CI — scan all JSON
-python -m credactor --ci --scan-json .
-
-# Interactive — pick which ones
-python -m credactor --scan-json .
-```
-
-Interactive selection:
-
-```
-  Found 4 .json file(s):
-
-    [  1]  config/secrets.json
-    [  2]  data/api_response.json
-    [  3]  package.json
-    [  4]  tsconfig.json
-
-  Enter file numbers to scan (e.g. 1,3,5  or  2-4  or  all):
-  Selection: 1,3
-  Selected 2 file(s) for .json scan.
+python -m credactor --ci --scan-json .     # read-only gate including JSON
+python -m credactor --scan-json .          # interactive: findings go straight
+                                           # to the per-finding Replace? prompt
 ```
 
 ## 10. Team config
@@ -329,7 +314,7 @@ MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB...
 
 ```
   Line   1  [CRITICAL]  [pattern:private key block]
-           PRIVATE_KEY = """-----[REDACTED]
+           PRIV[REDACTED]
 ```
 
 Lines inside the block aren't scanned separately.

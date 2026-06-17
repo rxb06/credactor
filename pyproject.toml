@@ -1,10 +1,15 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+# >=77: first release that accepts the PEP 639 SPDX string `license` below —
+# building with 68-76 fails on "invalid pyproject.toml config: project.license".
+# "wheel" is omitted: setuptools >=70.1 builds wheels itself.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "credactor"
-version = "2.4.0"
+# Single-sourced from credactor/__init__.py (see [tool.setuptools.dynamic]) so
+# a release bump cannot leave pip metadata and `credactor --version` disagreeing.
+dynamic = ["version"]
 description = "Scan and redact hardcoded credentials in source code"
 readme = "README.md"
 license = "Apache-2.0"
@@ -20,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
 ]
@@ -37,6 +43,12 @@ credactor = "credactor.cli:main"
 
 [project.urls]
 Repository = "https://github.com/rxb06/Credactor"
+Issues = "https://github.com/rxb06/Credactor/issues"
+Changelog = "https://github.com/rxb06/Credactor/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/rxb06/Credactor/blob/main/docs/manual.md"
+
+[tool.setuptools.dynamic]
+version = {attr = "credactor.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["credactor*"]
@@ -65,12 +77,12 @@ ignore = ["RUF003"]
 
 [tool.ruff.lint.mccabe]
 # Generous ceiling: the scanner/redactor have a few inherently branchy functions
-# (current worst cyclomatic complexity is 23). This guards against further growth.
+# (current worst cyclomatic complexity is 24, scan_line). Guards further growth.
 max-complexity = 25
 
 [tool.ruff.lint.pylint]
-max-branches = 25     # current worst: 24
-max-statements = 90   # current worst: 88
+max-branches = 25     # current worst: 24 (batch_replace_in_file)
+max-statements = 90   # current worst: 86 (batch_replace_in_file)
 
 [tool.ruff.lint.per-file-ignores]
 # Tests routinely unpack multi-value returns (e.g. walk_and_scan's 4-tuple) and
@@ -79,7 +91,17 @@ max-statements = 90   # current worst: 88
 
 [tool.mypy]
 python_version = "3.11"
-files = ["credactor"]
+# Pin the check platform: typeshed's fcntl stub is empty under win32, so an
+# unpinned mypy on a Windows runner errors on redactor.py's lazy fcntl use
+# (the runtime ImportError guard isn't narrowing mypy understands). One
+# platform keeps the type-check deterministic across the CI matrix.
+platform = "linux"
+files = ["credactor", "scripts"]
 strict = true
-# charset_normalizer / chardet are optional, lazily-imported deps with no stubs.
+# Scope the missing-import exemption to the two optional encoding detectors
+# (resolved once at credactor.utils import; chardet has no stubs and is absent
+# from dev/CI) — a blanket ignore_missing_imports would silently treat any
+# accidental new import as untyped.
+[[tool.mypy.overrides]]
+module = ["charset_normalizer", "charset_normalizer.*", "chardet", "chardet.*"]
 ignore_missing_imports = true

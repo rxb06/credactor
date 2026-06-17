@@ -8,6 +8,7 @@ import contextlib
 import os
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,10 +21,6 @@ from .utils import (
     mask_secret,
     relativize,
     sanitize_for_terminal,
-)
-
-_UNSAFE_REPLACEMENT_RE = re.compile(
-    r'[`$\\;|&]|__import__|eval\s*\(|exec\s*\(|system\s*\(|subprocess'
 )
 
 
@@ -40,8 +37,8 @@ def _make_replacement(
     Returns ``(replacement, takes_quotes)``. ``takes_quotes`` is True only for a
     bare env expression (e.g. ``os.environ["X"]``) that would be left nested
     inside the original quotes if it merely replaced the bare value; it is False
-    for ``${X}`` interpolations (shell/YAML belong inside the quotes), the
-    sentinel fallback, and sentinel/custom modes (which stay quoted).
+    for ``${X}`` interpolations (shell/YAML belong inside the quotes) and for
+    sentinel/custom modes (which stay quoted).
 
     Modes (config.replace_mode):
       - 'env':                 language-aware env var reference
@@ -50,14 +47,13 @@ def _make_replacement(
                                (default 'REDACTED_BY_CREDACTOR').
     """
     if config.replace_mode == 'env':
-        # Derive env var name from the variable name in the finding
+        # Derive env var name from the variable name in the finding.
+        # _derive_env_var_name strips everything outside [A-Za-z0-9_] — that
+        # re.sub is the injection defense for crafted finding types (a prior
+        # regex guard here could never fire on the already-sanitized name and
+        # was removed as dead code).
         var_name = _derive_env_var_name(finding)
         ext = Path(filepath).suffix.lower()
-        # Validate the sanitised var name (not the full replacement, which
-        # intentionally contains shell metacharacters like ${} for
-        # shell/YAML/config files).
-        if _UNSAFE_REPLACEMENT_RE.search(var_name):
-            return 'REDACTED_BY_CREDACTOR', False
         ref = _env_ref_for_language(var_name, ext)
         # ${X} interpolations stay inside the source quotes; bare expressions
         # (os.environ[...], process.env[...], ...) replace the quoted literal.
@@ -77,7 +73,7 @@ def _derive_env_var_name(finding: Finding) -> str:
             name = name.rsplit('.', 1)[1]
         raw = name.upper().replace('-', '_')
     # pattern:AWS access key -> AWS_ACCESS_KEY
-    elif ftype.startswith('pattern:') or ftype.startswith('xml-attr:'):
+    elif ftype.startswith(('pattern:', 'xml-attr:')):
         label = ftype.split(':', 1)[1]
         raw = label.upper().replace(' ', '_').replace('-', '_')
     # external:gitleaks:aws-access-token -> AWS_ACCESS_TOKEN
@@ -108,11 +104,8 @@ def _env_ref_for_language(var_name: str, ext: str) -> str:
         return f'System.getenv("{var_name}")'
     if ext in ('.php',):
         return f"getenv('{var_name}')"
-    if ext in ('.sh', '.bash', '.env') or ext.startswith('.env'):
-        return f'${{{var_name}}}'
-    if ext in ('.yaml', '.yml', '.toml', '.cfg', '.ini', '.conf'):
-        return f'${{{var_name}}}'
-    # Fallback
+    # Shell, YAML/TOML/INI/config files, and every unrecognised extension all
+    # take the same ${VAR} interpolation — one fallback covers them.
     return f'${{{var_name}}}'
 
 
@@ -272,14 +265,131 @@ def _secure_delete(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 # Batch replacement per file (#14)
 # ---------------------------------------------------------------------------
+def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
+    """Write *lines* via a temp file + ``os.replace`` so a mid-write crash
+    leaves the original intact. Returns False (after logging) on failure."""
+    dir_name = os.path.dirname(filepath) or '.'
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
+        with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
+            fh.writelines(lines)
+        os.replace(tmp_path, filepath)
+        tmp_path = None  # rename succeeded — nothing to clean up
+        return True
+    except OSError as exc:
+        logger.error('Cannot write %s: %s', filepath, exc)
+        return False
+    finally:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+
+
+def _final_file_sweep(
+    filepath: str,
+    approved: list[Finding],
+    preserve_lines: set[int],
+    config: Config,
+) -> None:
+    """End-of-review sweep over one file with the session's full knowledge.
+
+    The per-approval sweeps exclude every other known finding line statically
+    (a prompt may still be pending), so a copy of approved value A sitting on
+    finding B's line survives even after B itself is approved. This pass
+    re-sweeps the file for ALL approved values, preserving only the lines
+    whose findings were skipped, failed, or never adjudicated (interrupt).
+    Changes remain covered by the .bak taken at the first replacement.
+    """
+    try:
+        encoding = detect_encoding(filepath)
+        with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.error('Cannot read %s: %s', filepath, exc)
+        return
+    before = list(lines)
+    _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
+    if lines == before:
+        return
+    try:
+        orig_mode: int | None = os.stat(filepath).st_mode
+    except OSError:
+        orig_mode = None
+    if _write_atomic(filepath, lines, encoding) and orig_mode is not None:
+        with contextlib.suppress(OSError):
+            os.chmod(filepath, orig_mode)
+
+
+def _sweep_stray_copies(
+    lines: list[str],
+    file_findings: list[Finding],
+    config: Config,
+    preserved: set[int],
+    filepath: str,
+) -> None:
+    """Clear remaining exact copies of redacted values beyond the
+    adjudicated findings.
+
+    The per-finding replace handles one occurrence each, but the same secret
+    literal can survive — a second occurrence on the finding's own line, a
+    trailing comment elsewhere, or (the common case) a detector that
+    DEDUPLICATED repeated copies and reported the value only once. Lines in
+    ``preserved`` (1-based) are never touched: they belong to known findings
+    whose own adjudication — an explicit interactive skip, a pending prompt,
+    or a failed replacement — owns them. Scope is bounded to this one file.
+    """
+    stray = ('REDACTED_BY_CREDACTOR' if config.replace_mode == 'env'
+             else config.custom_replacement)
+    values = {f['full_value'] for f in file_findings if f['full_value']}
+    if not values:
+        return
+    # One compiled alternation (longest value first so a short value can't
+    # shadow a longer one). Word-boundary anchors protect a secret embedded in
+    # a larger *word* token (123456789), but a copy bounded by a non-word char
+    # (secret-extended, secret.bak) is still swept — fail-safe over-redaction
+    # pinned by test_sweep_redacts_value_in_nonword_bounded_token. The
+    # replacement is a
+    # function so a custom string with backreference-like text (e.g. '\\1')
+    # is inserted literally, not as a regex template. On the finding's own
+    # line the literal is already gone (replaced above), so re.subn is a
+    # no-op there; duplicate copies on other lines are what this catches.
+    pat = re.compile(
+        r'(?<!\w)(?:'
+        + '|'.join(re.escape(v) for v in sorted(values, key=len, reverse=True))
+        + r')(?!\w)'
+    )
+    stray_count = 0
+    for idx in range(len(lines)):
+        if idx + 1 in preserved:
+            continue
+        lines[idx], n = pat.subn(lambda _m: stray, lines[idx])
+        stray_count += n
+    if stray_count:
+        # Default-visible (stderr): the file was modified beyond the
+        # adjudicated findings — the summary alone would under-report it.
+        # ("additional", not "unreported": a second occurrence on a finding's
+        # own line is also cleared here.)
+        logger.warning(
+            '%s: also cleared %d additional cop%s of redacted value(s) '
+            'beyond the adjudicated finding(s) (value-global sweep).',
+            filepath, stray_count, 'y' if stray_count == 1 else 'ies',
+        )
+
+
 def batch_replace_in_file(
     filepath: str,
     file_findings: list[Finding],
     config: Config,
+    *,
+    sweep_exclude_lines: frozenset[int] = frozenset(),
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
     Applies replacements bottom-to-top to preserve line numbers.
+    ``sweep_exclude_lines`` — 1-based lines owned by known findings NOT being
+    replaced in this call (interactive skips / not-yet-prompted findings);
+    the duplicate-copy sweep leaves them untouched.
     Returns (replaced_count, failed_count).
 
     Addresses #1 (backup), #14 (batch), #16 (encoding-aware).
@@ -322,7 +432,11 @@ def batch_replace_in_file(
             # redaction never normalizes line endings on untouched lines.
             with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
                 lines = fh.readlines()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a detected multibyte encoding (e.g.
+            # truncated UTF-16) failing mid-stream must fail THIS file only —
+            # an ingested finding pointing at such a file previously aborted
+            # the whole redaction run mid-loop.
             logger.error('Cannot read %s: %s', filepath, exc)
             return 0, len(file_findings)
 
@@ -336,6 +450,7 @@ def batch_replace_in_file(
 
         replaced = 0
         failed = 0
+        failed_lines: set[int] = set()
 
         # Sort by line number descending so earlier replacements don't shift later ones
         sorted_findings = sorted(file_findings, key=lambda f: f['line'], reverse=True)
@@ -348,6 +463,7 @@ def batch_replace_in_file(
             if idx >= len(lines):
                 logger.warning('Line %d out of range in %s — skipping.', lineno, filepath)
                 failed += 1
+                failed_lines.add(lineno)
                 continue
 
             original = lines[idx]
@@ -356,6 +472,7 @@ def batch_replace_in_file(
                     'Value no longer found on line %d in %s (already replaced?).', lineno, filepath,
                 )
                 failed += 1
+                failed_lines.add(lineno)
                 continue
 
             replacement, takes_quotes = _make_replacement(finding, config, filepath)
@@ -365,49 +482,17 @@ def batch_replace_in_file(
                 lines[idx] = original.replace(full_value, replacement, 1)
             replaced += 1
 
-        # H10: the per-finding replace handles one occurrence each. If the same
-        # secret value also appears uncredited elsewhere on the line (a trailing
-        # comment, or a second non-credential variable), those copies would survive.
-        # Sweep every touched line and replace any remaining exact copy of a redacted
-        # value with the sentinel, so no secret literal is ever left behind.
+        # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by
+        # known findings the caller did not approve here (sweep_exclude_lines)
+        # and lines whose own replacement just failed keep their content —
+        # each finding's adjudication owns its line.
         if replaced:
-            stray = ('REDACTED_BY_CREDACTOR' if config.replace_mode == 'env'
-                     else config.custom_replacement)
-            values_by_line: dict[int, set[str]] = {}
-            for finding in file_findings:
-                values_by_line.setdefault(finding['line'] - 1, set()).add(finding['full_value'])
-            for idx, values in values_by_line.items():
-                if idx >= len(lines):
-                    continue
-                # One compiled alternation per line (longest value first so a short
-                # value can't shadow a longer one). Word-boundary anchors keep us from
-                # corrupting a substring of a larger token like 123456789. The
-                # replacement is a function so a custom string with backreference-like
-                # text (e.g. '\1') is inserted literally, not as a regex template.
-                pat = re.compile(
-                    r'(?<!\w)(?:'
-                    + '|'.join(re.escape(v) for v in sorted(values, key=len, reverse=True))
-                    + r')(?!\w)'
-                )
-                lines[idx] = pat.sub(lambda _m: stray, lines[idx])
+            _sweep_stray_copies(lines, file_findings, config,
+                                set(sweep_exclude_lines) | failed_lines,
+                                filepath)
 
-        # Atomic write: write to temp file, then rename over original.
-        # Prevents corruption if process crashes mid-write.
-        dir_name = os.path.dirname(filepath) or '.'
-        tmp_path: str | None = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
-            with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
-                fh.writelines(lines)
-            os.replace(tmp_path, filepath)
-            tmp_path = None  # rename succeeded — nothing to clean up
-        except OSError as exc:
-            logger.error('Cannot write %s: %s', filepath, exc)
+        if not _write_atomic(filepath, lines, encoding):
             return 0, len(file_findings)
-        finally:
-            if tmp_path is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
 
         # Restore original file permissions
         if orig_mode is not None:
@@ -427,12 +512,15 @@ def replace_single(
     filepath: str,
     finding: Finding,
     config: Config,
+    *,
+    sweep_exclude_lines: frozenset[int] = frozenset(),
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
     Returns True on success.
     """
-    replaced, _ = batch_replace_in_file(filepath, [finding], config)
+    replaced, _ = batch_replace_in_file(
+        filepath, [finding], config, sweep_exclude_lines=sweep_exclude_lines)
     return replaced > 0
 
 
@@ -449,9 +537,41 @@ def interactive_review(
     Returns the number of unresolved findings (for exit-code use).
     """
     root_path = Path(root).resolve()
+
+    # Two same-value findings on one line cannot be adjudicated separately —
+    # line-granularity exclusion can't represent them, and the first 'y'
+    # would clear the copy a later 'n' refers to. One prompt owns the
+    # (file, line, value) triple; its answer covers every occurrence there.
+    seen: set[tuple[str, int, str]] = set()
+    deduped: list[Finding] = []
+    for f in findings:
+        key = (f['file'], f['line'], f['full_value'])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+    findings = deduped
+
     total = len(findings)
     replaced = 0
     skipped = 0
+
+    # Every known finding's line, per file: when one finding is approved, the
+    # duplicate-copy sweep must not touch lines owned by the OTHERS — their
+    # fate belongs to their own prompts (an explicit 'n' must stick).
+    lines_by_file: dict[str, set[int]] = {}
+    for f in findings:
+        lines_by_file.setdefault(f['file'], set()).add(f['line'])
+
+    # Approved findings per file, for the end-of-review sweep: a copy of an
+    # approved value on ANOTHER approved finding's line is preserved by the
+    # static per-approval exclusion above and must be cleared once that
+    # line's own adjudication has resolved.
+    approved_by_file: dict[str, list[Finding]] = {}
+
+    def _run_final_sweeps() -> None:
+        for fp, approved in approved_by_file.items():
+            preserve = lines_by_file[fp] - {f['line'] for f in approved}
+            _final_file_sweep(fp, approved, preserve, config)
 
     replacement_desc = config.custom_replacement
     if config.replace_mode == 'env':
@@ -481,18 +601,27 @@ def interactive_review(
             try:
                 answer = input("  Replace? [y/N]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
-                print(f'\n\n  Interrupted — {replaced} file(s) already '
-                      f'modified. No further changes will be made.')
-                if replaced and not config.no_backup:
+                # Completes the already-approved adjudications only: pending
+                # and skipped findings' lines are preserved by construction.
+                _run_final_sweeps()
+                print(f'\n\n  Interrupted — {replaced} replacement(s) already '
+                      f'applied. No further changes will be made.')
+                if replaced and not config.no_backup and not config.secure_delete:
+                    # Same invariant as the summary footer: under
+                    # --secure-delete each .bak was wiped after its
+                    # replacement, so there is nothing to point at.
                     print('  .bak backups exist for modified files.')
-                _print_summary(replaced, skipped, total)
+                _print_summary(replaced, skipped, total, config)
                 return total - replaced
 
             if answer in ('y', 'yes'):
-                ok = replace_single(finding['file'], finding, config)
+                others = lines_by_file[finding['file']] - {finding['line']}
+                ok = replace_single(finding['file'], finding, config,
+                                    sweep_exclude_lines=frozenset(others))
                 if ok:
                     print('  -> Replaced.\n')
                     replaced += 1
+                    approved_by_file.setdefault(finding['file'], []).append(finding)
                 else:
                     print('  -> Replacement failed -- skipping.\n')
                     skipped += 1
@@ -504,7 +633,8 @@ def interactive_review(
             else:
                 print("  Please enter 'y' or 'n'.")
 
-    _print_summary(replaced, skipped, total)
+    _run_final_sweeps()
+    _print_summary(replaced, skipped, total, config)
     return total - replaced
 
 
@@ -528,17 +658,33 @@ def fix_all(
         total_replaced += replaced
         total_failed += failed
 
-    _print_summary(total_replaced, total_failed, len(findings), label='failed')
+    _print_summary(total_replaced, total_failed, len(findings), config, label='failed')
     return total_failed
 
 
-def _print_summary(replaced: int, other: int, total: int, label: str = 'skipped') -> None:
-    print(f'{"=" * 70}')
-    print(f'  Summary:  {replaced} replaced  |  {other} {label}  |  {total} total')
+def _print_summary(
+    replaced: int, other: int, total: int, config: Config, label: str = 'skipped',
+) -> None:
+    # Mirror _handle_fix_all's stream choice: with -f json/sarif the report on
+    # stdout must stay a single parseable document, so the summary goes to
+    # stderr. Interactive review is text-only, where this is still stdout.
+    out = sys.stdout if config.output_format == 'text' else sys.stderr
+    print(f'{"=" * 70}', file=out)
+    print(f'  Summary:  {replaced} replaced  |  {other} {label}  |  {total} total',
+          file=out)
     if replaced:
-        print('  Reminder: rotate / revoke any credentials that were just redacted.')
-        print('  SECURITY: .bak backup files contain original credentials in PLAINTEXT.')
-        print('            Use --secure-backup-dir to store backups outside the repo,')
-        print('            or --secure-delete to overwrite backups after verification.')
-        print('            At minimum, delete .bak files before committing.')
-    print(f'{"=" * 70}\n')
+        print('  Reminder: rotate / revoke any credentials that were just redacted.',
+              file=out)
+        # The plaintext warning only applies when a .bak can still exist:
+        # --no-backup never writes one and --secure-delete wipes it. It stays
+        # for --secure-backup-dir — those backups are plaintext too, just
+        # elsewhere. (A failed secure-delete already logs its own warning.)
+        if not config.no_backup and not config.secure_delete:
+            print('  SECURITY: .bak backup files contain original credentials in PLAINTEXT.',
+                  file=out)
+            print('            Use --secure-backup-dir to store backups outside the repo,',
+                  file=out)
+            print('            or --secure-delete to overwrite backups after verification.',
+                  file=out)
+            print('            At minimum, delete .bak files before committing.', file=out)
+    print(f'{"=" * 70}\n', file=out)

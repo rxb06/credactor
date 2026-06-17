@@ -24,6 +24,8 @@ SCAN_EXTENSIONS = {
     '.tf', '.hcl', '.conf', '.config', '.properties',
     '.xml',
     '.pem', '.key', '.crt',           # M1: standalone PEM / key / cert files
+    '.txt',  # notes/scratch files — measured clean on prose and
+             # sha256-pinned requirements; a real leak vector (2.4.1)
 }
 
 # M1: extensionless private-key files, matched by name in should_scan_file.
@@ -103,7 +105,11 @@ DYNAMIC_LOOKUP_RE = re.compile(
 # ---------------------------------------------------------------------------
 CRED_VAR_PATTERNS = re.compile(
     r'\b('
-    r'api[_\-]?key|apikey|api[_\-]?token|'
+    # prefix-tolerant like `secret` below: \b cannot match after '_', so
+    # test_api_key / my_api_key / aws_api_key need the explicit optional
+    # prefix (which demands a _/- separator — okapi_key stays unmatched).
+    # The old standalone `apikey` alternative is subsumed.
+    r'(?:\w+[_\-])?api[_\-]?key|api[_\-]?token|'
     r'auth[_\-]?token|access[_\-]?token|bearer[_\-]?token|'
     r'client[_\-]?secret|secret[_\-]?key|app[_\-]?secret|'
     r'(?:\w+[_\-])?secret(?:[_\-]\w+)?|'
@@ -120,7 +126,15 @@ CRED_VAR_PATTERNS = re.compile(
     r'smtp[_\-]?password|mail[_\-]?password|'
     r'webhook[_\-]?secret|bot[_\-]?token|'
     r'consumer[_\-]?key|consumer[_\-]?secret|'
-    r'refresh[_\-]?token|oauth[_\-]?token'
+    # bare `token` last: a literal alternative only — \b cannot match after
+    # '_' or inside camelCase, so snake/camel compounds (csrf_token,
+    # next_page_token, pageToken, max_tokens) stay unmatched; a
+    # prefix-tolerant variant that would catch them was rejected. \b DOES
+    # match after '-'/'.' though, so kebab keys flag: vault-token /
+    # session-token / id-token are genuine secrets (fail-closed), at the
+    # accepted cost that kebab cursors (next-page-token:) with high-entropy
+    # values flag too — suppressible via the usual mechanisms; see tests.
+    r'refresh[_\-]?token|oauth[_\-]?token|token'
     r')\b',
     re.IGNORECASE,
 )
@@ -207,7 +221,10 @@ VALUE_PATTERNS: list[ValuePattern] = [
 ASSIGNMENT_RE = re.compile(
     r'''
         ["']?                          # optional quote around key name
-        (?P<var>[\w.\-]+)              # variable or key name
+        (?P<var>[\w.\-]{1,128})        # variable or key name — bounded: no real
+                                       # name is longer, and an unbounded + here
+                                       # backtracks quadratically on a 4 KiB
+                                       # unbroken word run (~280 ms per line)
         ["']?                          # optional closing quote around key name
         \s*(?::=|[:=])\s*              # assignment, dict colon, or Go := (M4)
         (?:
@@ -215,7 +232,16 @@ ASSIGNMENT_RE = re.compile(
             (?P<val_q>(?:(?!(?P=q)).)+)  # value: everything up to matching quote
             (?P=q)                     # closing quote
         |
-            (?P<val_u>[^\s#;,\]}"']+)  # unquoted: stop at whitespace/comment/delimiters/quotes
+            (?P<val_u>
+                \$\{[A-Za-z_][A-Za-z0-9_]*\}   # complete ${POSIX_NAME}: keep the
+                                               # closing brace so the safe-value
+                                               # check sees a closed env ref —
+                                               # ONLY the pure-name form; ${VAR:-x}
+                                               # must keep arriving unclosed (the
+                                               # fallback can be a real secret)
+            |
+                [^\s#;,\]}"']+         # unquoted: stop at whitespace/comment/delimiters/quotes
+            )
         )
     ''',
     re.VERBOSE,

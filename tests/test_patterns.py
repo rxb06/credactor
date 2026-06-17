@@ -115,6 +115,31 @@ class TestAssignmentRegex:
         assert m
         assert m.group('val_q') == 'sk-abc123xyz'
 
+    def test_unquoted_env_interpolation_captures_closing_brace(self):
+        # A complete ${POSIX_NAME} must reach the safe-value check intact;
+        # stopping at '}' delivered '${DB_PASSWORD' — unclosed, so the
+        # compose/CI idiom flagged as a hardcoded secret.
+        m = ASSIGNMENT_RE.search('password: ${DB_PASSWORD}')
+        assert m
+        assert m.group('val_u') == '${DB_PASSWORD}'
+
+    def test_unquoted_shell_default_still_stops_at_brace(self):
+        # ${VAR:-fallback} is NOT a pure name interpolation — the fallback
+        # can be a real secret, so it must keep arriving unclosed (and flag).
+        # Pins that the broad \$\{[^}]+\} capture variant can never land.
+        m = ASSIGNMENT_RE.search('password: ${PW:-hunter2secret99}')
+        assert m
+        assert m.group('val_u') == '${PW:-hunter2secret99'
+
+    def test_oversized_var_name_truncates_without_dropping_match(self):
+        # The var capture is bounded to {1,128} (quadratic-backtracking guard).
+        # A longer identifier must still match — with the captured name
+        # truncated to its trailing 128 chars — so the value is never lost.
+        m = ASSIGNMENT_RE.search('x' * 129 + ' = "v1secret"')
+        assert m
+        assert len(m.group('var')) == 128
+        assert m.group('val_q') == 'v1secret'
+
 
 # ---------------------------------------------------------------------------
 # XML attribute (#21)
@@ -170,6 +195,19 @@ class TestCredVarPatterns:
         'client_secret', 'secret_key', 'private_key',
         'webhook_secret', 'bot_token',
         'database_url', 'db_conn_string',
+        # bare `token` is in the manual's verified high-tier examples
+        'token', 'TOKEN',
+        # hyphen-delimited keys are word-boundary-visible (k8s/YAML
+        # manifests): vault/session/id tokens are genuine secrets —
+        # fail-closed. Kebab pagination cursors ride along as an ACCEPTED
+        # false-positive tradeoff (suppressible); pinned here so the
+        # behaviour is deliberate, not accidental.
+        'vault-token', 'session-token', 'next-page-token',
+        # prefixed api_key forms: \b cannot match after '_', so these need
+        # the explicit prefix alternative (manual: "a real secret in a
+        # variable merely named test_api_key is still flagged")
+        'test_api_key', 'my_api_key', 'aws_api_key', 'stripe_api_key',
+        'sendgrid_apikey',
     ])
     def test_matches(self, name):
         assert CRED_VAR_PATTERNS.search(name)
@@ -177,6 +215,15 @@ class TestCredVarPatterns:
     @pytest.mark.parametrize('name', [
         'username', 'email', 'name', 'description',
         'is_active', 'count', 'filepath',
+        # the api_key prefix demands an explicit _/- separator: substrings
+        # and lookalikes stay unmatched
+        'okapi_key', 'monkey', 'keyword', 'api_key_id',
+        # \b cannot match after '_' or inside camelCase: the bare `token`
+        # alternative must NOT drag in compound names — especially
+        # pagination cursors, whose opaque high-entropy values would
+        # otherwise become a standing FP source.
+        'csrf_token', 'next_page_token', 'pageToken', 'max_tokens',
+        'token_count', 'tokenizer',
     ])
     def test_no_match(self, name):
         assert not CRED_VAR_PATTERNS.search(name)

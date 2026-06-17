@@ -2,20 +2,35 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
   actions: read
   security-events: write
 
+# Cancel superseded runs on the same ref: re-pushing to a branch (or a PR
+# head) aborts the in-flight run so stale jobs stop burning Windows runner
+# minutes. (push and pull_request resolve to different github.ref values, so
+# a PR still gets a separate push run and pull_request run — both groups stand.)
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Don't cancel sibling legs on first failure: while the Windows leg is
+      # young, seeing every leg's result per push beats saving runner minutes.
+      fail-fast: false
       matrix:
+        # windows-latest: the package has deliberate Windows code paths
+        # (drive-root guard, fcntl fallback, path-case handling) that were
+        # never executed by CI before.
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
@@ -29,10 +44,10 @@ jobs:
         run: pip install --require-hashes -r requirements-ci.txt
 
       - name: Lint
-        run: ruff check credactor/ tests/
+        run: ruff check credactor/ tests/ scripts/
 
       - name: Type check
-        run: mypy credactor/
+        run: mypy credactor/ scripts/
 
       - name: Test
         run: pytest tests/ -v
@@ -65,9 +80,11 @@ jobs:
           python-version: "3.13"
 
       - name: Build package
+        # --no-isolation: build with the hash-pinned setuptools installed above
+        # instead of downloading the backend fresh and unpinned at build time.
         run: |
           pip install --require-hashes -r requirements-ci.txt
-          python -m build
+          python -m build --no-isolation
 
       - name: Audit wheel for supply chain attacks
         run: python scripts/audit_wheel.py

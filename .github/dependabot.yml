@@ -1,0 +1,22 @@
+# Keeps the deliberately frozen toolchain fresh: GitHub Actions are pinned to
+# commit SHAs and CI dependencies are hash-pinned, so without this nothing
+# ever proposes updates. Dependabot understands both pinning styles and opens
+# PRs that keep the version comments and hashes correct.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    # One grouped PR per month: independent bumps would each regenerate the
+    # same hash-pinned requirements-ci.txt and conflict with each other.
+    groups:
+      pip-toolchain:
+        patterns: ["*"]

@@ -1,0 +1,22 @@
+# Commit-time checks for THIS repo's developers (CI runs the same and more).
+# One-time setup:  pip install pre-commit && pre-commit install
+# Hooks run the dev environment's own tools (language: system), so they always
+# match `make lint` and never need separate rev pins.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff check
+        entry: ruff check credactor/ tests/ scripts/
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: mypy strict
+        entry: mypy credactor/ scripts/
+        language: system
+        pass_filenames: false
+      - id: credactor-self-scan
+        name: credactor --staged
+        entry: python -m credactor --staged .
+        language: system
+        pass_filenames: false

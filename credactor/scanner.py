@@ -26,12 +26,7 @@ from .patterns import (
 )
 from .suppressions import AllowList, has_inline_suppression
 from .types import SEVERITY_RANK, Finding
-from .utils import entropy, log_verbose, preview, read_lines
-
-# Global defaults (can be overridden by Config) — single-sourced from config so
-# the no-Config scan path can't drift from the dataclass defaults.
-ENTROPY_THRESHOLD = ENTROPY_DEFAULT
-MIN_VALUE_LENGTH = MIN_LEN_DEFAULT
+from .utils import entropy, preview, read_lines
 
 # Human-chosen password/secret variables hold memorable, lower-entropy values
 # that are still real credentials, so they get a lower entropy floor (H7).
@@ -173,8 +168,7 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None,
 
     # File paths: ./, ~/, Windows drive letter
     # NOTE: bare / prefix is NOT safe (could hide creds); require ./ or ~/
-    if (cleaned.startswith('./')
-            or cleaned.startswith('~/')
+    if (cleaned.startswith(('./', '~/'))
             or (len(cleaned) >= 3 and cleaned[1:3] in (':\\', ':/'))):
         return True
 
@@ -241,7 +235,7 @@ def _evaluate_candidate(
     val: str, *,
     min_len: int, floor: float,
     filepath: str, lineno: int,
-    allowlist: AllowList | None, config: Config | None,
+    allowlist: AllowList | None,
     skip_dotted_access: bool = False, allow_short: bool = False,
     safe_values: set[str] | None = None,
 ) -> str | None:
@@ -251,11 +245,12 @@ def _evaluate_candidate(
     Order (identical across all scan passes): safe-value heuristic -> minimum
     length -> entropy floor -> allowlist. The ``floor > 0`` short-circuit is
     load-bearing: VALUE_PATTERNS provider keys pass ``floor=0.0`` and must NOT
-    acquire an entropy gate. ``allow_short`` skips the length check (private-key
-    headers). ``safe_values`` is the pre-merged safe set (#34).
+    acquire an entropy gate. ``allow_short`` skips the length check
+    (deterministic critical-severity patterns, whose regexes pin their own
+    length). ``safe_values`` is the pre-merged safe set (#34).
     """
     if _is_safe_value(val, safe_values=safe_values, skip_dotted_access=skip_dotted_access):
-        log_verbose(f'{filepath}:{lineno} suppressed by safe value heuristic')
+        logger.debug('%s:%d suppressed by safe value heuristic', filepath, lineno)
         return None
     if len(val) < min_len and not allow_short:
         return None
@@ -263,7 +258,7 @@ def _evaluate_candidate(
         return None
     reason = allowlist.suppression_reason(filepath, lineno, val) if allowlist else None
     if reason:
-        log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+        logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
         return None
     return val
 
@@ -285,20 +280,20 @@ def scan_line(
 
     # #3 — inline suppression
     if has_inline_suppression(line):
-        log_verbose(f'{filepath}:{lineno} suppressed by inline credactor:ignore')
+        logger.debug('%s:%d suppressed by inline credactor:ignore', filepath, lineno)
         return findings
 
     if len(line) > _MAX_LINE_LENGTH:
         line = line[:_MAX_LINE_LENGTH]
         stripped = line.strip()
 
-    ent_threshold = config.entropy_threshold if config else ENTROPY_THRESHOLD
-    min_len = config.min_value_length if config else MIN_VALUE_LENGTH
+    ent_threshold = config.entropy_threshold if config else ENTROPY_DEFAULT
+    min_len = config.min_value_length if config else MIN_LEN_DEFAULT
     extra_safe = config.extra_safe_values if config else None
     # Merge the safe-value set once per line instead of per candidate (#34).
     safe_set = SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES
 
-    is_comment = stripped.startswith('#') or stripped.startswith('//')
+    is_comment = stripped.startswith(('#', '//'))
 
     # Candidates carry a transient (start, end) char span alongside each Finding
     # for cross-pass span dedup (L2). The span lives in a parallel tuple so the
@@ -332,7 +327,7 @@ def scan_line(
                 if hash_context is None:
                     hash_context = bool(_HASH_CONTEXT_RE.search(line))
                 if hash_context:
-                    log_verbose(f'{filepath}:{lineno} suppressed by hash context')
+                    logger.debug('%s:%d suppressed by hash context', filepath, lineno)
                     continue
 
             # L1: a compact JWT (3 segments <=40 chars) matches _DOTTED_ACCESS_RE
@@ -340,9 +335,9 @@ def scan_line(
             accepted = _evaluate_candidate(
                 val, min_len=min_len, floor=min_ent,
                 filepath=filepath, lineno=lineno,
-                allowlist=allowlist, config=config,
+                allowlist=allowlist,
                 skip_dotted_access=(label == 'JWT token'),
-                allow_short=(label == 'private key header'),
+                allow_short=(severity == 'critical'),
                 safe_values=safe_set)
             if accepted is None:
                 continue
@@ -361,7 +356,7 @@ def scan_line(
             if _evaluate_candidate(
                     xml_val.strip(), min_len=min_len, floor=ent_threshold,
                     filepath=filepath, lineno=lineno,
-                    allowlist=allowlist, config=config,
+                    allowlist=allowlist,
                     safe_values=safe_set) is None:
                 continue
             candidates.append((xml_span[0], xml_span[1], _make_finding(
@@ -383,7 +378,7 @@ def scan_line(
     # on the --verbose audit trail. (Restores visibility of the suppression; it does
     # not change detection — a hardcoded default inside the lookup is still skipped.)
     if dynamic_lookup and not run_assignment:
-        log_verbose(f'{filepath}:{lineno} assignment scan skipped — runtime/dynamic lookup')
+        logger.debug('%s:%d assignment scan skipped — runtime/dynamic lookup', filepath, lineno)
 
     if run_assignment:
         for match in ASSIGNMENT_RE.finditer(line):
@@ -406,7 +401,7 @@ def scan_line(
             if _evaluate_candidate(
                     val_stripped, min_len=min_len, floor=floor,
                     filepath=filepath, lineno=lineno,
-                    allowlist=allowlist, config=config,
+                    allowlist=allowlist,
                     safe_values=safe_set) is None:
                 continue
 
@@ -453,11 +448,8 @@ def scan_file(
     config: Config | None = None,
     allowlist: AllowList | None = None,
 ) -> list[Finding]:
-    """Scan a single file for credential findings.
-    """
-    findings: list[Finding] = []
-
-    #file size guard to prevent OOM on huge files | Hard-Cap at 50MB
+    """Scan a single file for credential findings."""
+    # File size guard to prevent OOM on huge files — hard cap at 50 MB.
     try:
         file_size = Path(filepath).stat().st_size
         if file_size > _MAX_FILE_SIZE:
@@ -465,22 +457,55 @@ def scan_file(
                 'Skipping %s: file too large (%.1f MB > %.0f MB limit)',
                 filepath, file_size / 1024 / 1024, _MAX_FILE_SIZE / 1024 / 1024,
             )
-            return findings
+            return []
     except OSError:
         pass  # proceed; open() will fail with a better message
 
-    try:
-        lines = read_lines(filepath)
-    except OSError:
-        # Re-raise so the caller (walker._parallel_scan / the cli single-file and
-        # --scan-json branches) records this in errored_files AND logs it once;
-        # otherwise --fail-on-error silently passes over files it could not read.
-        # scan_file is a library re-raiser: the caller owns the warning.
-        raise
+    # read_lines may raise OSError; let it propagate so the caller
+    # (walker._scan_files / the cli single-file and --scan-json branches)
+    # records this in errored_files AND logs it once; otherwise --fail-on-error
+    # silently passes over files it could not read. scan_file is a library
+    # re-raiser: the caller owns the warning.
+    lines = read_lines(filepath)
+
+    return scan_lines(filepath, lines, config=config, allowlist=allowlist)
+
+
+def scan_lines(
+    filepath: str,
+    lines: list[str],
+    *,
+    config: Config | None = None,
+    allowlist: AllowList | None = None,
+) -> list[Finding]:
+    """Run the full scan \u2014 PEM-block detection, per-line passes, and the
+    multi-line string pass \u2014 over *lines* (with terminators, as from
+    ``readlines()``/``splitlines(keepends=True)``).
+
+    Shared by ``scan_file`` (lines read from disk) and the staged scanner
+    (lines decoded from the git index blob) so the two paths cannot drift:
+    previously the staged path ran a bare per-line loop and missed PEM bodies
+    and secrets inside triple-quoted / template-literal strings.
+
+    May strip a BOM from ``lines[0]`` in place; both callers pass a fresh list.
+    """
+    findings: list[Finding] = []
 
     # Strip BOM from first line if present
     if lines and lines[0].startswith('\ufeff'):
         lines[0] = lines[0][1:]
+
+    # scan_line truncates each line to _MAX_LINE_LENGTH before matching (the
+    # cost of matching is superlinear in line length), so a secret past that
+    # column is missed \u2014 say so once per file instead of scanning clean
+    # silently. Mirrors the truncation condition at scan_line exactly.
+    truncated = sum(1 for ln in lines if len(ln) > _MAX_LINE_LENGTH)
+    if truncated:
+        logger.warning(
+            '%s: %d line(s) longer than %d chars \u2014 content past that limit '
+            'was not scanned by per-line matching',
+            filepath, truncated, _MAX_LINE_LENGTH,
+        )
 
     # PEM private key block detection (multi-line)
     in_pem_block = False
@@ -497,7 +522,7 @@ def scan_file(
             reason = (allowlist.suppression_reason(filepath, lineno, line.strip())
                       if allowlist else None)
             if reason:
-                log_verbose(f'{filepath}:{lineno} suppressed by allowlist ({reason})')
+                logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
                 continue
             findings.append(_make_finding(
                 filepath, lineno, type='pattern:private key block',
@@ -540,7 +565,7 @@ def _scan_multiline_strings(
     string blocks and runs the value-pattern scan on the combined text.
     """
     already_flagged = {f['line'] for f in existing_findings}
-    min_len = config.min_value_length if config else MIN_VALUE_LENGTH
+    min_len = config.min_value_length if config else MIN_LEN_DEFAULT
     extra_safe = config.extra_safe_values if config else None
     safe_set = SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES
 
@@ -574,8 +599,8 @@ def _scan_multiline_strings(
                     if _evaluate_candidate(
                             val, min_len=min_len, floor=min_ent,
                             filepath=filepath, lineno=block_lineno,
-                            allowlist=allowlist, config=config,
-                            allow_short=(label == 'private key header'),
+                            allowlist=allowlist,
+                            allow_short=(severity == 'critical'),
                             safe_values=safe_set) is None:
                         continue
                     existing_findings.append(_make_finding(
@@ -591,8 +616,7 @@ def should_scan_file(
     filename: str,
     extra_extensions: set[str] | None = None,
 ) -> bool:
-    """Return True if the filename's extension (or name) is in the scan list.
-    """
+    """Return True if the filename's extension (or name) is in the scan list."""
     p = Path(filename)
     suffix = p.suffix.lower() or p.name.lower()
 
@@ -608,4 +632,4 @@ def should_scan_file(
     name_lower = p.name.lower()
     if name_lower == '.env' or name_lower == 'env':
         return True
-    return name_lower.startswith('.env.') or name_lower.startswith('.env-')
+    return name_lower.startswith(('.env.', '.env-'))

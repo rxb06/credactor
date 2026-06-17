@@ -2,7 +2,6 @@
 
 import logging
 import os
-import tempfile
 
 import pytest
 
@@ -46,10 +45,11 @@ def config():
 
 
 @pytest.fixture
-def tmp_dir():
-    """Provide a temporary directory that is cleaned up after the test."""
-    with tempfile.TemporaryDirectory() as d:
-        yield d
+def tmp_dir(tmp_path):
+    """str alias of pytest's built-in ``tmp_path`` — one tmp mechanism for the
+    whole suite. Kept as a separate name so the ~90 existing call sites stay
+    untouched; new tests may use either spelling."""
+    return str(tmp_path)
 
 
 @pytest.fixture

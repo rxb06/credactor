@@ -1,0 +1,5 @@
+# The sdist must not ship the test suite: setuptools' default template grabs
+# tests/test*.py but not conftest.py, tests/__init__.py, or tests/benchmark/,
+# leaving an un-collectable partial suite in the published archive (the
+# packages.find exclude in pyproject only affects the wheel, not the sdist).
+prune tests

@@ -1,37 +1,35 @@
 """
-Directory walking, git-staged scanning, git-history scanning, and parallelism.
-
+Directory walking, git-staged scanning, and git-history scanning.
 """
 
 from __future__ import annotations
 
-import errno
 import os
 import re
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ._log import logger
 from .config import Config
 from .gitignore import matches_gitignore, parse_gitignore_file
 from .patterns import SKIP_DIRS, SKIP_FILES
-from .scanner import scan_file, scan_line, should_scan_file
+from .scanner import (
+    _MAX_LINE_LENGTH,
+    scan_file,
+    scan_line,
+    scan_lines,
+    should_scan_file,
+)
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, log_verbose, relativize, sanitize_for_terminal
+from .utils import is_within_root, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
 _GIT_TIMEOUT_S = 30
 _GIT_LOG_TIMEOUT_S = 120
-# Thread-pool sizing for the parallel file scan (#27): cap workers to avoid fd
-# exhaustion, and scan small batches sequentially.
-_MAX_SCAN_WORKERS = 8
-_SEQUENTIAL_BATCH_THRESHOLD = 4
 
 
 class GitUnavailableError(RuntimeError):
@@ -64,7 +62,8 @@ def walk_and_scan(
     config: Config,
     allowlist: AllowList | None = None,
 ) -> tuple[list[Finding], list[str], list[str], list[str]]:
-    """Single-pass directory walk
+    """Single-pass directory walk.
+
     Returns (findings, gitignore_skipped, json_files_available, errored_files).
     """
     root_path = Path(root).resolve()
@@ -116,7 +115,7 @@ def walk_and_scan(
 
             # Allowlist file-level suppression
             if allowlist and allowlist.is_file_suppressed(full_path):
-                log_verbose(f'{full_path} suppressed by allowlist (file-level)')
+                logger.debug('%s suppressed by allowlist (file-level)', full_path)
                 continue
 
             p = Path(filename)
@@ -129,87 +128,36 @@ def walk_and_scan(
             if should_scan_file(filename, config.extra_extensions):
                 scannable.append(full_path)
 
-    # #27 — parallel file scanning
-    findings, errored = _parallel_scan(scannable, config, allowlist)
+    findings, errored = _scan_files(scannable, config, allowlist)
 
     return findings, gitignore_skipped, json_files, errored
 
 
-def _parallel_scan(
+def _scan_files(
     files: list[str],
     config: Config,
     allowlist: AllowList | None,
 ) -> tuple[list[Finding], list[str]]:
-    """Scan files using a thread pool (#27).
+    """Scan files sequentially with a progress line.
+
+    Deliberately NOT parallel: scanning is regex-CPU-bound and the GIL
+    serialises it, so the former 8-worker thread pool measured only a
+    1.0-1.3x speedup while carrying a lock, a futures map, and an EMFILE
+    retry pass — concurrency-shaped complexity for a ~5% win. Sequential
+    scanning also makes fd exhaustion impossible (one handle at a time).
 
     Returns (findings, errored_files).
     """
     all_findings: list[Finding] = []
     errored: list[str] = []
-
-    if not files:
-        return all_findings, errored
-
     progress = _progress_callback_factory(len(files), config.no_color)
-    done_count = 0
-
-    # Use threads (I/O-bound); limit to 8 workers to avoid fd exhaustion
-    max_workers = min(_MAX_SCAN_WORKERS, len(files))
-    if max_workers <= 1 or len(files) <= _SEQUENTIAL_BATCH_THRESHOLD:
-        # Sequential for small batches
-        for i, fp in enumerate(files, 1):
-            try:
-                all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error scanning %s: %s', fp, exc)
-            progress(i)
-        return all_findings, errored
-
-    lock = threading.Lock()
-    emfile_files: set[str] = set()
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_file = {
-            executor.submit(scan_file, fp, config=config, allowlist=allowlist): fp
-            for fp in files
-        }
-        for future in as_completed(future_to_file):
-            fp = future_to_file[future]
-            try:
-                result = future.result()
-            except OSError as exc:
-                if exc.errno == errno.EMFILE:
-                    # Record EMFILE-only failures for a post-pool sequential retry;
-                    # warn once (not per fd-exhausted file).
-                    if not emfile_files:
-                        logger.warning(
-                            'Too many open files — remaining files will be scanned sequentially.',
-                        )
-                    emfile_files.add(fp)
-                else:
-                    errored.append(fp)
-                    logger.warning('Error scanning %s: %s', fp, exc)
-                result = []
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error scanning %s: %s', fp, exc)
-                result = []
-            with lock:
-                done_count += 1
-                progress(done_count)
-                all_findings.extend(result)
-
-    # Sequential retry of ONLY the EMFILE-failed files (fds are now freed). A file
-    # that errored for any other reason stays in `errored` and is not re-scanned;
-    # an EMFILE file that fails again is appended to `errored` with a logged reason.
-    if emfile_files:
-        for fp in emfile_files:
-            try:
-                all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
-            except Exception as exc:
-                errored.append(fp)
-                logger.warning('Error re-scanning %s: %s', fp, exc)
-
+    for i, fp in enumerate(files, 1):
+        try:
+            all_findings.extend(scan_file(fp, config=config, allowlist=allowlist))
+        except Exception as exc:
+            errored.append(fp)
+            logger.warning('Error scanning %s: %s', fp, exc)
+        progress(i)
     return all_findings, errored
 
 
@@ -232,9 +180,12 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
     which the caller may ignore)."""
     sub = '--show-toplevel' if want_toplevel else '--git-dir'
     try:
+        # encoding='utf-8': git emits UTF-8; bare text=True would decode with
+        # the ANSI code page on Windows and mojibake non-ASCII paths.
         probe = subprocess.run(
             ['git', 'rev-parse', sub],
-            capture_output=True, text=True, cwd=root, timeout=_GIT_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8',
+            cwd=root, timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
@@ -261,9 +212,15 @@ def scan_staged_files(
     # tree, hence want_toplevel.
     toplevel = Path(_require_git_repo(str(root_path), want_toplevel=True))
     try:
+        # encoding='utf-8': -z emits raw UTF-8 path bytes; bare text=True would
+        # decode them with the ANSI code page on Windows, mojibake any
+        # non-ASCII staged filename, and the later `git show :<path>` would
+        # fail — a staged secret in that file would land in errored_files
+        # instead of being scanned.
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8',
+            cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         # rev-parse already proved git is usable; a diff failure here is a
@@ -303,15 +260,27 @@ def scan_staged_files(
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):
             continue
-        if not should_scan_file(line, config.extra_extensions):
+        # .json gets the same opt-in the directory walk gives it: scanned only
+        # under --scan-json, otherwise skipped WITH a signal (a staged
+        # credentials.json silently passing the pre-commit gate is a false
+        # all-clear). Lockfiles (SKIP_FILES) stay excluded either way — checked
+        # here so an extra_extensions '.json' entry can't re-admit them through
+        # the should_scan_file fallback below.
+        name_lower = Path(line).name.lower()
+        if name_lower.endswith('.json'):
+            if name_lower in SKIP_FILES:
+                continue
+            if not config.scan_json:
+                logger.warning(
+                    'Staged .json file skipped — pass --scan-json to include '
+                    'it: %s', line,
+                )
+                continue
+        elif not should_scan_file(line, config.extra_extensions):
             continue
 
         # Scan the STAGED index blob, not the working-tree file: the two can
         # differ, and a pre-commit gate must see exactly what is being committed.
-        # Per-line scan mirrors scan_git_history; scan_file's multi-line passes
-        # (PEM blocks, and secrets spanning triple-quoted / template-literal
-        # strings) are NOT applied here. A PEM header line is still caught by
-        # scan_line, but a secret split across physical lines is not.
         try:
             blob = subprocess.run(
                 ['git', 'show', f':{line}'],
@@ -327,10 +296,29 @@ def scan_staged_files(
             errored.append(full_path)
             continue
 
-        content = blob.stdout.decode('utf-8', errors='surrogateescape')
-        for lineno, src in enumerate(content.splitlines(), start=1):
-            findings.extend(
-                scan_line(lineno, src, full_path, config=config, allowlist=allowlist))
+        # scan_lines runs the same full pass as scan_file (PEM blocks, per-line,
+        # multi-line strings), so staged content gets identical coverage to a
+        # working-tree scan. keepends=True: the multi-line pass joins the lines
+        # back and needs the terminators for correct line numbering.
+        # Universal-newline normalization mirrors how open() reads the file
+        # path: without it, CRLF blobs leak literal \r into multiline raw
+        # previews and lone-\r endings break the multiline pass's \n-based
+        # line numbering.
+        # UTF-16 parity: the working-tree path detects NUL-interleaved blobs
+        # via detect_encoding; the staged blob must match or a UTF-16 secret
+        # passes the pre-commit gate that the tree scan flags.
+        raw = blob.stdout
+        try:
+            content = raw.decode(utf16_variant(raw) or 'utf-8',
+                                 errors='surrogateescape')
+        except UnicodeDecodeError:
+            # Truncated UTF-16 blob: never crash a pre-commit hook — keep the
+            # historical utf-8 reading (lossy for this blob, but loud is the
+            # working-tree scan's job; the hook must stay usable).
+            content = raw.decode('utf-8', errors='surrogateescape')
+        content = content.replace('\r\n', '\n').replace('\r', '\n')
+        findings.extend(scan_lines(full_path, content.splitlines(keepends=True),
+                                   config=config, allowlist=allowlist))
 
     return findings, errored
 
@@ -353,10 +341,14 @@ def scan_git_history(
     # that stays a non-fatal empty result. See _require_git_repo.
     _require_git_repo(str(root_path))
     try:
+        # encoding='utf-8' + errors='replace': pin the decode so Windows's
+        # ANSI code page can't mojibake paths, and a stray non-UTF-8 byte in
+        # historical diff content degrades to U+FFFD instead of crashing.
         result = subprocess.run(
             ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
              '--no-color', '--format=commit %H'],
-            capture_output=True, text=True, cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
         )
         if result.returncode != 0:
             # e.g. a valid repo with no commits yet — nothing to scan, not fatal.
@@ -366,10 +358,31 @@ def scan_git_history(
         logger.error('Cannot run git: %s', exc)
         return []
 
+    # A repo deeper than the window would otherwise produce an all-clear
+    # byte-identical to a fully-scanned clean repo. Probe one commit past the
+    # cap (bounded O(max_commits+1) walk) and say so. Best-effort: a probe
+    # failure only skips the notice, never affects findings.
+    try:
+        depth = subprocess.run(
+            ['git', 'rev-list', '--count', f'--max-count={max_commits + 1}', 'HEAD'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+        )
+        if depth.returncode == 0 and depth.stdout.strip() == str(max_commits + 1):
+            logger.warning(
+                'history scan covered only the most recent %d commits — older '
+                'commits were NOT scanned. To audit full history use a '
+                'dedicated history scanner (see manual: Limitations).',
+                max_commits,
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.debug('history depth probe failed: %s', exc)
+
     findings: list[Finding] = []
     current_commit = ''
     current_file = ''
     diff_lineno = 0
+    long_added = 0
 
     for line in result.stdout.splitlines():
         if line.startswith('commit '):
@@ -390,6 +403,8 @@ def scan_git_history(
         if line.startswith('+') and not line.startswith('+++'):
             diff_lineno += 1
             added_line = line[1:]  # strip the leading '+'
+            if len(added_line) > _MAX_LINE_LENGTH:
+                long_added += 1
             line_findings = scan_line(diff_lineno, added_line,
                                       f'{current_file} (commit {current_commit})',
                                       config=config, allowlist=allowlist)
@@ -399,76 +414,15 @@ def scan_git_history(
         elif not line.startswith('-'):
             diff_lineno += 1
 
+    if long_added:
+        # Same silent-FN class as scan_lines' per-file notice: scan_line
+        # truncates before matching, so content past the cap was not scanned.
+        logger.warning(
+            'history scan: %d added line(s) exceeded %d chars — content past '
+            'that limit was not scanned by per-line matching',
+            long_added, _MAX_LINE_LENGTH,
+        )
+
     return findings
 
 
-# ---------------------------------------------------------------------------
-# JSON file selection (interactive, kept from original)
-# ---------------------------------------------------------------------------
-def _parse_selection(answer: str, n: int) -> list[int] | str:
-    """Parse a selection string ('1,3,5', '2-4', or a mix) into ordered,
-    de-duplicated 1-based indices in [1, n]. Returns an error message string on
-    invalid input. Pure (no I/O) so it is unit-testable on its own."""
-    selected: list[int] = []
-    for token in answer.replace(' ', '').split(','):
-        if '-' in token:
-            parts = token.split('-', 1)
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                lo, hi = int(parts[0]), int(parts[1])
-                if 1 <= lo <= hi <= n:
-                    selected.extend(range(lo, hi + 1))
-                else:
-                    return f'Range {token} out of bounds (1-{n}).'
-            else:
-                return f'Invalid range: {token}'
-        elif token.isdigit():
-            idx = int(token)
-            if 1 <= idx <= n:
-                selected.append(idx)
-            else:
-                return f'Number {token} out of bounds (1-{n}).'
-        else:
-            return f'Unrecognised token: {token!r}'
-    return list(dict.fromkeys(selected))
-
-
-def select_json_files(
-    json_files: list[str],
-    root: str,
-) -> list[str]:
-    """Let the user pick which .json files to scan from a numbered list."""
-    root_path = Path(root).resolve()
-
-    if not json_files:
-        print('  No .json files available to scan.\n')
-        return []
-
-    print(f'\n  Found {len(json_files)} .json file(s):\n')
-    for i, path in enumerate(json_files, 1):
-        rel = relativize(path, root_path)
-        print(f'    [{i:>3}]  {sanitize_for_terminal(rel)}')
-
-    print()
-    print('  Enter file numbers to scan (e.g. 1,3,5  or  2-4  or  all):')
-
-    while True:
-        try:
-            answer = input('  Selection: ').strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print('\n  Skipping .json scan.')
-            return []
-
-        if not answer:
-            print('  Skipping .json scan.\n')
-            return []
-
-        if answer == 'all':
-            return json_files
-
-        result = _parse_selection(answer, len(json_files))
-        if isinstance(result, str):
-            print(f'  {result}')
-            continue
-        selected = [json_files[i - 1] for i in result]
-        print(f'  Selected {len(selected)} file(s) for .json scan.\n')
-        return selected

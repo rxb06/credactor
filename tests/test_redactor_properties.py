@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import random
 import string
+import sys
 
 import pytest
 
@@ -35,7 +36,11 @@ def _secret() -> str:
 def _redact(tmp_path, name: str, content: str, *, mode: str = 'sentinel',
             custom: str = 'REDACTED_BY_CREDACTOR'):
     p = tmp_path / name
-    p.write_text(content, encoding='utf-8')
+    # newline='': write the content bytes EXACTLY as given. Text mode would
+    # translate \n -> \r\n on Windows, and the byte-level invariants here
+    # (no_collateral_edits) would then fail against the LF expectations even
+    # though the redactor correctly preserved the file's own endings.
+    p.write_text(content, encoding='utf-8', newline='')
     cfg = Config(replace_mode=mode, custom_replacement=custom, no_color=True)
     findings = scan_file(str(p), config=cfg)
     replaced, failed = batch_replace_in_file(str(p), findings, cfg)
@@ -84,6 +89,8 @@ def test_no_temp_leak(tmp_path, name, tmpl):
     assert leaks == []
 
 
+@pytest.mark.skipif(sys.platform == 'win32',
+                    reason='POSIX permission bits are not honoured on Windows')
 def test_permissions_preserved(tmp_path):
     """#5b — original file mode is restored after redaction."""
     p = tmp_path / 'perm.py'
@@ -154,3 +161,25 @@ def test_env_mode_output_is_valid_python(tmp_path):
         tmp_path, 'app.py', f'api_key = "{s}"\n', mode='env')
     assert replaced == 1
     compile(p.read_text(encoding='utf-8'), 'app.py', 'exec')  # H2: valid syntax
+
+
+def test_latin1_bytes_roundtrip(tmp_path):
+    """S34: non-UTF-8 (latin-1) file — redaction removes the secret and the
+    file matches the expected redacted bytes EXACTLY, pinning reader/writer
+    codec consistency: a writer that fell back to a different encoding than
+    the reader would corrupt the accented bytes on legacy codebases."""
+    s = _secret()
+    p = tmp_path / 'legacy.py'
+    p.write_bytes(f'# café résumé\napi_key = "{s}"\n'.encode('latin-1'))
+    cfg = Config(no_color=True, no_backup=True)
+    findings = scan_file(str(p), config=cfg)
+    assert findings, 'precondition: the secret must be detected in a latin-1 file'
+    replaced, failed = batch_replace_in_file(str(p), findings, cfg)
+    assert replaced >= 1
+    assert failed == 0
+    # Full-file equality: deterministic under ANY single-byte codec the
+    # detector reports, since unchanged bytes round-trip identically and the
+    # replaced line is pure ASCII.
+    expected = ('# café résumé\n'.encode('latin-1')
+                + b'api_key = "REDACTED_BY_CREDACTOR"\n')
+    assert p.read_bytes() == expected

@@ -1,4 +1,4 @@
-"""Tests for directory walking and parallel scanning."""
+"""Tests for directory walking and file scanning."""
 
 import os
 import shutil
@@ -12,8 +12,6 @@ from credactor.suppressions import AllowList
 from credactor.walker import (
     GitUnavailableError,
     _is_safe_relpath,
-    _parallel_scan,
-    _parse_selection,
     scan_git_history,
     scan_staged_files,
     walk_and_scan,
@@ -112,7 +110,7 @@ class TestWalkAndScan:
         """File-level allowlist suppression logs a clean message; the [SKIP]
         prefix is supplied by the log formatter, not hard-coded in the message.
 
-        Regression guard: log_verbose routes through logger.debug and
+        Regression guard: suppression messages go to logger.debug and
         _BracketFormatter prepends '  [SKIP] ' for DEBUG records, so a literal
         prefix in the message string would render twice.
         """
@@ -234,6 +232,77 @@ class TestStagedScanning:
         assert any(key in f.get('full_value', '') or 'AWS' in f.get('type', '')
                    for f in findings), findings
 
+    def _commit_n_times(self, repo, n):
+        env = dict(check=True, capture_output=True, cwd=repo)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **env)
+        subprocess.run(['git', 'config', 'user.name', 't'], **env)
+        for i in range(n):
+            with open(os.path.join(repo, 'f.txt'), 'w') as f:
+                f.write(f'{i}\n')
+            subprocess.run(['git', 'add', '-A'], **env)
+            subprocess.run(['git', 'commit', '-m', f'c{i}'], **env)
+
+    def test_scan_history_warns_when_window_truncates(self, tmp_dir, credactor_caplog):
+        # A repo deeper than max_commits must say so: a truncated scan's
+        # all-clear was previously byte-identical to a fully-scanned clean
+        # repo, so secrets older than the window passed with silent exit 0.
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 3)
+        scan_git_history(repo, config=Config(no_color=True), max_commits=2)
+        truncations = [r for r in credactor_caplog.records
+                       if 'most recent 2' in r.getMessage()]
+        assert truncations and 'NOT scanned' in truncations[0].getMessage()
+
+    def test_scan_history_no_warning_at_exact_window(self, tmp_dir, credactor_caplog):
+        # Exactly-at-cap repos are fully scanned — no false truncation notice.
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 3)
+        scan_git_history(repo, config=Config(no_color=True), max_commits=3)
+        assert not [r for r in credactor_caplog.records
+                    if 'NOT scanned' in r.getMessage()]
+
+    def test_scan_history_warns_on_overlong_added_lines(self, tmp_dir, credactor_caplog):
+        # Same silent-FN class as the working-tree line cap: an added line
+        # longer than _MAX_LINE_LENGTH is truncated before matching, so the
+        # history pass must say so rather than scan clean silently.
+        repo = self._init_repo(tmp_dir)
+        env = dict(check=True, capture_output=True, cwd=repo)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **env)
+        subprocess.run(['git', 'config', 'user.name', 't'], **env)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'blob.py'), 'w') as f:
+            f.write('# ' + 'x' * 5000 + f' aws = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-m', 'long'], **env)
+        findings = scan_git_history(repo, config=Config(no_color=True))
+        assert not [f for f in findings if f.get('full_value') == key]
+        warns = [r for r in credactor_caplog.records
+                 if r.levelname == 'WARNING' and 'exceeded' in r.getMessage()]
+        assert len(warns) == 1
+        assert '1 added line(s)' in warns[0].getMessage()
+
+    def test_scan_history_line_and_commit_fields(self, tmp_dir):
+        # The hand-parsed `git log -p` hunk headers must yield the real line
+        # number, and each finding must carry the introducing commit's hash —
+        # previously only "some finding exists" was asserted.
+        repo = self._init_repo(tmp_dir)
+        env = dict(check=True, capture_output=True, cwd=repo)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **env)
+        subprocess.run(['git', 'config', 'user.name', 't'], **env)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'app.py'), 'w') as f:
+            f.write(f'import os\nx = 1\naws = "{key}"\n')   # secret on line 3
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-m', 'x'], **env)
+        head = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True,
+            text=True, cwd=repo).stdout.strip()
+        findings = scan_git_history(repo, config=Config(no_color=True))
+        hits = [f for f in findings if f['full_value'] == key]
+        assert hits, findings
+        assert hits[0]['line'] == 3
+        assert hits[0]['commit'] == head[:12]
+
     def test_ignores_unstaged_worktree_secret(self, tmp_dir):
         repo = self._init_repo(tmp_dir)
         path = os.path.join(repo, 'app.py')
@@ -281,75 +350,166 @@ class TestStagedScanning:
         assert len(findings) >= 1
         assert errored == []
 
+    def _stage_json_secret(self, repo, name='credentials.json'):
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, name), 'w') as f:
+            f.write(f'{{"aws_key": "{key}"}}\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        return key
 
-class TestParallelScanEmfileRecovery:
-    """#17: EMFILE recovery retries ONLY fd-exhausted files and logs retry failures.
+    def test_staged_txt_scanned(self, tmp_dir):
+        # .txt parity for the pre-commit gate: a staged notes file with a
+        # secret previously passed silently (unlike .json, with no warning).
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = os.path.join(repo, 'notes.txt')
+        with open(path, 'w') as f:
+            f.write(f'prod key: aws_key = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert [f for f in findings if f.get('full_value') == key]
 
-    A file that failed for a non-EMFILE reason must stay in ``errored`` and must
-    not be re-scanned; an EMFILE file that succeeds on retry must not be errored.
-    """
+    def test_staged_utf16_blob_scanned(self, tmp_dir):
+        # Staged/working-tree parity for UTF-16: the tree path detects
+        # NUL-interleaved files via detect_encoding, so the staged blob
+        # decode must too — or a UTF-16 secret sails through the pre-commit
+        # gate that the tree scan flags.
+        repo = self._init_repo(tmp_dir)
+        path = os.path.join(repo, 'u16.py')
+        with open(path, 'wb') as f:
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
+                    .encode('utf-16-le'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert [f for f in findings if f['type'] == 'variable:secret_key']
 
-    def test_retries_only_emfile_files(self, monkeypatch, credactor_caplog):
-        import collections
-        import errno
-        import threading
+    def test_staged_truncated_utf16_blob_no_crash(self, tmp_dir):
+        # A truncated UTF-16 blob must never crash the pre-commit hook —
+        # it falls back to the historical utf-8 reading.
+        repo = self._init_repo(tmp_dir)
+        path = os.path.join(repo, 'trunc.py')
+        with open(path, 'wb') as f:
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
+                    .encode('utf-16-le')[:-1])
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        # No exception is the contract; finding presence is not promised.
 
+    def test_staged_json_scanned_with_scan_json(self, tmp_dir):
+        # A staged .json secret must be caught when --scan-json is set — the
+        # staged path previously never consulted config.scan_json at all.
+        repo = self._init_repo(tmp_dir)
+        key = self._stage_json_secret(repo)
+        findings, errored = scan_staged_files(
+            repo, config=Config(scan_json=True, no_color=True))
+        assert any(key == f['full_value'] for f in findings), findings
+        assert errored == []
+
+    def test_staged_json_skipped_with_warning_without_scan_json(
+            self, tmp_dir, credactor_caplog):
+        # Without --scan-json the .json file is skipped, but never silently:
+        # the pre-commit gate must not give a false all-clear with no signal.
+        repo = self._init_repo(tmp_dir)
+        self._stage_json_secret(repo)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert findings == []
+        assert errored == []
+        # the warning must NAME the skipped file, not just announce a skip
+        assert any('Staged .json file skipped' in r.message
+                   and 'credentials.json' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_staged_crlf_blob_normalized(self, tmp_dir):
+        # Staged content is universal-newline normalized like the file path.
+        # The discriminating case is a MULTILINE finding: per-line raws were
+        # always rstrip()ed, but the multiline pass's block preview leaked
+        # literal \r from CRLF blobs before normalization.
+        repo = self._init_repo(tmp_dir)
+        subprocess.run(['git', 'config', 'core.autocrlf', 'false'],
+                       cwd=repo, check=True, capture_output=True)
+        secret = 'aB3dE5gH7jK9mN1pQ4sU6wX8zC2vF0yT5rL8nM3kP7qW1eR9tY4uI6oA2sD5fG8h'
+        with open(os.path.join(repo, 'note.py'), 'wb') as f:
+            f.write(f'doc = """\r\nembedded blob\r\n{secret}\r\n"""\r\n'.encode())
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        multiline = [f for f in findings if f['type'].startswith('multiline:')]
+        assert any(f['full_value'] == secret for f in multiline), findings
+        assert all('\r' not in f['raw'] for f in findings)
+        assert errored == []
+
+    def test_staged_multiline_secret_detected(self, tmp_dir):
+        # The staged path reuses scan_lines(), so a secret inside a
+        # triple-quoted block is caught. The old bare per-line loop missed it:
+        # the high-entropy pass requires a preceding quote on the same line,
+        # which a bare line inside a multi-line string never has.
+        repo = self._init_repo(tmp_dir)
+        secret = 'aB3dE5gH7jK9mN1pQ4sU6wX8zC2vF0yT5rL8nM3kP7qW1eR9tY4uI6oA2sD5fG8h'
+        with open(os.path.join(repo, 'note.py'), 'w') as f:
+            f.write(f'doc = """\nembedded config blob\n{secret}\n"""\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert any(f['type'].startswith('multiline:')
+                   and f['full_value'] == secret for f in findings), findings
+        assert errored == []
+
+    def test_staged_pem_scanned_as_block(self, tmp_dir):
+        # scan_lines() applies the PEM state machine to staged blobs: the key
+        # is reported once as a block (header line) with the body skipped. The
+        # old per-line loop labelled it 'private key header' instead.
+        repo = self._init_repo(tmp_dir)
+        with open(os.path.join(repo, 'server.pem'), 'w') as f:
+            f.write('-----BEGIN RSA PRIVATE KEY-----\n'
+                    'MIIEpAIBAAKCAQEA7examplebodyline1\n'
+                    'MIIEpAIBAAKCAQEA7examplebodyline2\n'
+                    '-----END RSA PRIVATE KEY-----\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
+                       capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert any(f['type'] == 'pattern:private key block' and f['line'] == 1
+                   for f in findings), findings
+        assert errored == []
+
+    def test_staged_json_lockfile_stays_excluded(self, tmp_dir, credactor_caplog):
+        # SKIP_FILES lockfiles are excluded with and without --scan-json, and
+        # never trigger the skip warning (matching the directory walk).
+        repo = self._init_repo(tmp_dir)
+        self._stage_json_secret(repo, name='package-lock.json')
+        for cfg in (Config(scan_json=True, no_color=True), Config(no_color=True)):
+            findings, _errored = scan_staged_files(repo, config=cfg)
+            assert findings == []
+        assert not any('Staged .json file skipped' in r.message
+                       for r in credactor_caplog.records)
+
+
+class TestSequentialScanErrors:
+    """The sequential scanner records per-file failures and keeps going —
+    one unreadable file must not abort the rest of the batch."""
+
+    def test_failed_file_recorded_others_scanned(self, monkeypatch, credactor_caplog):
         from credactor import walker
 
-        files = [f'/nonexistent/f{i}.py' for i in range(6)]  # >4 -> threaded branch
-        emfile_file, bad_file = files[0], files[1]
-        calls: collections.Counter = collections.Counter()
-        lock = threading.Lock()
+        files = [f'/nonexistent/f{i}.py' for i in range(3)]
+        bad_file = files[1]
 
         def fake_scan_file(fp, *, config=None, allowlist=None):
-            with lock:
-                calls[fp] += 1
-                n = calls[fp]
-            if fp == emfile_file and n == 1:
-                raise OSError(errno.EMFILE, 'too many open files')
             if fp == bad_file:
-                raise OSError(errno.EACCES, 'permission denied')
+                raise OSError('permission denied')
             return [{'file': fp, 'line': 1, 'type': 'variable:x', 'severity': 'low',
                      'full_value': 'v', 'value_preview': 'v', 'raw': 'x'}]
 
         monkeypatch.setattr(walker, 'scan_file', fake_scan_file)
-        findings, errored = _parallel_scan(files, Config(no_color=True), None)
+        findings, errored = walker._scan_files(files, Config(no_color=True), None)
 
-        # EMFILE file recovered on the sequential retry: scanned twice, not errored.
-        assert calls[emfile_file] == 2
-        assert emfile_file not in errored
-        # Non-EMFILE failure: stays errored and is NOT retried (scanned once).
-        assert bad_file in errored
-        assert calls[bad_file] == 1
-        # 4 healthy files + 1 recovered = 5 findings; the retry failure is logged.
-        assert len(findings) == 5
-        assert any('Too many open files' in r.message
+        assert errored == [bad_file]
+        assert len(findings) == 2            # the other two still scanned
+        assert any('Error scanning' in r.message
                    for r in credactor_caplog.records)
-
-
-class TestParseSelection:
-    """P7/#44: the pure selection parser extracted from select_json_files."""
-
-    def test_comma_list(self):
-        assert _parse_selection('1,3,5', 5) == [1, 3, 5]
-
-    def test_range(self):
-        assert _parse_selection('2-4', 5) == [2, 3, 4]
-
-    def test_mixed_and_deduped_in_order(self):
-        assert _parse_selection('1-3,2,5', 5) == [1, 2, 3, 5]
-
-    def test_number_out_of_bounds(self):
-        assert _parse_selection('9', 5) == 'Number 9 out of bounds (1-5).'
-
-    def test_range_out_of_bounds(self):
-        assert _parse_selection('4-9', 5) == 'Range 4-9 out of bounds (1-5).'
-
-    def test_invalid_range(self):
-        assert _parse_selection('2-x', 5) == 'Invalid range: 2-x'
-
-    def test_unrecognised_token(self):
-        assert _parse_selection('abc', 5) == "Unrecognised token: 'abc'"
 
 
 class TestIsSafeRelpath:

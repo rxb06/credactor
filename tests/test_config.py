@@ -4,7 +4,13 @@ import os
 
 import pytest
 
-from credactor.config import Config, apply_config_file, load_config_file
+from credactor.config import (
+    ENTROPY_DEFAULT,
+    Config,
+    ConfigError,
+    apply_config_file,
+    load_config_file,
+)
 
 
 class TestConfigPostInit:
@@ -97,9 +103,50 @@ class TestLoadConfigFile:
         result = load_config_file(child)
         assert result['min_value_length'] == 15
 
+    def test_parent_dir_discovery_five_levels(self, tmp_dir):
+        # The documented contract is the target dir plus up to FIVE parent
+        # directories. The walk's first iteration is the target itself, so
+        # this needs max_depth + 1 iterations — pins the boundary at 5.
+        os.makedirs(os.path.join(tmp_dir, '.git'))
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = 15\n')
+        child = os.path.join(tmp_dir, 's1', 's2', 's3', 's4', 's5')
+        os.makedirs(child)
+        result = load_config_file(child)
+        assert result['min_value_length'] == 15
+
+    def test_parent_dir_discovery_stops_after_five_levels(self, tmp_dir):
+        # Companion boundary: 6 parent levels up is out of reach, so the next
+        # off-by-one in either direction fails one of this pair.
+        os.makedirs(os.path.join(tmp_dir, '.git'))
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = 15\n')
+        child = os.path.join(tmp_dir, 's1', 's2', 's3', 's4', 's5', 's6')
+        os.makedirs(child)
+        assert load_config_file(child) == {}
+
     def test_explicit_missing_returns_empty(self, tmp_dir):
         result = load_config_file(tmp_dir, '/nonexistent/.credactor.toml')
         assert result == {}
+
+    def test_explicit_invalid_toml_raises(self, tmp_dir):
+        # An explicitly named config that exists but won't parse must signal
+        # the caller (which exits 2) rather than silently degrade to defaults.
+        cfg = os.path.join(tmp_dir, 'bad.toml')
+        with open(cfg, 'w') as f:
+            f.write('min_value_length = = 9\n')
+        with pytest.raises(ConfigError):
+            load_config_file(tmp_dir, explicit_path=cfg)
+
+    def test_implicit_invalid_toml_warns_and_skips(self, tmp_dir, credactor_caplog):
+        # Scoped to --config only: a malformed config found by DISCOVERY must
+        # not abort the scan — a stray broken .credactor.toml shouldn't take a
+        # repo down. It warns and falls back to defaults (no raise).
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('min_value_length = = 9\n')
+        result = load_config_file(tmp_dir)          # implicit discovery
+        assert result == {}
+        assert 'invalid toml' in credactor_caplog.text.lower()
 
     def test_load_config_ingest_section(self, tmp_dir):
         config_path = os.path.join(tmp_dir, '.credactor.toml')
@@ -240,6 +287,32 @@ class TestApplyConfigFile:
         apply_config_file(c, {'unknown_key': 'value'})
         assert not hasattr(c, 'unknown_key')
 
+    def test_unknown_keys_warn(self, credactor_caplog):
+        # A typo'd key must not be dropped silently — every malformed KNOWN key
+        # already warns, and a typo can mean scanning at the wrong sensitivity.
+        c = Config()
+        apply_config_file(c, {'entropy_treshold': 3.0})
+        assert c.entropy_threshold == ENTROPY_DEFAULT  # typo did not take effect
+        assert any('entropy_treshold' in r.message
+                   for r in credactor_caplog.records)
+
+    def test_known_keys_do_not_warn_as_unknown(self, credactor_caplog):
+        # All eight consumed keys at once — a key dropped from _KNOWN_KEYS (or
+        # a future consumed key not added to it) would warn spuriously here.
+        c = Config()
+        apply_config_file(c, {
+            'entropy_threshold': 4.0,
+            'min_value_length': 10,
+            'skip_dirs': ['vendor'],
+            'skip_files': ['generated.py'],
+            'extra_extensions': ['.dockerfile'],
+            'extra_safe_values': ['sample'],
+            'replacement': 'GONE',
+            'ingest': {'from_gitleaks': 'r.json'},
+        })
+        assert not any('Unknown config key' in r.message
+                       for r in credactor_caplog.records)
+
     def test_merges_with_existing(self):
         c = Config(skip_dirs={'existing'})
         apply_config_file(c, {'skip_dirs': ['new_dir']})
@@ -285,6 +358,14 @@ class TestApplyConfigFile:
         assert c.from_gitleaks is None
         assert c.from_trufflehog is None
 
+    def test_unknown_ingest_keys_warn(self, credactor_caplog):
+        # Same typo guard as the top-level keys: a misspelled from_gitleaks
+        # means ingestion silently never runs.
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_gitleeks': 'r.json'}})
+        assert any("ingest.from_gitleeks" in r.message
+                   for r in credactor_caplog.records)
+
     def test_apply_unknown_ingest_keys_ignored(self):
         c = Config()
         apply_config_file(c, {'ingest': {'unknown_key': 'x'}})
@@ -309,7 +390,8 @@ class TestReplacementValidation:
 
 def test_threshold_defaults_single_sourced():
     # P8/#4: the field defaults and the _SCALAR_VALIDATORS defaults must come from
-    # the same constants (no triplication drift).
+    # the same constants (no triplication drift). scanner.py has no aliases of
+    # its own any more — its no-Config fallbacks use these constants directly.
     from credactor.config import (
         _SCALAR_VALIDATORS,
         ENTROPY_DEFAULT,
@@ -318,7 +400,3 @@ def test_threshold_defaults_single_sourced():
     defaults = {key: default for key, _coerce, _bounds, default in _SCALAR_VALIDATORS}
     assert Config().entropy_threshold == ENTROPY_DEFAULT == defaults['entropy_threshold']
     assert Config().min_value_length == MIN_LEN_DEFAULT == defaults['min_value_length']
-    # scanner's no-Config fallbacks must single-source from config (panel quick win).
-    from credactor import scanner
-    assert scanner.ENTROPY_THRESHOLD == ENTROPY_DEFAULT
-    assert scanner.MIN_VALUE_LENGTH == MIN_LEN_DEFAULT

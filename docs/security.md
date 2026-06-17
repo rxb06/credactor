@@ -46,7 +46,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-02** — Untrusted config handling: An implicitly-discovered `.credactor.toml` outside the git project root is refused (`[ERROR]` on stderr, config ignored). An explicit `--config` pointing outside the root is honored with a `[WARN]` in non-CI mode; in CI it is always refused (see SEC-29 / M14).
 - **SEC-03** — Config parse failure surfacing: Warns on stderr instead of silently returning empty config.
 - **SEC-04** — Subprocess path sanitisation: All `subprocess.run(cwd=...)` calls resolve paths via `Path.resolve()` before execution.
-- **SEC-05** — File descriptor exhaustion protection: `EMFILE` errors in the thread pool trigger automatic sequential fallback.
+- **SEC-05** — File descriptor exhaustion: scanning is sequential (one file handle at a time), so descriptor exhaustion cannot occur. (Earlier releases used a thread pool with an `EMFILE` fallback; it measured ≤1.3× and was removed in favour of the simpler, exhaustion-proof sequential scan.)
 - **SEC-06** — ReDoS line-length guard: Lines longer than 4096 characters are truncated before regex pattern matching.
 - **SEC-07** — Temp file leakage prevention: `.credactor.tmp` files are cleaned up via a `finally` block even on crashes.
 - **SEC-08** — Forward-only scanning with expanded protected directories: 30+ system directories blocked across Linux, macOS, and Windows.
@@ -70,7 +70,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-23** — File symlink boundary enforcement: File symlinks resolving outside the scan root are skipped.
 - **SEC-24** — SARIF output: `json.dumps` provides the injection safety; the masked preview in `message.text` is additionally HTML-escaped as defence-in-depth.
 - **SEC-25** — Git history path traversal guard: Paths with `..` traversal sequences are rejected.
-- **SEC-26** — CI read-only enforcement: `--ci` blocks `--fix-all` and forces `--dry-run`.
+- **SEC-26** — CI read-only enforcement: `--ci` forces read-only operation (`--dry-run`); combining it with `--fix-all` is rejected as a hard error (exit 2), never a silent downgrade.
 - **SEC-27** — Suppression audit trail: `--verbose` emits `[SKIP]` notices for every suppressed finding.
 - **SEC-28** — Plaintext backup warning: One-time warning when backups are created without secure options.
 - **SEC-29** — Config trust boundary enforcement in CI: External configs refused in CI mode.
@@ -87,7 +87,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-34** — Template safe-value closing delimiter: Requires matching `}`, `%}`, or `}}`. Fixes `$`-prefix bypass.
 - **SEC-20** — Secure backup dir symlink (updated): Returns error and skips redaction instead of silent fallback.
 
-### TTP Chain Audit (SEC-35 through SEC-39)
+### v2.3.3 (TTP Chain Audit — SEC-35 through SEC-39)
 
 - **SEC-35** — SARIF output injection: HTML-escape the finding type in all SARIF rule fields (`id`, `shortDescription`, `fullDescription`) and the masked preview in the result message. Prevents XSS via attacker-controlled XML attribute names in downstream SARIF viewers. The whole document is JSON-encoded and only a short preview (first 4 chars + the literal `[REDACTED]`) ever appears; `artifactLocation.uri` is intentionally **not** HTML-escaped (it is a filesystem path consumed as data, not rendered as HTML).
 - **SEC-36** — Terminal escape injection: Apply `sanitize_for_terminal()` to file paths, finding types, and raw source lines in text report output. Prevents ANSI escape-sequence injection via crafted filenames or source content.
@@ -116,13 +116,13 @@ See `mydocs/vulnerability-chains.md` for the full chain analysis including attac
 - **Config-input hardening (extends SEC-38)** — malformed list/table config shapes warn-and-skip instead of crashing or char-splitting a string value.
 - **Suppression visibility** — value-literal and positional `file:line` suppressions warn at load time (the latter matches by line number only and can be defeated by line drift), and overly broad globs are flagged (`fnmatch` has no globstar, so `**` behaves as `*`). `.credactorignore` gains a `value:<literal>` prefix for values containing glob metacharacters.
 
-This hardening ships in **2.4.0** (the develop branch is entirely the 2.4.0 work; Python 3.11+, uses stdlib `tomllib`).
+This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
 ## Supply Chain Hardening
 
-- **Wheel integrity audit:** `scripts/audit_wheel.py` verifies wheel contents match the git repo.
+- **Wheel integrity audit:** `scripts/audit_wheel.py` verifies wheel contents match the git repo exactly (extra files, missing files, or no wheel at all each fail the gate).
 - **SHA-pinned GitHub Actions:** All `uses:` references pin to commit SHAs. Exception: `pypa/gh-action-pypi-publish` uses `release/v1` (Docker-based actions cannot be SHA-pinned).
-- **Hash-pinned CI dependencies:** Installed with `pip install --require-hashes`.
+- **Hash-pinned CI dependencies:** Installed with `pip install --require-hashes`. This covers the build backend too: release artifacts are built with `python -m build --no-isolation` against the hash-pinned setuptools, not a backend downloaded fresh at publish time.
 - **OIDC trusted publishing:** Short-lived tokens tied to this specific repo and workflow.
 - **Sigstore attestations:** Published wheels include cryptographic provenance.
 - **Environment protection:** The `pypi` GitHub environment requires manual approval.
@@ -132,4 +132,4 @@ This hardening ships in **2.4.0** (the develop branch is entirely the 2.4.0 work
 - **NTFS alternate data streams:** On Windows, `--secure-delete` does not clear alternate data streams. Python has no cross-platform API for ADS enumeration.
 - **Windows file locking:** Advisory locking (`fcntl`) is unavailable on Windows. Concurrent credactor processes modifying the same file are not protected.
 - **String concatenation bypass:** `api_key = "sk_live_" + "rest"` evades detection. This is an architectural limitation of line-by-line scanning.
-- **JSON excluded by default:** Credentials in `.json` files are not scanned unless `--scan-json` is passed. This is intentional to reduce false positives from API response data.
+- **JSON excluded from directory scans:** `.json` files are skipped during a directory/recursive scan unless `--scan-json` is passed — intentional, to reduce false positives from API response data. A `.json` file named explicitly as the scan target is still scanned.

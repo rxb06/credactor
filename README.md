@@ -1,6 +1,6 @@
 [![PyPI](https://img.shields.io/pypi/v/credactor)](https://pypi.org/project/credactor/)
 [![CI](https://github.com/rxb06/Credactor/actions/workflows/ci.yml/badge.svg)](https://github.com/rxb06/Credactor/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/licence-Apache%202.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/licence-Apache%202.0-blue)](https://github.com/rxb06/Credactor/blob/main/LICENSE)
 
 # Credactor
 
@@ -38,7 +38,8 @@ db_password = os.environ["DB_PASSWORD"]
 pip install credactor
 ```
 
-Requires Python 3.11+. No other dependencies.
+Requires Python 3.11+. No other dependencies. Runs on Linux, macOS, and
+Windows (CI-tested on Linux and Windows).
 
 From source:
 
@@ -89,7 +90,7 @@ repos:
 | XML attributes | `<add key="Password" value="…" />` | High/Medium/Low |
 | High-entropy strings | quoted hex (32–64 chars) / Base64 (60+ chars) | Medium/Low |
 
-Deterministic provider tokens (the prefixes above) are flagged regardless of entropy; heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex/Base64 is flagged only when quoted — an unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. Full detection and severity rules: see the [Manual](docs/manual.md#detection--severity).
+Deterministic provider tokens (the prefixes above) are flagged regardless of entropy; heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex/Base64 is flagged only when quoted — an unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. Full detection and severity rules: see the [Manual](https://github.com/rxb06/Credactor/blob/main/docs/manual.md#detection--severity).
 
 > **Credactor's edge is remediation, not out-detecting every scanner.** Pair it with a dedicated detector for the broadest coverage — or run it standalone.
 
@@ -102,15 +103,15 @@ gitleaks dir . -f json -r gitleaks.json
 credactor --from-gitleaks gitleaks.json --fix-all --yes .
 ```
 
-`--from-gitleaks` / `--from-trufflehog` (or an `[ingest]` table in `.credactor.toml`) require a directory target. See the [CI Integration guide](docs/ci_integration.md).
+`--from-gitleaks` / `--from-trufflehog` (or an `[ingest]` table in `.credactor.toml`) require a directory target. See the [CI Integration guide](https://github.com/rxb06/Credactor/blob/main/docs/ci_integration.md).
 
 ## More features
 
 - Interactive or batch redaction; a custom replacement string via `--replacement`; `--scan-history` to scan git commit history
 - Secure backups: `--secure-delete` (overwrite and remove the `.bak`; raises the bar against casual recovery, not a forensic guarantee) or `--secure-backup-dir` to store backups outside the repo
 - Inline `# credactor:ignore` and `.credactorignore` allowlists (globs, `file:line`, value literals)
-- Per-repo config via `.credactor.toml`; concurrent (I/O-bound) file scanning, up to 8 workers
-- 28 source/config file types out of the box; `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
+- Per-repo config via `.credactor.toml`
+- 29 source/config/notes file types out of the box (`.txt` included); `--scan-json` to include JSON; `--fail-on-error` to fail when a file can't be read
 
 ## Scanned file types
 
@@ -130,15 +131,15 @@ Plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`, `i
 
 | Document | Description |
 |----------|-------------|
-| [Setup Guide](docs/setup.md) | Installation, configuration, CI/CD integration |
-| [Manual](docs/manual.md) | Complete reference: every flag, mode, combination, replacement & backup behaviour, detection/severity, exit codes, and limitations (behaviour test-verified) |
-| [Examples](docs/examples.md) | Common workflows with output |
-| [CI Integration](docs/ci_integration.md) | Pre-commit hooks, CI pipelines |
-| [Security](docs/security.md) | Threat model, hardening measures, known limitations |
-| [Changelog](CHANGELOG.md) | Version history |
-| [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process |
-| [Disclaimer](docs/DISCLAIMER.md) | Limitations, safe usage, warranty |
+| [Setup Guide](https://github.com/rxb06/Credactor/blob/main/docs/setup.md) | Installation, configuration, CI/CD integration |
+| [Manual](https://github.com/rxb06/Credactor/blob/main/docs/manual.md) | Complete reference: every flag, mode, combination, replacement & backup behaviour, detection/severity, exit codes, and limitations (behaviour test-verified) |
+| [Examples](https://github.com/rxb06/Credactor/blob/main/docs/examples.md) | Common workflows with output |
+| [CI Integration](https://github.com/rxb06/Credactor/blob/main/docs/ci_integration.md) | Pre-commit hooks, CI pipelines |
+| [Security](https://github.com/rxb06/Credactor/blob/main/docs/security.md) | Threat model, hardening measures, known limitations |
+| [Changelog](https://github.com/rxb06/Credactor/blob/main/CHANGELOG.md) | Version history |
+| [Contributing](https://github.com/rxb06/Credactor/blob/main/CONTRIBUTING.md) | Development setup, code style, PR process |
+| [Disclaimer](https://github.com/rxb06/Credactor/blob/main/docs/DISCLAIMER.md) | Limitations, safe usage, warranty |
 
 ## Licence
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](https://github.com/rxb06/Credactor/blob/main/LICENSE).

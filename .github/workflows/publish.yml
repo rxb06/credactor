@@ -20,9 +20,11 @@ jobs:
           python-version: "3.13"
 
       - name: Build package
+        # --no-isolation: build with the hash-pinned setuptools installed above
+        # instead of downloading the backend fresh and unpinned at publish time.
         run: |
           pip install --require-hashes -r requirements-ci.txt
-          python -m build
+          python -m build --no-isolation
 
       - name: Audit wheel for supply chain attacks
         run: python scripts/audit_wheel.py

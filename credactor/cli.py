@@ -15,7 +15,7 @@ from typing import NoReturn
 from . import __version__
 from ._log import configure as _configure_log
 from ._log import logger
-from .config import Config, apply_config_file, load_config_file
+from .config import Config, ConfigError, apply_config_file, load_config_file
 from .redactor import fix_all, interactive_review
 from .report import json_report, print_gitignore_skipped, print_report, sarif_report
 from .scanner import scan_file
@@ -26,7 +26,6 @@ from .walker import (
     GitUnavailableError,
     scan_git_history,
     scan_staged_files,
-    select_json_files,
     walk_and_scan,
 )
 
@@ -82,6 +81,7 @@ def _fatal(msg: str, *args: object) -> NoReturn:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Define every CLI flag, grouped: mode, output, replacement, config, ingest."""
     parser = argparse.ArgumentParser(
         prog='credactor',
         description=(
@@ -145,7 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         '--scan-history', action='store_true',
         help='scan git commit history (up to 100 commits) for leaked credentials; '
-             'reports the commit hash where each secret was introduced',
+             'reports the commit hash where each secret was introduced; '
+             'read-only — committed secrets cannot be redacted in place',
     )
 
     # Output flags
@@ -239,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Console entry point: run the scan and exit (130 on Ctrl-C)."""
     try:
         _main_inner(argv)
     except KeyboardInterrupt:
@@ -324,6 +326,16 @@ def _validate_invocation(config: Config) -> None:
         if not config.dry_run:
             config.dry_run = True
 
+    if config.dry_run and config.fix_all and not config.staged_only and not config.scan_history:
+        # --staged/--scan-history warn about an ignored --fix-all below and
+        # --ci rejects it above; the plain combination was the only one that
+        # preferred dry-run silently. dry-run winning is the safe outcome —
+        # this is consistency of signal, not a behaviour change.
+        logger.warning(
+            '--dry-run takes precedence; ignoring --fix-all — no files will '
+            'be modified.',
+        )
+
     if config.staged_only:
         # M7: --staged is documented read-only (pre-commit hook use), so force
         # dry-run — a staged scan never rewrites the working tree out from under
@@ -333,6 +345,20 @@ def _validate_invocation(config: Config) -> None:
             logger.warning(
                 '--staged is read-only; ignoring --fix-all and scanning in '
                 'dry-run. Redact the working tree in a separate, unstaged run.',
+            )
+        config.dry_run = True
+
+    if config.scan_history:
+        # History findings reference committed content and carry a synthetic
+        # 'file (commit abc123)' path no write pass can open, so every
+        # interactive/--fix-all replacement would fail — force dry-run like
+        # --staged (M7). Removing a committed secret means rewriting history
+        # (git filter-repo / BFG) and rotating the key, not editing the tree.
+        if config.fix_all:
+            logger.warning(
+                '--scan-history is read-only; ignoring --fix-all and scanning '
+                'in dry-run. To purge committed secrets, rewrite history '
+                '(e.g. git filter-repo) and rotate the affected keys.',
             )
         config.dry_run = True
 
@@ -424,31 +450,43 @@ def _print_banner(target_resolved_path: Path) -> None:
 
 def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int:
     """Confirm with the user and run ``fix_all``. Returns unresolved count."""
+    # With -f json/sarif the report on stdout must stay a single parseable
+    # document, so every human-facing line here goes to stderr instead.
+    out = sys.stdout if config.output_format == 'text' else sys.stderr
     by_file = group_by_file(findings)
     print(f'\n  --fix-all will modify {len(by_file)} file(s) '
-          f'with {len(findings)} replacement(s).')
+          f'with {len(findings)} replacement(s).', file=out)
     if not config.no_backup:
-        print('  .bak backups will be created (contain original secrets).')
+        print('  .bak backups will be created (contain original secrets).', file=out)
     else:
-        print('  ┌─────────────────────────────────────────────────────────┐')
-        print('  │  DANGER: --no-backup is set. Original values will be    │')
-        print('  │  PERMANENTLY LOST. Ensure you have git history or       │')
-        print('  │  another recovery mechanism before proceeding.          │')
-        print('  └─────────────────────────────────────────────────────────┘')
-    print('  Tip: run with --dry-run first to preview changes.')
+        print('  ┌─────────────────────────────────────────────────────────┐', file=out)
+        print('  │  DANGER: --no-backup is set. Original values will be    │', file=out)
+        print('  │  PERMANENTLY LOST. Ensure you have git history or       │', file=out)
+        print('  │  another recovery mechanism before proceeding.          │', file=out)
+        print('  └─────────────────────────────────────────────────────────┘', file=out)
+    print('  Tip: run with --dry-run first to preview changes.', file=out)
     # L3: --yes skips the interactive gate for non-interactive/CI use. Without it
     # a non-TTY stdin (pipe, </dev/null) raises EOFError below and aborts — the
     # documented behavior, now with an explicit opt-in instead of a footgun.
     if config.assume_yes:
-        print('  Proceeding (--yes).')
+        print('  Proceeding (--yes).', file=out)
+    elif sys.stdin is None or not sys.stdin.isatty():
+        # A pipe whose first line starts with 'y' would otherwise answer the
+        # confirmation below — scripts must opt in explicitly with --yes.
+        print('  Aborted: confirmation requires a TTY — pass --yes for '
+              'non-interactive use.', file=out)
+        sys.exit(1)
     else:
         try:
-            answer = input('  Proceed? [y/N]: ').strip().lower()
+            # Bare input() so the prompt itself can't land in a redirected
+            # JSON/SARIF document (input(prompt) writes the prompt to stdout).
+            print('  Proceed? [y/N]: ', end='', file=out, flush=True)
+            answer = input().strip().lower()
         except (KeyboardInterrupt, EOFError):
-            print('\n  Aborted.')
+            print('\n  Aborted.', file=out)
             sys.exit(1)
         if answer not in ('y', 'yes'):
-            print('  Aborted.')
+            print('  Aborted.', file=out)
             sys.exit(1)
     return fix_all(findings, target, config)
 
@@ -477,9 +515,22 @@ def _collect_findings(
     # yields nothing, so routing a file target through walk_and_scan silently
     # finds zero. scan_file does not gate on extension (the user named it).
     if Path(target).is_file():
+        # MV-2: a .credactorignore loads only for a directory scan (its root is
+        # the scanned dir), so a single-file target applies none. Warn when one
+        # sits beside the file rather than letting its suppressions silently fail
+        # to apply — inline "# credactor:ignore" still works on a file target.
+        if (Path(target).resolve().parent / '.credactorignore').is_file():
+            logger.warning(
+                '.credactorignore is not applied to a single-file target — its '
+                'entries load only for a directory scan. Use inline '
+                '"# credactor:ignore", or scan the directory.'
+            )
         try:
             return scan_file(target, config=config, allowlist=allowlist), []
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a confidently-detected multibyte encoding
+            # (e.g. truncated UTF-16) that fails mid-stream is an unreadable
+            # file, not a crash — same errored-files contract as OSError.
             logger.warning('Cannot read %s: %s', target, exc)
             return [], [target]
 
@@ -496,15 +547,14 @@ def _collect_findings(
                   f'pass --scan-json to include them.', file=sys.stderr)
 
     if config.scan_json and json_files:
-        if (config.ci_mode or config.dry_run or config.fix_all
-                or config.output_format != 'text'):
-            json_paths = json_files
-        else:
-            json_paths = select_json_files(json_files, target)
-        for path in json_paths:
+        # --scan-json is already the explicit opt-in, so scan every collected
+        # .json in every mode. (A numbered interactive picker used to gate
+        # this again in plain text mode — a second gate on an already-gated
+        # path, ~70 lines, removed.)
+        for path in json_files:
             try:
                 findings.extend(scan_file(path, config=config, allowlist=allowlist))
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 logger.warning('Cannot read %s: %s', path, exc)
                 errored_files.append(path)
 
@@ -561,12 +611,24 @@ def _ingest_external(
 def _main_inner(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     config = _config_from_args(args)
-    _configure_log(verbose=config.verbose, no_color=config.no_color)
+    _configure_log(verbose=config.verbose)
 
     target = config.target
     target_resolved_path = _validate_target(target)
 
-    file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+    # An explicit --config that doesn't resolve to a file is fatal: silently
+    # falling back to defaults would drop every intended setting (thresholds,
+    # extra_extensions, [ingest]) and can flip a failing gate to a pass via a
+    # filename typo. Implicit discovery finding nothing stays a normal no-op.
+    if config.config_path and not Path(config.config_path).is_file():
+        _fatal('Config file not found: %s', config.config_path)
+    try:
+        file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+    except ConfigError as exc:
+        # An explicit --config that exists but won't parse (invalid TOML /
+        # unreadable) is fatal for the same reason a missing one is: degrading
+        # to defaults silently drops every intended setting.
+        _fatal('%s', exc)
     if file_data:
         apply_config_file(config, file_data)
 
@@ -579,6 +641,13 @@ def _main_inner(argv: list[str] | None = None) -> None:
     # (precedence CLI > config > default). argparse default is None, so a
     # non-None args.replacement means the flag was actually passed.
     if args.replacement is not None:
+        if config.replace_mode == 'env':
+            # env mode generates language-aware references; a fixed replacement
+            # string is never consulted — say so instead of silently ignoring it.
+            logger.warning(
+                '--replacement has no effect with --replace-with env; '
+                'env mode generates language-aware references, not a fixed string.',
+            )
         config.custom_replacement = args.replacement
 
     # Validate the EFFECTIVE replacement (after config load) so a
@@ -607,6 +676,15 @@ def _main_inner(argv: list[str] | None = None) -> None:
     if config.output_format != 'text':
         sys.exit(1)
 
-    # Interactive mode (default, text only)
+    # Interactive mode (default, text only). The manual promises a TTY
+    # requirement: without this gate a pipe of y-prefixed text answers the
+    # per-finding prompts and rewrites files. Exit 1, not 2 — the findings
+    # above were reported and remain unresolved, same as the EOF path.
+    if sys.stdin is None or not sys.stdin.isatty():
+        logger.error(
+            'Interactive mode requires a TTY on stdin. Use --dry-run/--ci to '
+            'report, or --fix-all --yes to redact unattended.',
+        )
+        sys.exit(1)
     unresolved = interactive_review(findings, target, config)
     sys.exit(1 if unresolved > 0 else 0)

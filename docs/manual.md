@@ -1,9 +1,8 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects the `develop` branch (the 2.4.0
-line). For limitations and safe usage see the [Disclaimer](DISCLAIMER.md); for
-the threat model see [Security](security.md).
+Reflects the 2.4.1 release. For limitations and safe usage see the
+[Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
 
@@ -37,7 +36,7 @@ credactor path/to/file.py   # scan one file
 | `--fix-all` | mode | Batch-redact all findings after one confirmation |
 | `--yes`, `-y` | mode | Skip the `--fix-all` confirmation (required non-interactively) |
 | `--staged` | mode | Scan only git-staged files; **read-only (forces dry-run)** |
-| `--scan-history` | mode | Scan up to 100 commits of git history |
+| `--scan-history` | mode | Scan up to 100 commits of git history; **read-only (forces dry-run)** |
 | `--format`, `-f` | output | `text` (default) \| `json` \| `sarif` |
 | `--no-color` | output | Strip ANSI colour from text output |
 | `--replace-with` | replace | `sentinel` (default) \| `env` \| `custom` |
@@ -66,8 +65,10 @@ with `-f json` and read the `severity` field):
 | **medium** | Heuristic value matches and generic credential variables | quoted hex (32–64 chars), Stripe **test** key `sk_test_…`, `webhook_secret = …` |
 | **low** | Weak heuristics and ID-type variables | quoted Base64 (≥60 chars), `client_id` / `tenant_id` / `app_id` |
 
-In text output, severities are colour-coded — critical and high **red**, medium
-**yellow**, low **cyan** (`--no-color`, or a non-terminal stdout, disables this).
+In text output, severities are colour-coded — critical **bright magenta**
+(distinct from high so the top two severities differ at a glance), high
+**red**, medium **yellow**, low **cyan** (`--no-color`, or a non-terminal
+stdout, disables this).
 
 ### Entropy model
 
@@ -105,8 +106,11 @@ Exactly one *behaviour* applies per run; the precedence/forcing rules are in
 
 `credactor <target>` with no mode flag walks each finding and prompts
 `Replace? [y/N]`. `y` redacts that finding (creating a `.bak`), `n`/Enter skips.
-Requires a TTY. Exit code = number of unresolved findings → 0 if all resolved/none,
-1 otherwise.
+Requires a TTY — piped stdin is rejected with exit 1 (use `--dry-run`/`--ci`
+to report, or `--fix-all --yes` to redact unattended). Git Bash/mintty on
+Windows is seen as a pipe by native Python; run `winpty credactor …` there.
+Exit code is **1** if any finding is left unresolved, and **0** if all are
+resolved or none were found.
 
 Each finding is shown before its prompt (verified output):
 
@@ -120,7 +124,7 @@ Each finding is shown before its prompt (verified output):
 ```
 
 `y`/`yes` prints `-> Replaced.`; `n`/Enter prints `-- Skipped.`; Ctrl-C or EOF
-stops and reports how many files were already modified.
+stops and reports how many replacements were already applied.
 
 ### `--dry-run`
 
@@ -165,6 +169,10 @@ blob**. **Read-only: it forces dry-run even with `--fix-all`** (a pre-commit hoo
 must never rewrite the tree mid-commit). Verified: `--staged --fix-all --yes` on a
 staged secret exits **1** and leaves the working file **unmodified**. In a
 non-git directory it exits **2** (see below).
+Staged content gets the identical full scan as a working-tree file — PEM
+blocks and secrets inside triple-quoted / template-literal strings included.
+Staged `.json` files follow the same opt-in as the directory walk: scanned only
+with `--scan-json`, otherwise skipped with a warning naming the file.
 
 ```bash
 credactor --staged --ci          # canonical pre-commit gate
@@ -175,6 +183,13 @@ credactor --staged --ci          # canonical pre-commit gate
 Scans up to 100 commits of `git log -p`, reporting the commit hash where each
 secret was introduced. Verified: finds a secret that was committed then removed
 from the working tree. In a non-git directory it exits **2**.
+On a repository deeper than 100 commits a `[WARN]` states that only the most
+recent 100 were scanned — a truncated scan is never silently presented as a
+full-history all-clear. The exit code is unaffected by the notice.
+**Read-only: it forces dry-run even with `--fix-all`** — history findings
+reference committed content, not files on disk, so they cannot be redacted in
+place. To purge a committed secret, rewrite history (e.g. `git filter-repo`)
+and rotate the key.
 
 ```bash
 credactor --scan-history .
@@ -211,6 +226,27 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   parses (verified). Note it emits an env **reference** (e.g. `os.environ["KEY"]`),
   not the import it needs — add the matching import (e.g. `import os`) if the file
   doesn't already have one, or it will raise `NameError` at runtime.
+- **Env mode falls back to the sentinel** when a finding is not a standalone
+  quoted assignment — a bare token on its own line, or a secret embedded in a
+  larger string (a `Bearer` header, a connection URL): inserting a code
+  expression there would break syntax, so the value becomes
+  `REDACTED_BY_CREDACTOR` instead. Such findings still count as *replaced*.
+  The duplicate-copy sweep also uses the sentinel in env mode, so a single
+  env-mode run can legitimately leave a mix of `os.environ[…]` and sentinel
+  styles in one file.
+- **The duplicate-copy sweep never overrides an adjudication.** When a
+  rewritten file still holds exact copies of a redacted value beyond the
+  adjudicated findings (e.g. a detector deduplicated a repeated value, or a
+  second occurrence sits on the finding's own line), they are cleared in the
+  same pass and a `[WARN]` states how many. Adjudication owns the **line**:
+  answering `n` in interactive review preserves that finding's whole line —
+  including any copy of a *different* redacted value on it (recoverable from
+  the `.bak`) — and the `replaced/skipped` summary always matches the file
+  state. Two same-value findings on one line are prompted **once**; the
+  answer covers every occurrence there. One edge: when a line carries both a
+  skipped and an approved finding, the approval releases the line for the
+  sweep of *approved* values (disclosed by the `[WARN]`) — the skipped
+  finding's own value is never cleared.
 
 ---
 
@@ -280,13 +316,17 @@ journaling filesystems.
   full secret never appears in text, JSON, or SARIF.
 - **Symlink boundary** — a file symlink resolving outside the scan root is
   skipped.
-- **Encoding** — UTF-8 (including BOM) and Latin-1 work out of the box. ⚠ Other
-  encodings (e.g. UTF-16) need the optional `charset-normalizer` / `chardet`
-  extra (`pip install 'credactor[encoding]'`). Without it such a file is read as
-  Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
-  whenever it cannot confirm a file's encoding and falls back to Latin-1, so the
-  miss is not silent. Install the extra for reliable detection on a non-UTF-8
-  codebase.
+- **Encoding** — UTF-8 (including BOM), Latin-1, and UTF-16 with an
+  ASCII-dominant payload (with or without BOM — recognised by its NUL
+  byte-parity signature) work out of the box. ⚠ Other encodings (e.g. UTF-32,
+  mixed-script UTF-16) need the optional `charset-normalizer` / `chardet`
+  extra (`pip install 'credactor[encoding]'`). Without it such a file is read
+  as Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
+  whenever it cannot confirm a file's encoding and falls back to Latin-1, so
+  the miss is not silent. A file whose detected multibyte encoding fails to
+  decode mid-stream (e.g. truncated UTF-16) is treated as unreadable: warned,
+  counted for `--fail-on-error`, never a silent all-clear. Install the extra
+  for reliable detection on a non-UTF-8 codebase.
 
 ---
 
@@ -332,7 +372,9 @@ credactor --ci -f sarif . > results.sarif
 ```
 
 > In non-CI, non-text runs Credactor reports and exits 1 (it does not enter
-> interactive redaction with JSON/SARIF output).
+> interactive redaction with JSON/SARIF output). With an explicit `--fix-all`
+> it redacts: stdout stays a single parseable JSON/SARIF document and the
+> confirmation/summary text goes to stderr.
 
 ---
 
@@ -348,7 +390,7 @@ Verified keys:
 | Key | Effect |
 |-----|--------|
 | `entropy_threshold` | Float 0.0–6.0 (default 3.5). Does **not** apply to deterministic provider prefixes — verified: `entropy_threshold = 6.0` still finds a `ghp_…` token. |
-| `min_value_length` | Int 1–200 (default 8). Verified: `min_value_length = 200` suppresses a 40-char token (0 findings). |
+| `min_value_length` | Int 1–200 (default 8). Like `entropy_threshold`, does **not** apply to deterministic provider prefixes or PEM blocks (their regexes pin their own length — a `ghp_…` token is found even at 200); gates heuristic and assignment values only. Verified: a generic password assignment is suppressed at 200. |
 | `skip_dirs` | List of directory names to skip (case-sensitive). |
 | `skip_files` | List of file names to skip. Verified: `skip_files = ["app.py"]` → 0 findings. |
 | `extra_extensions` | List of extra extensions to scan (lowercased; warn if a leading dot is missing). |
@@ -356,11 +398,20 @@ Verified keys:
 | `replacement` | Default custom replacement (an explicit `--replacement` wins). |
 | `[ingest]` `from_gitleaks` / `from_trufflehog` | Report paths for ingestion. |
 
+An unknown top-level key is ignored **with a warning** (typo guard — e.g. a
+misspelled `entropy_treshold` does not silently scan at the default
+sensitivity).
+
 ### `--config PATH`
 
 Use a specific config file (verified: `--config cfg.toml` with
-`min_value_length = 200` drops findings to 0). An explicit `--config` is honored
-even outside the project root (non-CI).
+`min_value_length = 200` suppresses a generic password assignment). An explicit `--config` is honored
+even outside the project root (non-CI). A `--config` path that cannot be
+honored — it does not exist, is not a file, is unreadable, or contains invalid
+TOML — is a **fatal error, exit 2**; it is never silently ignored. (A
+*discovered* `.credactor.toml` that fails to parse is a different case: it
+warns and the scan falls back to defaults, so a stray broken config elsewhere
+in the tree never aborts a scan.)
 
 ### `--scan-json`
 
@@ -374,11 +425,18 @@ During a directory walk only these extensions are read:
 
 `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini`
 `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl`
-`.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+`.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt` `.txt`
 
 plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`,
-`id_ed25519`). `.json` is read only with `--scan-json`. A file named **directly**
-on the command line is scanned even if its extension is not in this list.
+`id_ed25519`). `.json` is read only with `--scan-json` (in directory walks and
+`--staged` alike). A file named **directly** on the command line is scanned
+even if its extension is not in this list.
+
+> **`.env.*` is a literal-filename rule, not an extension rule:** it matches
+> dotfiles *named* `.env.<anything>` (`.env.production`, `.env-local`). A file
+> like `x.env.production` has the extension `.production` and is **not**
+> scanned in a walk — name it directly or add the extension via
+> `extra_extensions`.
 
 ### `--fail-on-error`
 
@@ -390,8 +448,10 @@ only) and **2** with it.
 
 Logs scan activity to stderr, including why findings were suppressed. Verified
 sample: `[SKIP] …/app.py:2 suppressed by inline credactor:ignore`. Suppression
-breadcrumbs name the kind (`inline`, `allowlist (glob|file:line|value-literal)`,
-`safe value heuristic`, `hash context`).
+breadcrumbs name the kind: `inline`, `allowlist
+(file-level|glob|file:line|value-literal)`, `safe value heuristic`, or
+`hash context`. A whole-file allowlist match in a directory walk logs
+`file-level`; the same entry matching on the per-line path logs `glob`.
 
 ---
 
@@ -408,7 +468,12 @@ test_key = "abc123"  # credactor:ignore
 
 ### `.credactorignore`
 
-In the scan root. Entry types (verified against a 2-secret file, baseline 2):
+In the scan root — a `.credactorignore` is loaded only for a **directory scan**
+(its root is the scanned directory). A single-file target (`credactor app.py`)
+does **not** apply one; point Credactor at the directory instead, or use inline
+`# credactor:ignore` (which works on any target). A single-file run that finds a
+`.credactorignore` beside the target **warns** rather than silently ignoring it.
+Entry types (verified against a 2-secret file, baseline 2):
 
 | Entry | Example | Effect |
 |-------|---------|--------|
@@ -440,8 +505,15 @@ locations. Verified — each of the following yields 0 findings:
   Doppler, 1Password `op://`), property access (`self.config.password`), function
   calls/defs (`get_secret()`, `def get_password(password="default")`), and
   Terraform refs (`var.password`, `local.secret`, `module.db.password`, `data.*`).
-- **Hashes, not secrets** — variables named `*_hash` / `*_digest` / `*_checksum`
-  (and `sha*` / `md5*`), and hash values (`$2b$…` bcrypt, `$argon2id$…`).
+- **Hashes, not secrets** — three cases. (1) A credential-named variable whose
+  name ends in `_hash`, `_hashed`, `_digest`, `_checksum`, `_fingerprint`,
+  `_hmac`, `_encrypted`, or `_cipher` (e.g. `secret_hash`). (2) Hash *values*
+  (`$2b$…` bcrypt, `$argon2id$…`). (3) A quoted hex / high-entropy **value** on
+  a line keyed like a digest — a key ending in one of those `_hash`-family
+  suffixes, or being `md5` / `sha<digits>` (`md5 = "<hex>"`, `sha256: <hex>`).
+  Case 3 gates the **value** detector only: it is not an open `sha*` / `md5*`
+  prefix (`md5sum`, `shasum`, bare `sha`, `sha256_value` still flag), and it
+  does **not** override a credential keyword — `secret_md5 = "…"` is flagged.
 - **Non-credential shapes** — file paths, credential-free URLs, values under 8
   characters, and low-entropy values.
 
@@ -482,13 +554,30 @@ Verified behaviour and **requirements**:
 
 - Ingested findings are **merged** with native findings and **deduplicated**; on
   a same-location/value/commit duplicate the **higher severity is kept**.
-- The target **must be a directory** (report paths are resolved relative to it) —
+- The target **must be a directory** (a *relative* report path resolves against the current working directory, not the target) —
   a **file target exits 2** (verified).
 - Ingestion **cannot be combined with `--scan-history`** — **exits 2** (verified).
-- Report paths can instead be set in `.credactor.toml` under `[ingest]`.
-- The report file is **untrusted input**: paths are confined to the target
-  (traversal rejected), missing/invalid paths are skipped, and the report is
-  size/finding-count capped.
+- Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
+  discovered `[ingest]` entry takes **precedence over** a same-kind CLI
+  `--from-*` flag (the flag does not override or merge with it), and a broken
+  `[ingest]` path is fatal (exit 2) even alongside a valid CLI flag — keep one
+  source per kind.
+- The report is **untrusted input**, with two distinct contracts:
+  - *The report file itself* is read from the path you supply — **not** confined
+    to the target. A **missing or unreadable** report path is a **fatal error,
+    exit 2** (never silently ignored), for either scanner. For **Gitleaks** (one
+    JSON document) invalid JSON or a wrong top-level type is **also fatal, exit
+    2**. For **TruffleHog** (line-delimited NDJSON) each line is parsed
+    independently and a malformed line is skipped (a mixed report still ingests
+    its valid findings), but a **wholly-unparseable** report — content with no
+    JSON object on any line (an HTML error page, a typo'd file, or a Gitleaks
+    JSON array fed to `--from-trufflehog`) — is likewise **fatal, exit 2**,
+    never a silent zero-findings all-clear; an empty report is a legitimate "no
+    findings". Report size and finding count are capped.
+  - *Each finding inside the report* has its secret-location path **confined to
+    the target**: a finding whose path resolves outside is rejected as possible
+    traversal (warned and skipped). A malformed individual finding entry is
+    likewise skipped, and the run continues.
 
 > Marginal value: Credactor redacts the **union** of (its native findings + the
 > ingested ones). A secret only a *third* tool detects is not redacted — pair
@@ -503,8 +592,8 @@ Verified across the scenarios above:
 | Code | Meaning |
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
-| `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged` with findings) |
-| `2` | Error: path not found; system/home/protected directory; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable ingestion report file; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
 
 ---
 
@@ -516,8 +605,10 @@ Verified rules:
 |-------------|--------|
 | `--ci` (any) | forces `--dry-run`; no prompts |
 | `--ci --fix-all` | **rejected, exit 2** (CI is read-only) |
+| `--dry-run --fix-all` | dry-run wins; `--fix-all` is ignored (warned), nothing modified |
 | `--staged` (any) | forces dry-run; `--fix-all` is ignored (warned), file not modified |
 | `--staged --ci` | read-only gate over staged files |
+| `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |
 | `--replacement` (CLI) vs `.credactor.toml` `replacement` | **CLI wins** (CLI > config > default) |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
@@ -525,6 +616,7 @@ Verified rules:
 | `--secure-backup-dir` + `--secure-delete` | backup moved to DIR, then wiped |
 | `--no-backup` + `--fix-all` | redacts with no recovery copy (extra confirmation shown) |
 | non-text `--format` in non-CI | reports and exits 1 (no interactive redaction) |
+| non-text `--format` + `--fix-all` | `--fix-all` wins and redacts; stdout carries **only** the JSON/SARIF report, confirmation/summary text goes to stderr; exit 0 when all replaced |
 
 ---
 
@@ -534,9 +626,9 @@ Verified rules:
 detail; these are the behaviours most likely to surprise.)
 
 - **Recognised file types only.** Credactor scans a fixed extension allowlist
-  (code/config types); secrets in unrecognised text types (`.txt`, `.md`, custom)
-  are skipped unless added via `extra_extensions`. General-purpose scanners read
-  every file.
+  (code/config types, plus `.txt` as of 2.4.1); secrets in unrecognised text
+  types (`.md`, custom) are skipped unless added via `extra_extensions`.
+  General-purpose scanners read every file.
 - **False positives are rewritten under `--fix-all`.** Redaction acts on every
   finding, so a non-secret that matches a pattern (a git commit SHA, an example
   key, a format-valid placeholder) is replaced with the sentinel — silently
@@ -550,7 +642,16 @@ detail; these are the behaviours most likely to surprise.)
   another scanner via ingestion (Gitleaks or TruffleHog today, more incoming) for breadth.
 - **No cross-file or semantic analysis**; obfuscated/runtime-assembled secrets
   are missed.
-- **UTF-8 / Latin-1 only by default.** Other encodings (UTF-16, …) require the
-  optional `charset-normalizer` / `chardet` extra; without it such files are read
-  as Latin-1 and their secrets can be missed (Credactor prints a `[WARN]` when it
-  falls back to Latin-1).
+- **`--scan-history` covers the most recent 100 commits.** Secrets introduced
+  and removed earlier are out of scope; on a deeper repository a `[WARN]`
+  says so. For full-history audits use a dedicated history scanner
+  (e.g. `gitleaks git`), then remediate with Credactor.
+- **Lines are matched up to 4096 characters.** Matching cost grows
+  superlinearly with line length, so each line is truncated at 4096 chars
+  before pattern matching — a secret past that column (e.g. at the end of a
+  minified one-liner) is not detected. A `[WARN]` names every affected file;
+  the warning also fires for staged blobs and history scans.
+- **UTF-8 / Latin-1 / ASCII-payload UTF-16 by default.** Other encodings
+  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer` /
+  `chardet` extra; without it such files are read as Latin-1 and their secrets
+  can be missed (Credactor prints a `[WARN]` when it falls back to Latin-1).

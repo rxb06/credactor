@@ -5,9 +5,9 @@ Usage in modules:
     from ._log import logger
     logger.warning('Something went wrong: %s', detail)
 
-Call ``configure(verbose, no_color)`` once at startup (from cli._main_inner)
-to adjust the log level.  The handler is registered at import time so that
-unit tests using ``capsys`` receive output without needing to call configure().
+Call ``configure(verbose)`` once at startup (from cli._main_inner) to adjust
+the log level.  The handler is registered at import time so that unit tests
+using ``capsys`` receive output without needing to call configure().
 """
 from __future__ import annotations
 
@@ -54,6 +54,6 @@ _handler.setFormatter(_BracketFormatter())
 logger.addHandler(_handler)
 
 
-def configure(verbose: bool = False, no_color: bool = False) -> None:
+def configure(verbose: bool = False) -> None:
     """Adjust log output level.  Call once at the start of main()."""
     _handler.setLevel(logging.DEBUG if verbose else logging.WARNING)

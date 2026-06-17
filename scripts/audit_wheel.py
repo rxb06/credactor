@@ -5,13 +5,20 @@ import sys
 import zipfile
 
 
-def audit(dist_dir='dist'):
-    errors = []
+def audit(dist_dir: str = 'dist') -> None:
+    errors: list[str] = []
 
-    for f in os.listdir(dist_dir):
-        if not f.endswith('.whl'):
-            continue
+    # An empty or missing dist/ must fail loudly: this gate runs right before
+    # "Publish to PyPI", and a half-failed build (sdist only, or nothing)
+    # previously slid through with "Wheel audit passed" despite auditing nothing.
+    try:
+        wheels = [f for f in os.listdir(dist_dir) if f.endswith('.whl')]
+    except FileNotFoundError:
+        wheels = []
+    if not wheels:
+        errors.append(f"no .whl file found in {dist_dir}")
 
+    for f in wheels:
         with zipfile.ZipFile(os.path.join(dist_dir, f)) as z:
             wheel_files = set(z.namelist())
 
@@ -29,21 +36,26 @@ def audit(dist_dir='dist'):
                 if name.startswith('credactor/') and not name.endswith('.pyc')
             }
 
-            # Metadata (credactor-X.dist-info/) and legacy entry point
+            # Metadata only (credactor-X.dist-info/): require the .dist-info/
+            # segment so a smuggled top-level file that merely shares the
+            # 'credactor-' prefix cannot ride the whitelist.
             expected_non_pkg = {
                 name for name in wheel_files
-                if name.startswith('credactor-') or name == 'credential_redactor.py'
+                if name.startswith('credactor-') and '.dist-info/' in name
             }
 
             unexpected = wheel_files - wheel_pkg_files - expected_non_pkg
-            if unexpected:
-                for uf in sorted(unexpected):
-                    errors.append(f"UNEXPECTED: {uf}")
+            errors.extend(f"UNEXPECTED: {uf}" for uf in sorted(unexpected))
 
             extra_in_wheel = wheel_pkg_files - repo_files
-            if extra_in_wheel:
-                for ef in sorted(extra_in_wheel):
-                    errors.append(f"NOT IN REPO: {ef}")
+            errors.extend(f"NOT IN REPO: {ef}" for ef in sorted(extra_in_wheel))
+
+            # Symmetric check: a tracked source file that failed to make it
+            # into the wheel would otherwise pass the audit and break for
+            # every installer — the docstring promises an exact match.
+            missing_from_wheel = repo_files - wheel_pkg_files
+            errors.extend(f"MISSING FROM WHEEL: {mf}"
+                          for mf in sorted(missing_from_wheel))
 
     if errors:
         for e in errors:

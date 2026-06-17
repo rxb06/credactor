@@ -13,7 +13,7 @@ from credactor.cli import main
 from credactor.config import Config, apply_config_file, load_config_file
 from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
-from credactor.scanner import _is_safe_value
+from credactor.scanner import _is_safe_value, scan_file
 from credactor.suppressions import AllowList
 from credactor.utils import detect_encoding, is_within_root
 from credactor.walker import walk_and_scan
@@ -44,6 +44,8 @@ class TestPathContainment:
     def test_unrelated_path_blocked(self):
         assert not is_within_root('/etc/passwd', '/tmp/repo/')
 
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='normcase folds case on Windows by design (NTFS)')
     def test_case_differs_treated_as_distinct_on_case_sensitive_fs(self):
         """On Linux, paths differing only in case are distinct — not within root."""
         assert not is_within_root('/tmp/REPO/file.py', '/tmp/repo/')
@@ -51,6 +53,24 @@ class TestPathContainment:
 
 class TestSymlinkBoundary:
     """SEC-23: File symlinks resolving outside scan root are skipped."""
+
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='Symlinks require admin on Windows')
+    def test_scan_root_via_symlinked_alias(self, tmp_path):
+        """A scan root reached THROUGH a symlink (macOS /var -> /private/var
+        style) must still scan its files. The tmp_dir fixture used to hand
+        tests such symlinked paths incidentally (tempfile's /var/...); pytest's
+        tmp_path is pre-resolved, so this coverage is pinned deliberately."""
+        from credactor.walker import walk_and_scan
+        real = tmp_path / 'real'
+        real.mkdir()
+        # credactor:ignore
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        (real / 'app.py').write_text(f'aws = "{key}"\n', encoding='utf-8')
+        alias = tmp_path / 'alias'
+        os.symlink(real, alias)
+        findings, _, _, _ = walk_and_scan(str(alias), config=Config(no_color=True))
+        assert any(f['full_value'] == key for f in findings), findings
 
     @pytest.mark.skipif(sys.platform == 'win32',
                         reason='Symlinks require admin on Windows')
@@ -598,16 +618,153 @@ class TestUnconfirmedEncodingWarns:
     def _no_detectors(monkeypatch):
         # Simulate neither charset_normalizer nor chardet being installed, so the
         # last-resort latin-1 branch is exercised deterministically regardless of
-        # what the test environment happens to have available.
-        monkeypatch.setitem(sys.modules, 'charset_normalizer', None)
-        monkeypatch.setitem(sys.modules, 'chardet', None)
+        # what the test environment happens to have available. The libraries are
+        # imported once at credactor.utils module load (not per call), so patch
+        # the module-level bindings, not sys.modules.
+        monkeypatch.setattr('credactor.utils.charset_normalizer', None)
+        monkeypatch.setattr('credactor.utils.chardet', None)
 
-    def test_utf16_falls_back_to_latin1_and_warns(
-        self, tmp_path, monkeypatch, credactor_caplog
+    def test_bomless_utf16_not_short_circuited_to_utf8(self, tmp_path):
+        # BOM-less UTF-16 with an ASCII payload is NUL-interleaved ASCII bytes,
+        # and bytes.isascii() is True for NUL — the fast path must NOT claim
+        # utf-8 for it, or the installed detector never runs and every secret
+        # in the file decodes to NUL-riddled text no pattern can match.
+        pytest.importorskip('charset_normalizer')
+        p = tmp_path / 'config.env'
+        secret_line = 'db_password = "hunter2secret"\n'
+        p.write_bytes((secret_line * 50).encode('utf-16-le'))  # no BOM
+
+        enc = detect_encoding(str(p))
+
+        # The detector must identify a UTF-16 family encoding; decoding with
+        # its answer must surface the secret as scannable text.
+        decoded = p.read_bytes().decode(enc)
+        assert 'db_password' in decoded
+
+    def test_bomless_utf16le_detected_without_detectors(
+        self, tmp_path, monkeypatch
+    ):
+        # NUL-interleaved ASCII is *valid UTF-8*, so the no-detector heuristic
+        # claimed utf-8 and the secret decoded to NUL-riddled text no pattern
+        # could match — silently, despite the manual promising a WARN. NULs
+        # confined to one byte parity are the UTF-16 byte-order signature.
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'utf16le.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le'))
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')
+        assert 'aws_key' in p.read_bytes().decode(enc)
+
+    def test_bomless_utf16be_detected_without_detectors(
+        self, tmp_path, monkeypatch
     ):
         self._no_detectors(monkeypatch)
+        p = tmp_path / 'utf16be.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-be'))
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')
+        assert 'aws_key' in p.read_bytes().decode(enc)
+
+    def test_utf16_secret_found_end_to_end_without_detectors(
+        self, tmp_path, monkeypatch
+    ):
+        # The full scan path: a BOM-less UTF-16LE secret must produce a
+        # finding on a stock install (no encoding extra).
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'cfg.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le'))
+
+        findings = scan_file(str(p), config=Config(no_color=True))
+
+        assert [f for f in findings if f['type'] == 'pattern:AWS access key']
+
+    def test_truncated_utf16_is_errored_not_crash(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        # An odd-length BOM-less UTF-16LE file decodes as utf-16-le until the
+        # incomplete final unit raises mid-stream. That must follow the
+        # unreadable-file contract (warning + errored, --fail-on-error exit
+        # 2), never a traceback and never a silent clean exit 0.
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'trunc.py'
+        data = 'aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1]
+        p.write_bytes(data)
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--fail-on-error', str(tmp_path)])
+
+        assert exc.value.code == 2
+        assert any('trunc.py' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_truncated_utf16_single_file_target_no_crash(
+        self, tmp_path, monkeypatch
+    ):
+        self._no_detectors(monkeypatch)
+        p = tmp_path / 'trunc.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1])
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', str(p)])
+
+        assert exc.value.code == 0  # errored-but-warned, not found, not fatal
+
+    def test_truncated_utf16le_not_misdetected_as_utf8_with_detectors(
+        self, tmp_path
+    ):
+        # MV-1: with the [encoding] extra installed, charset_normalizer.best()
+        # returns 'utf_8' for a truncated / odd-length UTF-16LE file (its
+        # NUL-interleaved bytes are valid UTF-8). That verdict short-circuited
+        # the UTF-16 signature check and silently dissolved the secret into
+        # mojibake. A utf-8/ascii verdict on NUL-bearing bytes must not be
+        # trusted — genuine UTF-8/ASCII never contains NUL.
+        pytest.importorskip('charset_normalizer')
+        p = tmp_path / 'trunc.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1])
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')  # not 'utf-8'
+
+    def test_truncated_utf16be_not_misdetected_as_utf8_with_detectors(
+        self, tmp_path
+    ):
+        pytest.importorskip('charset_normalizer')
+        p = tmp_path / 'trunc.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-be')[:-1])
+
+        enc = detect_encoding(str(p))
+
+        assert enc.replace('_', '-').lower().startswith('utf-16')  # not 'utf-8'
+
+    def test_truncated_utf16_errored_with_detectors_not_silent(
+        self, tmp_path, credactor_caplog
+    ):
+        # The manual's promise (lines 326-328: "never a silent all-clear") must
+        # hold in the [encoding]-extra config too, not only on a stock install:
+        # a truncated UTF-16 file is errored and warned, and --fail-on-error
+        # makes it exit 2 — not a clean exit-0 [OK] that misses the secret.
+        pytest.importorskip('charset_normalizer')
+        p = tmp_path / 'trunc.py'
+        p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1])
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--fail-on-error', str(tmp_path)])
+
+        assert exc.value.code == 2
+        assert any('trunc.py' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_utf32_falls_back_to_latin1_and_warns(
+        self, tmp_path, monkeypatch, credactor_caplog
+    ):
+        # UTF-32 has NULs at both byte parities, so it fails the UTF-16
+        # signature and must keep taking the loud latin-1 fallback.
+        self._no_detectors(monkeypatch)
         p = tmp_path / 'config.env'
-        p.write_bytes('API_KEY="AKIAZ7XK4PQR2WNDLMT3"\n'.encode('utf-16'))
+        p.write_bytes('API_KEY="AKIAZ7XK4PQR2WNDLMT3"\n'.encode('utf-32'))
 
         enc = detect_encoding(str(p))
 
@@ -622,7 +779,9 @@ class TestUnconfirmedEncodingWarns:
     ):
         self._no_detectors(monkeypatch)
         p = tmp_path / 'ok.py'
-        p.write_text('x = "hello world"\n', encoding='utf-8')
+        # Non-ASCII content: pure ASCII would return at the isascii() fast
+        # path and never reach the no-detector utf-8 heuristic under test.
+        p.write_text('x = "héllo wörld"\n', encoding='utf-8')
 
         enc = detect_encoding(str(p))
 

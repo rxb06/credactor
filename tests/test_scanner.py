@@ -5,9 +5,195 @@ documentation.  They MUST NOT be redacted — add this directory to
 .credactorignore to prevent self-redaction.
 """
 
+import os
+
 import pytest
 
-from credactor.scanner import scan_file, scan_line, should_scan_file
+from credactor.config import Config
+from credactor.scanner import (
+    _MAX_LINE_LENGTH,
+    scan_file,
+    scan_line,
+    scan_lines,
+    should_scan_file,
+)
+
+
+class TestMinValueLengthCriticalExemption:
+    """min_value_length gates heuristic/assignment values only: deterministic
+    critical provider patterns pin their own length in the regex, mirroring
+    the entropy-floor exemption they already have. A user raising the knob to
+    cut hex noise must not silently disable AWS/GitHub/Stripe detection."""
+
+    _GHP = 'ghp_' + 'x9Kp2mQv8rT4wYbN7jHs3fLd6gZc1aEu'
+
+    def test_provider_token_found_at_min_value_length_200(self):
+        cfg = Config(no_color=True, min_value_length=200)
+        findings = scan_line(1, f'gh = "{self._GHP}"', 'a.py', config=cfg)
+        assert [f for f in findings if f['type'] == 'pattern:GitHub token'
+                and f['severity'] == 'critical']
+
+    def test_provider_token_in_triple_quoted_block_found_at_200(self):
+        # The multiline pass shares the exemption — both call sites move
+        # together or the staged-parity guarantee re-drifts.
+        cfg = Config(no_color=True, min_value_length=200)
+        lines = ['doc = """\n', f'old key: {self._GHP}\n', '"""\n']
+        findings = scan_lines('a.py', lines, config=cfg)
+        assert [f for f in findings if 'GitHub token' in f['type']]
+
+    def test_heuristic_assignment_still_gated_at_200(self):
+        # The knob keeps doing its documented job for non-deterministic
+        # values: a generic password assignment is suppressed at 200.
+        cfg = Config(no_color=True, min_value_length=200)
+        findings = scan_line(1, 'password = "vN8kQz2wXr5LmP9jT4bYc6Fd"',
+                             'a.py', config=cfg)
+        assert findings == []
+
+
+class TestPrefixedApiKeyVariable:
+    """Manual: safe values 'match by value: a real secret in a variable
+    merely *named* test_api_key is still flagged' — which requires the
+    name detector to see through prefixes like test_/my_/aws_."""
+
+    _VALUE = 'ZP35TmHVWyvc3d9Bf8tFbqRIzRogAqwJENsp4cm2'
+
+    @pytest.mark.parametrize('var', ['test_api_key', 'my_api_key',
+                                     'aws_api_key', 'stripe_api_key'])
+    def test_prefixed_name_with_real_value_flags_high(self, var):
+        findings = scan_line(1, f'{var} = "{self._VALUE}"', 'conf.py',
+                             config=Config(no_color=True))
+        assert len(findings) == 1
+        assert findings[0]['severity'] == 'high'
+        assert findings[0]['type'] == f'variable:{var}'
+
+    def test_safe_placeholder_value_stays_clean(self):
+        # The value-side safe list keeps suppressing fixture literals.
+        for value in ('test_api_key', 'your_api_key'):
+            findings = scan_line(1, f'test_api_key = "{value}"', 'conf.py',
+                                 config=Config(no_color=True))
+            assert findings == []
+
+
+class TestBareTokenVariable:
+    """The manual's high tier lists bare `token = …` as a verified example;
+    the variable regex had every prefixed form but not `token` itself."""
+
+    def test_bare_token_high_entropy_flags_high(self):
+        findings = scan_line(1, 'token = "x9Kp2mQv8rT4wYbN7jHs3fLd6gZc1aEu"',
+                             'a.py', config=Config(no_color=True))
+        assert len(findings) == 1
+        assert findings[0]['type'] == 'variable:token'
+        assert findings[0]['severity'] == 'high'
+
+    def test_bare_token_placeholder_stays_clean(self):
+        findings = scan_line(1, 'token = "xxxxxxxx"', 'a.py',
+                             config=Config(no_color=True))
+        assert findings == []
+
+    def test_unquoted_vault_token_env_ref_clean(self):
+        # Dependency guard on the ${VAR} capture fix: without it, this line
+        # would have become a fresh HIGH FP the moment bare `token` landed.
+        findings = scan_line(1, 'token: ${VAULT_TOKEN}', 'config.yml',
+                             config=Config(no_color=True))
+        assert findings == []
+
+
+class TestTxtScanning:
+    """.txt is scanned by default as of 2.4.1. The viability of default-on
+    rests on the hash-pin/quote-prefix guards keeping requirements.txt-style
+    content clean — that property is load-bearing and pinned here."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_secret_in_txt_found_in_directory_walk(self, make_file):
+        # Through the walker, not scan_file — a directly-named file always
+        # bypasses the extension list; the walk is what changes here.
+        from credactor.walker import walk_and_scan
+        path = make_file('deploy-notes.txt', f'aws_key = "{self._KEY}"\n')
+        findings, _, _, _ = walk_and_scan(os.path.dirname(path),
+                                          config=Config(no_color=True))
+        assert [f for f in findings if f['type'] == 'pattern:AWS access key']
+
+    def test_hash_pinned_requirements_txt_stays_clean(self, make_file):
+        # The exact shape pip-compile emits: hash pins are 64-char hex —
+        # protected by the quote-prefix guard plus the hash-context rule.
+        h1 = '4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6'
+        h2 = '08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44'
+        h3 = '965370d062bce11e73868e0335abac31b4d3de0e82f4007408d242b4f8610761'
+        content = (
+            f'colorama==0.4.6 \\\n'
+            f'    --hash=sha256:{h1} \\\n'
+            f'    --hash=sha256:{h2}\n'
+            f'pytest==8.3.4 \\\n'
+            f'    --hash=sha256:{h3}\n'
+        )
+        path = make_file('requirements.txt', content)
+        findings = scan_file(path, config=Config(no_color=True))
+        assert findings == []
+
+
+class TestEnvInterpolationUnquoted:
+    """An unquoted, complete ${VAR} is a runtime reference (the standard
+    docker-compose/CI idiom), not a hardcoded secret — while unclosed and
+    fallback-bearing forms must keep flagging."""
+
+    def test_unquoted_yaml_env_ref_clean(self):
+        findings = scan_line(1, 'password: ${DB_PASSWORD}', 'compose.yml',
+                             config=Config(no_color=True))
+        assert findings == []
+
+    def test_unclosed_brace_still_flags(self):
+        findings = scan_line(1, 'password: ${DB_PASSWORD', 'compose.yml',
+                             config=Config(no_color=True))
+        assert findings
+
+    def test_shell_default_fallback_still_flags(self):
+        # The fallback after :- can be a real secret.
+        findings = scan_line(1, 'password: ${PW:-hunter2secret99}',
+                             'compose.yml', config=Config(no_color=True))
+        assert findings
+
+    def test_interpolation_with_suffix_is_clean_known_limit(self):
+        # Known limit: the capture ends at the interpolation's closing brace,
+        # so a secret glued directly onto ${VAR} is not seen. Accepted —
+        # provider-prefixed values in that position are still caught by the
+        # value-pattern pass, and the idiom is vanishingly rare.
+        findings = scan_line(1, 'password: ${DB_PASSWORD}realSecretSuffix99x',
+                             'compose.yml', config=Config(no_color=True))
+        assert findings == []
+
+
+class TestLongLineTruncationWarning:
+    """Content past _MAX_LINE_LENGTH is not pattern-matched; the truncation
+    must be loud (once per file) instead of a silent false negative."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_secret_past_cap_warns_once(self, credactor_caplog):
+        long_line = '# ' + 'x' * 5000 + f' aws = "{self._KEY}"\n'
+        findings = scan_lines('big.py', [long_line], config=Config(no_color=True))
+        # The cap itself is deliberate (hot-path cost is superlinear in line
+        # length) — the miss stays, but it is no longer silent.
+        assert findings == []
+        warns = [r for r in credactor_caplog.records
+                 if r.levelname == 'WARNING' and 'big.py' in r.getMessage()]
+        assert len(warns) == 1
+        assert str(_MAX_LINE_LENGTH) in warns[0].getMessage()
+
+    def test_secret_before_cap_found_without_warning(self, credactor_caplog):
+        findings = scan_lines('ok.py', [f'aws = "{self._KEY}"\n', 'x = 1\n'],
+                              config=Config(no_color=True))
+        assert [f for f in findings if f['full_value'] == self._KEY]
+        assert not [r for r in credactor_caplog.records
+                    if r.levelname == 'WARNING']
+
+    def test_multiple_long_lines_one_warning_with_count(self, credactor_caplog):
+        lines = ['# ' + 'x' * 5000 + '\n', '# ' + 'y' * 5000 + '\n', 'z = 1\n']
+        scan_lines('big2.py', lines, config=Config(no_color=True))
+        warns = [r for r in credactor_caplog.records
+                 if r.levelname == 'WARNING' and 'big2.py' in r.getMessage()]
+        assert len(warns) == 1
+        assert '2 line(s)' in warns[0].getMessage()
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +426,12 @@ class TestRecallCoverage:
 
     def test_public_key_and_unrelated_files_not_scanned(self):
         assert not should_scan_file('id_rsa.pub')
-        assert not should_scan_file('notes.txt')
+        # .txt is scanned by default as of 2.4.1 (measured clean on prose
+        # and hash-pinned requirements; notes files are a real leak vector).
+        assert should_scan_file('notes.txt')
+        # .md stays out: example-credential-dense by convention — this pin
+        # keeps the deferred boundary deliberate and test-visible.
+        assert not should_scan_file('notes.md')
 
     def test_extensionless_private_key_file_detected(self, make_file, config):
         content = ('-----BEGIN RSA PRIVATE KEY-----\n'
@@ -510,22 +701,22 @@ class TestEvaluateCandidate:
         val = 'AKIA' + 'A' * 16  # format-valid, near-zero entropy
         assert _evaluate_candidate(
             val, min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None) == val
+            allowlist=None) == val
 
     def test_positive_floor_drops_low_entropy_value(self):
         from credactor.scanner import _evaluate_candidate
         assert _evaluate_candidate(
             'a' * 16, min_len=8, floor=3.5, filepath='f.py', lineno=1,
-            allowlist=None, config=None) is None
+            allowlist=None) is None
 
     def test_short_value_dropped_unless_allow_short(self):
         from credactor.scanner import _evaluate_candidate
         assert _evaluate_candidate(
             'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None) is None
+            allowlist=None) is None
         assert _evaluate_candidate(
             'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, config=None, allow_short=True) == 'abcd'
+            allowlist=None, allow_short=True) == 'abcd'
 
 
 class TestDynamicLookupAuditTrail:

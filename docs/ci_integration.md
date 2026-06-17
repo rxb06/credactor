@@ -82,7 +82,7 @@ SARIF upload to Code Scanning:
 
 ```yaml
 - name: Credential scan
-  run: credactor --ci --fail-on-error --format sarif . > results.sarif
+  run: credactor --ci --format sarif . > results.sarif
   continue-on-error: true
 
 - name: Upload SARIF
@@ -90,6 +90,11 @@ SARIF upload to Code Scanning:
   with:
     sarif_file: results.sarif
 ```
+
+> The SARIF step omits `--fail-on-error` on purpose: with it, an unreadable
+> file makes Credactor exit 2 and write an empty `results.sarif`, which the
+> upload step then cannot parse. Gate on `--fail-on-error` in a separate step
+> if you need it.
 
 Use `--verbose` in CI to log suppressed findings for audit trails.
 
@@ -100,10 +105,15 @@ credential-scan:
   script:
     - credactor --ci --fail-on-error --format json . > credential-report.json
   artifacts:
-    reports:
-      codequality: credential-report.json
+    paths:
+      - credential-report.json
   allow_failure: false
 ```
+
+> Credactor's JSON is its own `{ "findings": [...], "count": N }` schema, not
+> GitLab CodeClimate/CodeQuality format, so it is kept as a plain downloadable
+> artifact (`paths:`), not a `reports: codequality:` widget. To drive the Code
+> Quality widget you would first convert each finding to a CodeClimate entry.
 
 ### Generic
 
