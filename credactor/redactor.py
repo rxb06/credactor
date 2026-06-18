@@ -182,9 +182,13 @@ def _backup_dir_via_unsafe_symlink(path_str: str) -> bool:
 def _create_backup(filepath: str, config: Config) -> str | None:
     """Create a .bak copy of the file. Returns backup path or None on failure.
 
-    When ``config.secure_backup_dir`` is set, the backup is placed
-    in that directory instead of beside the original file.
+    With ``config.secure_backup_dir`` the backup is written DIRECTLY into that
+    directory (never beside the original, not even momentarily) via
+    ``_create_backup_in_secure_dir``. Otherwise it is placed beside the file.
     """
+    if config.secure_backup_dir:
+        return _create_backup_in_secure_dir(filepath, config)
+
     bak = filepath + '.bak'
 
     # Atomic backup via mkstemp (O_CREAT|O_EXCL prevents symlink race);
@@ -204,49 +208,56 @@ def _create_backup(filepath: str, config: Config) -> str | None:
                 os.unlink(tmp_bak)
         return None
 
-    if not config.backup_warn_shown and not config.secure_delete and not config.secure_backup_dir:
+    if not config.backup_warn_shown and not config.secure_delete:
         logger.warning(
             'Plaintext backup created beside original file.\n'
             '  Use --secure-delete to auto-wipe, --secure-backup-dir to store '
             'outside repo, or --no-backup to skip.',
         )
         config.backup_warn_shown = True
-
-    if config.secure_backup_dir:
-        # M11: refuse if the backup dir reaches its target through a symlink —
-        # leaf OR any ancestor. The prior os.path.islink() check inspected only
-        # the leaf, so a symlinked PARENT could silently redirect the backup
-        # outside the intended directory. Return None so the caller skips
-        # redaction for this file.
-        if _backup_dir_via_unsafe_symlink(config.secure_backup_dir):
-            logger.error(
-                '--secure-backup-dir resolves through a symlink (possible attack): %s\n'
-                '  Refusing to proceed — backup security cannot be guaranteed.',
-                config.secure_backup_dir,
-            )
-            # Clean up the in-repo backup we already created
-            with contextlib.suppress(OSError):
-                os.unlink(bak)
-            return None
-        dest_dir = Path(config.secure_backup_dir).resolve()
-        try:
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = str(dest_dir / Path(bak).name)
-            shutil.move(bak, dest)
-            return dest
-        except OSError as exc:
-            # L10: fail-closed (matches the symlink branch above). The user
-            # asked for backups OUTSIDE the repo; if that's impossible, do NOT
-            # silently leave a plaintext .bak inside the repo and redact anyway.
-            # Clean up the in-repo bak and return None so the caller skips this
-            # file (no backup, no redaction).
-            logger.error(
-                'Could not move backup to %s: %s — refusing to leave a plaintext '
-                'backup inside the repo; skipping this file.', dest_dir, exc)
-            with contextlib.suppress(OSError):
-                os.unlink(bak)
-            return None
     return bak
+
+
+def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
+    """Create the .bak DIRECTLY inside ``config.secure_backup_dir``.
+
+    A plaintext copy never lands beside the original at any instant — this
+    closes the crash-window leak the flag exists to prevent (S2). Fails closed
+    (returns None -> caller skips the file, no redaction) when the dir is
+    reached through a symlink (leaf OR any ancestor) or cannot be written; in
+    neither failure case is anything written inside the repo.
+    """
+    secure_dir = config.secure_backup_dir
+    if secure_dir is None:  # caller only invokes us when it is set
+        return None
+    if _backup_dir_via_unsafe_symlink(secure_dir):
+        logger.error(
+            '--secure-backup-dir resolves through a symlink (possible attack): %s\n'
+            '  Refusing to proceed — backup security cannot be guaranteed.',
+            secure_dir,
+        )
+        return None
+    dest_dir = Path(secure_dir).resolve()
+    dest = str(dest_dir / (Path(filepath).name + '.bak'))
+    tmp: str | None = None
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(dest_dir), suffix='.credactor.bak')
+        os.close(fd)
+        shutil.copy2(filepath, tmp)
+        os.replace(tmp, dest)
+        tmp = None  # rename succeeded
+        return dest
+    except OSError as exc:
+        # L10: fail-closed. The user asked for backups OUTSIDE the repo; if that
+        # is impossible, do NOT redact — and nothing was ever written in-repo.
+        logger.error(
+            'Could not write backup to %s: %s — refusing to proceed; '
+            'skipping this file.', dest_dir, exc)
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+        return None
 
 
 def _secure_delete(filepath: str) -> None:
@@ -299,8 +310,16 @@ def _final_file_sweep(
     finding B's line survives even after B itself is approved. This pass
     re-sweeps the file for ALL approved values, preserving only the lines
     whose findings were skipped, failed, or never adjudicated (interrupt).
-    Changes remain covered by the .bak taken at the first replacement.
+    The write is atomic; under --secure-delete the .bak from the first
+    replacement is already wiped, so changes here are not recoverable (by
+    design for --secure-delete) — atomicity still guarantees no half-write.
     """
+    if os.path.islink(filepath):
+        logger.warning(
+            'Refusing to sweep symlink %s: os.replace would rewrite the link, '
+            'not its target.', filepath,
+        )
+        return
     try:
         encoding = detect_encoding(filepath)
         with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
@@ -396,6 +415,17 @@ def batch_replace_in_file(
     """
     if not file_findings:
         return 0, 0
+
+    # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
+    # the file it points at, so the live secret would remain in the target while
+    # we report success. Fail closed: skip, warn, count all findings unresolved.
+    if os.path.islink(filepath):
+        logger.warning(
+            'Refusing to redact symlink %s: os.replace would rewrite the link, '
+            'not its target — the secret would remain in the target file. '
+            'Resolve the symlink and re-run.', filepath,
+        )
+        return 0, len(file_findings)
 
     # #16 — detect encoding
     encoding = detect_encoding(filepath)

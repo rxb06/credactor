@@ -848,3 +848,74 @@ class TestInteractiveReview:
             [stale], os.path.dirname(path), self._cfg())
         assert unresolved == 1
         assert 'Replacement failed' in capsys.readouterr().out
+
+
+class TestWritePathSafety:
+    """Phase-1 hardening (deep-review S1/S2/S14/S15): symlinked targets refused,
+    atomic-write and backup failures fail closed, and --secure-backup-dir never
+    writes a plaintext .bak inside the repo."""
+
+    def _finding(self, path, line=1):
+        return {'file': path, 'line': line, 'type': 'variable:api_key',
+                'severity': 'high', 'full_value': _AWS_KEY,
+                'value_preview': '', 'raw': ''}
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_symlinked_file_skipped_not_clobbered(self, make_file, credactor_caplog):
+        # S1: os.replace would rewrite the LINK, not its target — leaving the
+        # live secret in the target file while reporting success. Must refuse.
+        real = make_file('real.py', f'api_key = "{_AWS_KEY}"\n')
+        link = os.path.join(os.path.dirname(real), 'link.py')
+        os.symlink(real, link)
+        config = Config(no_backup=True, replace_mode='sentinel')
+        replaced, failed = batch_replace_in_file(link, [self._finding(link)], config)
+        assert (replaced, failed) == (0, 1)          # refused -> unresolved, exit 1
+        assert os.path.islink(link)                  # link not clobbered
+        with open(real) as f:
+            assert _AWS_KEY in f.read()              # target keeps the secret
+        assert any('symlink' in r.getMessage().lower()
+                   for r in credactor_caplog.records)
+
+    def test_write_atomic_failure_leaves_original_intact(self, make_file, monkeypatch):
+        # S14: a mid-write OSError must leave the original byte-identical, the
+        # .bak intact, and no .credactor.tmp orphaned.
+        def boom(*a, **k):
+            raise OSError('disk full')
+        path = make_file('w.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path) as f:
+            before = f.read()
+        monkeypatch.setattr('os.fdopen', boom)
+        config = Config(no_backup=False, replace_mode='sentinel')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 0
+        with open(path) as f:
+            assert f.read() == before                 # original intact
+        assert os.path.exists(path + '.bak')          # backup kept
+        d = os.path.dirname(path)
+        assert not [f for f in os.listdir(d) if f.endswith('.credactor.tmp')]
+
+    def test_backup_creation_failure_skips_file(self, make_file, monkeypatch,
+                                                credactor_caplog):
+        # S15: if the backup cannot be created, the file is not touched.
+        def boom(*a, **k):
+            raise OSError('no space')
+        path = make_file('b.py', f'api_key = "{_AWS_KEY}"\n')
+        monkeypatch.setattr('tempfile.mkstemp', boom)
+        config = Config(no_backup=False, replace_mode='sentinel')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 0
+        with open(path) as f:
+            assert _AWS_KEY in f.read()               # untouched
+        assert any('backup' in r.getMessage().lower()
+                   for r in credactor_caplog.records)
+
+    def test_secure_backup_dir_never_writes_in_repo(self, make_file, tmp_dir):
+        # S2: the plaintext .bak must be created in the secure dir, never beside
+        # the original (the crash-window leak the flag exists to prevent).
+        backup = os.path.join(tmp_dir, 'outside')
+        config = Config(secure_backup_dir=backup, replace_mode='sentinel')
+        path = make_file('src.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
+        assert replaced == 1
+        assert not os.path.exists(path + '.bak')      # nothing beside the file
+        assert os.listdir(backup)                     # backup is in the secure dir
