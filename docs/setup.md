@@ -96,7 +96,8 @@ replacement = "REDACTED_BY_CREDACTOR"
 # External scanner ingestion (BETA) — merge Gitleaks/TruffleHog findings
 # into the redaction pipeline. Values are paths to the report files; the
 # scan target must be a DIRECTORY (the repo root) so report-relative file
-# paths resolve. Equivalent to --from-gitleaks / --from-trufflehog.
+# paths resolve. Used when --from-gitleaks / --from-trufflehog are not passed;
+# a same-kind CLI flag takes precedence over the entry below.
 [ingest]
 from_gitleaks = "gitleaks-report.json"
 from_trufflehog = "trufflehog-output.json"

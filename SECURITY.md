@@ -121,7 +121,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-39 | Fall back to scan root when no `.git` ancestor; warn (do not silently load) | `config.py:125` |
 | SEC-40 | Top-level `--scan-history` vs ingest mutual exclusion; ingest is stdlib-json only | `cli.py:262`, `ingest.py:3` |
 | SEC-40a | Top-level JSON must be a list (Gitleaks) / per-line dict (TruffleHog) | `ingest.py:168,224,366` |
-| SEC-40b | Cap 10 000 findings + 100 MB file-size guard pre-`json.load()` | `ingest.py:20,169,188,231,367,384,435` |
+| SEC-40b | Cap 10 000 findings + 20 MB file-size guard pre-`json.load()` | `ingest.py:19,25,203` |
 | SEC-40c | Resolved external paths must be within target (covers symlink-escape) | `ingest.py:170,368` (via `_resolve_external_finding_path`) |
 
 ### CVE / HIGH / MED series

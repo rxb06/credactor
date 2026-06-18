@@ -558,10 +558,11 @@ Verified behaviour and **requirements**:
   a **file target exits 2** (verified).
 - Ingestion **cannot be combined with `--scan-history`** — **exits 2** (verified).
 - Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
-  discovered `[ingest]` entry takes **precedence over** a same-kind CLI
-  `--from-*` flag (the flag does not override or merge with it), and a broken
-  `[ingest]` path is fatal (exit 2) even alongside a valid CLI flag — keep one
-  source per kind.
+  same-kind CLI `--from-*` flag takes **precedence over** an `[ingest]` entry
+  (**CLI > config**, consistent with every other setting): when the flag is
+  given, that `[ingest]` entry is ignored entirely (not merged, not even
+  validated). An `[ingest]` entry applies only when no same-kind flag is
+  passed — keep one source per kind.
 - The report is **untrusted input**, with two distinct contracts:
   - *The report file itself* is read from the path you supply — **not** confined
     to the target. A **missing or unreadable** report path is a **fatal error,
@@ -610,6 +611,7 @@ Verified rules:
 | `--staged --ci` | read-only gate over staged files |
 | `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |
 | `--replacement` (CLI) vs `.credactor.toml` `replacement` | **CLI wins** (CLI > config > default) |
+| `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry is ignored |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
 | `--from-*` with a **file** target | **rejected, exit 2** (needs a directory) |
