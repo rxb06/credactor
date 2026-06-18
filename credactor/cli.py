@@ -625,6 +625,25 @@ def _main_inner(argv: list[str] | None = None) -> None:
     if file_data:
         apply_config_file(config, file_data)
 
+    # S9: an explicit CLI --from-* overrides a same-kind .credactor.toml
+    # [ingest] entry (precedence CLI > config > default, consistent with
+    # --replacement and every other setting). argparse default is None, so a
+    # non-None value means the flag was actually passed; re-assert it here
+    # because apply_config_file above may have replaced it with the config
+    # value. Done before _validate_invocation so validation sees the final
+    # effective config. An explicitly-empty value (e.g. --from-gitleaks "" from
+    # an unset shell var) is a fatal user error, not a silent no-op: it must
+    # not swallow ingest or clobber a config source into a false-clean exit 0
+    # (parity with --replacement "", which is also fatal).
+    if args.from_gitleaks is not None:
+        if not args.from_gitleaks:
+            _fatal('--from-gitleaks requires a non-empty report path')
+        config.from_gitleaks = args.from_gitleaks
+    if args.from_trufflehog is not None:
+        if not args.from_trufflehog:
+            _fatal('--from-trufflehog requires a non-empty report path')
+        config.from_trufflehog = args.from_trufflehog
+
     # Validate invocation flags AFTER the config file is applied so a
     # .credactor.toml [ingest] table can't slip past the --scan-history/ingest
     # rejection (mirrors the post-config _validate_replacement / H5 check below).

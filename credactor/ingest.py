@@ -17,9 +17,12 @@ from .utils import is_within_root, preview, read_lines
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
-# Maximum Gitleaks report file size — guards against OOM before json.load()
-# deserialises the full array.  100 MB >> any real report (10 k findings ≈ 5 MB).
-_MAX_REPORT_BYTES = 100_000_000
+# Maximum ingest report file size — guards against OOM before the non-streaming
+# stdlib json.load() deserialises the whole document (it transiently uses on the
+# order of 10x the file size in memory). 20 MB keeps ~4x headroom over the
+# largest realistic report (10 k findings ≈ 5 MB) without leaving a 100 MB ->
+# ~1 GB transient-allocation vector.
+_MAX_REPORT_BYTES = 20_000_000
 
 # ---------------------------------------------------------------------------
 # Severity mapping tables
@@ -233,6 +236,15 @@ def ingest_gitleaks(
     except json.JSONDecodeError as exc:
         raise ValueError(
             f'Gitleaks file is not valid JSON ({filepath!r}): {exc}'
+        ) from exc
+    except RecursionError as exc:
+        # Deeply-nested JSON (e.g. '['*200k) exhausts the interpreter recursion
+        # limit. RecursionError is a RuntimeError, not one of the above, so it
+        # would otherwise escape as an uncaught traceback (exit 1) instead of
+        # the contracted fatal exit 2. Fail closed like any unparseable report.
+        raise ValueError(
+            f'Gitleaks file {filepath!r} is too deeply nested to parse '
+            f'safely: {exc}'
         ) from exc
 
     if not isinstance(data, list):
@@ -543,6 +555,13 @@ def ingest_trufflehog(
                     lineno_file, exc,
                 )
                 continue
+            except RecursionError as exc:
+                # A deeply-nested line is resource exhaustion, not an ordinary
+                # malformed line: fail closed (fatal exit 2) rather than skip.
+                raise ValueError(
+                    f'TruffleHog file {filepath!r} line {lineno_file} is too '
+                    f'deeply nested to parse safely: {exc}'
+                ) from exc
 
             if not isinstance(obj, dict):
                 logger.info(

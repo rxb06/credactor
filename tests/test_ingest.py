@@ -1597,3 +1597,22 @@ class TestDedupSurrogateHash:
         f_clean = _make_finding(full_value='clean_secret_value')
         result = deduplicate_findings([f_surrogate, f_clean])
         assert len(result) == 2
+
+
+class TestDeeplyNestedJsonIsFatal:
+    """S7: deeply-nested JSON must fail closed (fatal ValueError -> exit 2),
+    not escape as an uncaught RecursionError (traceback, exit 1)."""
+
+    def test_gitleaks_deeply_nested_is_fatal(self, tmp_path):
+        target, _ = _make_target(tmp_path)
+        report = tmp_path / 'nested.json'
+        report.write_text('[' * 200000, encoding='utf-8')
+        with pytest.raises(ValueError, match='nested'):
+            ingest_gitleaks(str(report), str(target))
+
+    def test_trufflehog_deeply_nested_is_fatal(self, tmp_path):
+        target, _ = _make_target(tmp_path)
+        report = tmp_path / 'nested.ndjson'
+        report.write_text('[' * 200000, encoding='utf-8')
+        with pytest.raises(ValueError, match='nested'):
+            ingest_trufflehog(str(report), str(target))

@@ -418,6 +418,65 @@ class TestConfigFileIngestCLI:
         msgs = [r.getMessage() for r in credactor_caplog.records]
         assert any('--scan-history cannot be combined with' in m for m in msgs)
 
+    def test_cli_ingest_flag_beats_config(self, tmp_dir):
+        """S9: an explicit --from-gitleaks overrides a same-kind [ingest] entry
+        (CLI > config, consistent with --replacement). The CLI report carries a
+        finding (-> exit 1); the config report is empty (-> would be exit 0), so
+        the resulting exit code proves which report was actually ingested."""
+        repo, _ = self._setup_project(tmp_dir)
+        finding = {
+            'File': 'src/config.py', 'StartLine': 1, 'Secret': 'aaaaaaaaaa',
+            'Match': 'api_key = "aaaaaaaaaa"', 'RuleID': 'generic-api-key',
+            'Tags': [], 'Commit': '', 'SymlinkFile': '',
+        }
+        cli_report = os.path.join(tmp_dir, 'cli.json')
+        with open(cli_report, 'w') as f:
+            json.dump([finding], f)
+        cfg_report = os.path.join(tmp_dir, 'cfg.json')
+        with open(cfg_report, 'w') as f:
+            json.dump([], f)   # empty: if config won, the run would exit 0
+        with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
+            f.write('[ingest]\n')
+            f.write(f'from_gitleaks = "{Path(cfg_report).as_posix()}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--from-gitleaks', cli_report, repo])
+        assert exc_info.value.code == 1   # CLI report's finding -> exit 1
+
+    def test_empty_from_gitleaks_is_fatal(self, tmp_dir):
+        """S9 edge: an explicit --from-gitleaks "" (e.g. an unset shell var) is a
+        user error, not a silent no-op. It must fail closed (exit 2), mirroring
+        --replacement "" — never silently disable ingest (incl. a config source)."""
+        repo, _ = self._setup_project(tmp_dir)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--from-gitleaks', '', repo])
+        assert exc_info.value.code == 2
+
+    def test_empty_from_trufflehog_is_fatal(self, tmp_dir):
+        repo, _ = self._setup_project(tmp_dir)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--from-trufflehog', '', repo])
+        assert exc_info.value.code == 2
+
+    def test_empty_cli_from_flag_does_not_clobber_config_ingest(self, tmp_dir):
+        """S9 edge, false-clean guard: --from-gitleaks "" alongside a config
+        [ingest] source that yields a finding must NOT silently drop to exit 0;
+        it fails closed (exit 2) rather than flipping a CI gate green."""
+        repo, _ = self._setup_project(tmp_dir)
+        finding = {
+            'File': 'src/config.py', 'StartLine': 1, 'Secret': 'aaaaaaaaaa',
+            'Match': 'api_key = "aaaaaaaaaa"', 'RuleID': 'generic-api-key',
+            'Tags': [], 'Commit': '', 'SymlinkFile': '',
+        }
+        cfg_report = os.path.join(tmp_dir, 'cfg.json')
+        with open(cfg_report, 'w') as f:
+            json.dump([finding], f)
+        with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
+            f.write('[ingest]\n')
+            f.write(f'from_gitleaks = "{Path(cfg_report).as_posix()}"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', '--from-gitleaks', '', repo])
+        assert exc_info.value.code == 2
+
 
 class TestGitleaksAllowlistIntegration:
     """Allowlist suppression must apply to --from-gitleaks findings."""
