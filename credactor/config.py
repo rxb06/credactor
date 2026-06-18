@@ -4,6 +4,7 @@ Configuration loading from ``.credactor.toml`` files.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,13 @@ MIN_LEN_DEFAULT: int = 8
 
 # Parsed-TOML config shape.
 TomlData = dict[str, Any]
+
+# M5/S5: a custom replacement must be alphanumeric/underscore/hyphen and
+# NON-EMPTY. The '+' (not '*') rejects an empty --replacement, which would
+# excise the secret with no marker. fullmatch (not search) is required: `$`
+# matches before a trailing newline, so a search-based guard would let an
+# injected "X\n" line through. Single source — cli and Config both use this.
+_SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]+')
 
 
 class ConfigError(Exception):
@@ -88,6 +96,22 @@ class Config:
             raise ValueError(
                 f'output_format must be text|json|sarif, '
                 f'got {self.output_format!r}')
+
+    def validate_replacement(self) -> None:
+        """Raise ValueError if the custom replacement is outside the allowlist.
+
+        S6: enforced at the data layer (and called from the redactor sink) so a
+        library caller that builds a Config directly — bypassing the CLI's
+        _validate_replacement front door — cannot get an un-validated string
+        written into files. Only relevant when the mode actually consumes
+        custom_replacement (sentinel/custom); env mode derives names separately.
+        """
+        if (self.replace_mode in ('sentinel', 'custom')
+                and not _SAFE_REPLACEMENT_RE.fullmatch(self.custom_replacement)):
+            raise ValueError(
+                'custom_replacement must be non-empty and match [A-Za-z0-9_-]+ '
+                f'(alphanumeric, underscore, hyphen), got '
+                f'{self.custom_replacement!r}')
 
 
 def _find_project_root(start: Path) -> Path | None:

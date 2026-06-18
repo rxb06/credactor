@@ -34,6 +34,17 @@ class TestConfigPostInit:
         with pytest.raises(ValueError, match='output_format'):
             Config(output_format='xml')
 
+    def test_validate_replacement_rejects_empty_and_bad_chars(self):
+        # S6: data-layer validation of custom_replacement (charset + non-empty),
+        # gated on the mode that consumes it (sentinel/custom).
+        with pytest.raises(ValueError, match='custom_replacement'):
+            Config(replace_mode='custom', custom_replacement='').validate_replacement()
+        with pytest.raises(ValueError, match='custom_replacement'):
+            Config(replace_mode='custom', custom_replacement='bad;rm').validate_replacement()
+        # valid value, and env mode (which derives names), do not raise
+        Config(replace_mode='custom', custom_replacement='OK-1_x').validate_replacement()
+        Config(replace_mode='env', custom_replacement='ignored;here').validate_replacement()
+
     def test_accepts_valid_extremes(self):
         Config(entropy_threshold=0.0, min_value_length=1)
         Config(entropy_threshold=6.0, min_value_length=200)

@@ -427,6 +427,11 @@ def batch_replace_in_file(
         )
         return 0, len(file_findings)
 
+    # S6: the CLI validates the replacement at its front door, but a library
+    # caller building a Config directly skips that — re-check at the sink so an
+    # out-of-charset (or empty) string is never written into a file.
+    config.validate_replacement()
+
     # #16 — detect encoding
     encoding = detect_encoding(filepath)
 

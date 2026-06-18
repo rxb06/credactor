@@ -585,6 +585,13 @@ class TestPhase1Fixes:
         # alphanumeric + underscore + hyphen passes (no exit)
         _validate_replacement(Config(custom_replacement='MY-REDACTION_1'))
 
+    def test_empty_replacement_rejected(self):
+        # S5: '' must be rejected — the allowlist regex uses + not *; otherwise
+        # --replacement '' excises the secret with no marker.
+        with pytest.raises(SystemExit) as exc:
+            _validate_replacement(Config(replace_mode='custom', custom_replacement=''))
+        assert exc.value.code == 2
+
     def test_trailing_newline_replacement_rejected(self):
         # fullmatch (not search) is required: the regex `$` matches before a
         # trailing newline, so a search-based guard would let this inject a line

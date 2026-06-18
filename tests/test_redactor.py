@@ -919,3 +919,13 @@ class TestWritePathSafety:
         assert replaced == 1
         assert not os.path.exists(path + '.bak')      # nothing beside the file
         assert os.listdir(backup)                     # backup is in the secure dir
+
+    def test_invalid_replacement_rejected_at_sink(self, make_file):
+        # S6: a library caller building a Config directly (bypassing the CLI
+        # guard) must not get an unvalidated replacement written into a file.
+        path = make_file('s.py', f'api_key = "{_AWS_KEY}"\n')
+        config = Config(replace_mode='custom', custom_replacement='bad;rm -rf')
+        with pytest.raises(ValueError):
+            batch_replace_in_file(path, [self._finding(path)], config)
+        with open(path) as f:
+            assert _AWS_KEY in f.read()               # untouched — raised pre-write

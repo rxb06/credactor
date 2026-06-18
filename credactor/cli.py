@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -66,12 +65,6 @@ def _resolve_protected_dirs() -> frozenset[str]:
 
 
 _PROTECTED_DIRS_RESOLVED: frozenset[str] = _resolve_protected_dirs()
-
-# M5: a custom replacement string must match the documented contract exactly —
-# alphanumeric, underscore, hyphen only. fullmatch (not search) is required: the
-# regex `$` matches before a trailing newline, so search would let "X\n" slip
-# through and inject a source line.
-_SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]*')
 
 
 def _fatal(msg: str, *args: object) -> NoReturn:
@@ -387,13 +380,13 @@ def _validate_replacement(config: Config) -> None:
     and quote characters (``<>"'/``) through to inject into XML/HTML/code. The
     allowlist also subsumes the M6 newline/control-character rejection.
     """
-    if config.replace_mode not in ('sentinel', 'custom'):
-        return
-    if not _SAFE_REPLACEMENT_RE.fullmatch(config.custom_replacement):
+    try:
+        config.validate_replacement()
+    except ValueError:
         _fatal(
-            'Replacement string contains characters outside the allowed set.\n'
-            '  Value: %r\n'
-            '  Use only alphanumeric characters, underscores, and hyphens.',
+            'Replacement string is empty or contains characters outside the '
+            'allowed set.\n  Value: %r\n  Use only alphanumeric characters, '
+            'underscores, and hyphens (at least one).',
             config.custom_replacement,
         )
 
