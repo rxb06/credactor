@@ -222,6 +222,22 @@ class TestMainExitCodes:
             main(['--config', bad, '--dry-run', tmp_dir])
         assert broken.value.code == 2  # fatal, not a silent exit 0
 
+    def test_config_file_bad_replacement_rejected(self, tmp_dir):
+        # A discovered .credactor.toml must not smuggle a dangerous replacement
+        # past the CLI guard into file writes: an out-of-charset value is fatal
+        # (exit 2) BEFORE any redaction, and the target file is left untouched.
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'  # credactor:ignore
+        src = os.path.join(tmp_dir, 'leak.py')
+        with open(src, 'w') as f:
+            f.write(f'api_key = "{key}"\n')
+        with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
+            f.write('replacement = "bad;rm -rf"\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', tmp_dir])
+        assert exc_info.value.code == 2
+        with open(src) as f:
+            assert key in f.read()  # rejected before any write; secret untouched
+
     @pytest.mark.skipif(
         sys.platform == 'win32', reason='chmod 000 unreadable semantics are POSIX-only'
     )

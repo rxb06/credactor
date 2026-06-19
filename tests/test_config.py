@@ -45,6 +45,19 @@ class TestConfigPostInit:
         Config(replace_mode='custom', custom_replacement='OK-1_x').validate_replacement()
         Config(replace_mode='env', custom_replacement='ignored;here').validate_replacement()
 
+    def test_toml_replacement_charset_validated(self):
+        # S6 (plan step 2.2): a .credactor.toml that sets a dangerous
+        # 'replacement' must not smuggle an unsafe string into file writes.
+        # apply_config_file applies the raw TOML value to custom_replacement; the
+        # shared validate_replacement() (also run at the CLI front door and the
+        # redactor sink) rejects it — so the TOML-application path is covered,
+        # not only the direct-construction case above.
+        cfg = Config(replace_mode='custom')
+        apply_config_file(cfg, {'replacement': 'bad;rm -rf'})
+        assert cfg.custom_replacement == 'bad;rm -rf'  # raw TOML value applied
+        with pytest.raises(ValueError, match='custom_replacement'):
+            cfg.validate_replacement()  # ...but rejected on validate
+
     def test_accepts_valid_extremes(self):
         Config(entropy_threshold=0.0, min_value_length=1)
         Config(entropy_threshold=6.0, min_value_length=200)
