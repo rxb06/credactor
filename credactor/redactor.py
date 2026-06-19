@@ -174,7 +174,7 @@ def _backup_dir_via_unsafe_symlink(path_str: str) -> bool:
     expected = abspath
     for src, dst in _SYSTEM_SYMLINK_PREFIXES:
         if abspath == src or abspath.startswith(src + os.sep):
-            expected = dst + abspath[len(src):]
+            expected = dst + abspath[len(src) :]
             break
     return os.path.realpath(path_str) != expected
 
@@ -252,8 +252,10 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
         # L10: fail-closed. The user asked for backups OUTSIDE the repo; if that
         # is impossible, do NOT redact — and nothing was ever written in-repo.
         logger.error(
-            'Could not write backup to %s: %s — refusing to proceed; '
-            'skipping this file.', dest_dir, exc)
+            'Could not write backup to %s: %s — refusing to proceed; skipping this file.',
+            dest_dir,
+            exc,
+        )
         if tmp is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
@@ -316,8 +318,8 @@ def _final_file_sweep(
     """
     if os.path.islink(filepath):
         logger.warning(
-            'Refusing to sweep symlink %s: os.replace would rewrite the link, '
-            'not its target.', filepath,
+            'Refusing to sweep symlink %s: os.replace would rewrite the link, not its target.',
+            filepath,
         )
         return
     try:
@@ -358,8 +360,7 @@ def _sweep_stray_copies(
     whose own adjudication — an explicit interactive skip, a pending prompt,
     or a failed replacement — owns them. Scope is bounded to this one file.
     """
-    stray = (DEFAULT_REPLACEMENT if config.replace_mode == 'env'
-             else config.custom_replacement)
+    stray = DEFAULT_REPLACEMENT if config.replace_mode == 'env' else config.custom_replacement
     values = {f['full_value'] for f in file_findings if f['full_value']}
     if not values:
         return
@@ -392,7 +393,9 @@ def _sweep_stray_copies(
         logger.warning(
             '%s: also cleared %d additional cop%s of redacted value(s) '
             'beyond the adjudicated finding(s) (value-global sweep).',
-            filepath, stray_count, 'y' if stray_count == 1 else 'ies',
+            filepath,
+            stray_count,
+            'y' if stray_count == 1 else 'ies',
         )
 
 
@@ -423,7 +426,8 @@ def batch_replace_in_file(
         logger.warning(
             'Refusing to redact symlink %s: os.replace would rewrite the link, '
             'not its target — the secret would remain in the target file. '
-            'Resolve the symlink and re-run.', filepath,
+            'Resolve the symlink and re-run.',
+            filepath,
         )
         return 0, len(file_findings)
 
@@ -450,6 +454,7 @@ def batch_replace_in_file(
         lock_fh = open(filepath, 'r')  # noqa: SIM115
         try:
             import fcntl
+
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except ImportError:
             # Windows: fcntl unavailable — close handle to avoid blocking
@@ -504,7 +509,9 @@ def batch_replace_in_file(
             original = lines[idx]
             if full_value not in original:
                 logger.warning(
-                    'Value no longer found on line %d in %s (already replaced?).', lineno, filepath,
+                    'Value no longer found on line %d in %s (already replaced?).',
+                    lineno,
+                    filepath,
                 )
                 failed += 1
                 failed_lines.add(lineno)
@@ -522,9 +529,9 @@ def batch_replace_in_file(
         # and lines whose own replacement just failed keep their content —
         # each finding's adjudication owns its line.
         if replaced:
-            _sweep_stray_copies(lines, file_findings, config,
-                                set(sweep_exclude_lines) | failed_lines,
-                                filepath)
+            _sweep_stray_copies(
+                lines, file_findings, config, set(sweep_exclude_lines) | failed_lines, filepath
+            )
 
         if not _write_atomic(filepath, lines, encoding):
             return 0, len(file_findings)
@@ -555,7 +562,8 @@ def replace_single(
     Returns True on success.
     """
     replaced, _ = batch_replace_in_file(
-        filepath, [finding], config, sweep_exclude_lines=sweep_exclude_lines)
+        filepath, [finding], config, sweep_exclude_lines=sweep_exclude_lines
+    )
     return replaced > 0
 
 
@@ -634,13 +642,15 @@ def interactive_review(
 
         while True:
             try:
-                answer = input("  Replace? [y/N]: ").strip().lower()
+                answer = input('  Replace? [y/N]: ').strip().lower()
             except (KeyboardInterrupt, EOFError):
                 # Completes the already-approved adjudications only: pending
                 # and skipped findings' lines are preserved by construction.
                 _run_final_sweeps()
-                print(f'\n\n  Interrupted — {replaced} replacement(s) already '
-                      f'applied. No further changes will be made.')
+                print(
+                    f'\n\n  Interrupted — {replaced} replacement(s) already '
+                    f'applied. No further changes will be made.'
+                )
                 if replaced and not config.no_backup and not config.secure_delete:
                     # Same invariant as the summary footer: under
                     # --secure-delete each .bak was wiped after its
@@ -651,8 +661,9 @@ def interactive_review(
 
             if answer in ('y', 'yes'):
                 others = lines_by_file[finding['file']] - {finding['line']}
-                ok = replace_single(finding['file'], finding, config,
-                                    sweep_exclude_lines=frozenset(others))
+                ok = replace_single(
+                    finding['file'], finding, config, sweep_exclude_lines=frozenset(others)
+                )
                 if ok:
                     print('  -> Replaced.\n')
                     replaced += 1
@@ -698,28 +709,33 @@ def fix_all(
 
 
 def _print_summary(
-    replaced: int, other: int, total: int, config: Config, label: str = 'skipped',
+    replaced: int,
+    other: int,
+    total: int,
+    config: Config,
+    label: str = 'skipped',
 ) -> None:
     # Mirror _handle_fix_all's stream choice: with -f json/sarif the report on
     # stdout must stay a single parseable document, so the summary goes to
     # stderr. Interactive review is text-only, where this is still stdout.
     out = sys.stdout if config.output_format == 'text' else sys.stderr
     print(f'{"=" * 70}', file=out)
-    print(f'  Summary:  {replaced} replaced  |  {other} {label}  |  {total} total',
-          file=out)
+    print(f'  Summary:  {replaced} replaced  |  {other} {label}  |  {total} total', file=out)
     if replaced:
-        print('  Reminder: rotate / revoke any credentials that were just redacted.',
-              file=out)
+        print('  Reminder: rotate / revoke any credentials that were just redacted.', file=out)
         # The plaintext warning only applies when a .bak can still exist:
         # --no-backup never writes one and --secure-delete wipes it. It stays
         # for --secure-backup-dir — those backups are plaintext too, just
         # elsewhere. (A failed secure-delete already logs its own warning.)
         if not config.no_backup and not config.secure_delete:
-            print('  SECURITY: .bak backup files contain original credentials in PLAINTEXT.',
-                  file=out)
-            print('            Use --secure-backup-dir to store backups outside the repo,',
-                  file=out)
-            print('            or --secure-delete to overwrite backups after verification.',
-                  file=out)
+            print(
+                '  SECURITY: .bak backup files contain original credentials in PLAINTEXT.', file=out
+            )
+            print(
+                '            Use --secure-backup-dir to store backups outside the repo,', file=out
+            )
+            print(
+                '            or --secure-delete to overwrite backups after verification.', file=out
+            )
             print('            At minimum, delete .bak files before committing.', file=out)
     print(f'{"=" * 70}\n', file=out)

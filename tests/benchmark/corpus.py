@@ -14,6 +14,7 @@ e2e report (H7/M1/M2/M3/M4/L1 and the git-SHA/base64 false positives); they are
 included on purpose so the benchmark *measures* them. Fixing the corresponding
 finding should flip the case and raise the ratchet floor.
 """
+
 from __future__ import annotations
 
 import random
@@ -40,8 +41,8 @@ class Case:
     category: str
     filename: str
     content: str
-    expect: bool          # True = should be detected; False = must not be flagged
-    gap: bool = False     # known gap today (documents a finding)
+    expect: bool  # True = should be detected; False = must not be flagged
+    gap: bool = False  # known gap today (documents a finding)
     note: str = ''
 
 
@@ -57,17 +58,17 @@ _PYPI = 'pypi-' + _alnum(20)
 _JWT = 'eyJ' + _alnum(33) + '.eyJ' + _alnum(30) + '.' + _alnum(43)
 # all 3 segments <=40 chars AND letter-starting -> matches _DOTTED_ACCESS_RE (L1)
 _LETTER = string.ascii_letters
-_JWT_COMPACT = (
-    'eyJ' + _alnum(20) + '.eyJ' + _alnum(20)
-    + '.' + _r.choice(_LETTER) + _alnum(17)
-)
+_JWT_COMPACT = 'eyJ' + _alnum(20) + '.eyJ' + _alnum(20) + '.' + _r.choice(_LETTER) + _alnum(17)
 _HEX32 = _hex(32)
 _STRONG_PW = _alnum(20)
 _GIT_SHA = _hex(40)
 _B64_ASSET = _alnum(80, string.ascii_letters + string.digits + '+/')
 _PEM = (
     '-----BEGIN RSA PRIVATE KEY-----\n'
-    + _alnum(64) + '\n' + _alnum(64) + '\n'
+    + _alnum(64)
+    + '\n'
+    + _alnum(64)
+    + '\n'
     + '-----END RSA PRIVATE KEY-----'
 )
 
@@ -83,34 +84,88 @@ CASES: list[Case] = [
     Case('pypi', 'provider', 'pypi.py', f'pypi = "{_PYPI}"\n', True),
     # ---- positives: structural (must detect) ----
     Case('jwt', 'structural', 'jwt.py', f'tok = "{_JWT}"\n', True),
-    Case('conn', 'structural', 'conn.py',
-         f'url = "postgresql://user:{_alnum(12)}@db.example.com:5432/prod"\n', True),
+    Case(
+        'conn',
+        'structural',
+        'conn.py',
+        f'url = "postgresql://user:{_alnum(12)}@db.example.com:5432/prod"\n',
+        True,
+    ),
     Case('pem_inline', 'structural', 'pem_inline.py', f'KEY = """{_PEM}"""\n', True),
     # ---- positives: heuristic (must detect) ----
     Case('hex', 'heuristic', 'hex.py', f'h = "{_HEX32}"\n', True),
     Case('strong_pw', 'heuristic', 'strongpw.py', f'db_password = "{_STRONG_PW}"\n', True),
     # ---- positives that are KNOWN GAPS today (should detect, currently missed) ----
-    Case('weak_pw_1', 'weak-password', 'weakpw1.py', 'password = "Summer2024!"\n', True,
-         note='H7 FIXED: password-family entropy floor 3.0 (entropy 3.10)'),
-    Case('weak_pw_2', 'weak-password', 'weakpw2.py', 'api_secret = "Password123"\n', True,
-         gap=True, note='still missed: var name now matched (H11), but api_secret is '
-                        'outside the H7 password-family carve-out, so entropy 3.28 < the '
-                        '3.5 floor. Needs the carve-out extended to secret-family '
-                        '(maintainer decision).'),
-    Case('jwt_compact', 'structural', 'jwtc.py', f'tok = "{_JWT_COMPACT}"\n', True,
-         gap=True, note='L1: compact JWT misread as dotted access'),
-    Case('pem_file', 'key-file', 'server.pem', _PEM + '\n', True,
-         note='M1 FIXED: .pem now in SCAN_EXTENSIONS'),
-    Case('id_rsa', 'key-file', 'id_rsa', _PEM + '\n', True,
-         note='M1 FIXED: extensionless key file now scanned'),
-    Case('web_config', 'xml', 'web.config',
-         f'<add key="DbPassword" value="{_STRONG_PW}xyz" />\n', True,
-         note='M2 FIXED: .config now scanned'),
-    Case('go_short', 'go', 'main.go', f'apiKey := "{_STRONG_PW}qZ"\n', True,
-         note='M4 FIXED: Go := now matched'),
-    Case('comment_secret', 'comment', 'legacy.py', f'# old_key = "{_AWS}"\n', True,
-         gap=True, note='M3: pattern scan disabled on comment lines'),
-
+    Case(
+        'weak_pw_1',
+        'weak-password',
+        'weakpw1.py',
+        'password = "Summer2024!"\n',
+        True,
+        note='H7 FIXED: password-family entropy floor 3.0 (entropy 3.10)',
+    ),
+    Case(
+        'weak_pw_2',
+        'weak-password',
+        'weakpw2.py',
+        'api_secret = "Password123"\n',
+        True,
+        gap=True,
+        note='still missed: var name now matched (H11), but api_secret is '
+        'outside the H7 password-family carve-out, so entropy 3.28 < the '
+        '3.5 floor. Needs the carve-out extended to secret-family '
+        '(maintainer decision).',
+    ),
+    Case(
+        'jwt_compact',
+        'structural',
+        'jwtc.py',
+        f'tok = "{_JWT_COMPACT}"\n',
+        True,
+        gap=True,
+        note='L1: compact JWT misread as dotted access',
+    ),
+    Case(
+        'pem_file',
+        'key-file',
+        'server.pem',
+        _PEM + '\n',
+        True,
+        note='M1 FIXED: .pem now in SCAN_EXTENSIONS',
+    ),
+    Case(
+        'id_rsa',
+        'key-file',
+        'id_rsa',
+        _PEM + '\n',
+        True,
+        note='M1 FIXED: extensionless key file now scanned',
+    ),
+    Case(
+        'web_config',
+        'xml',
+        'web.config',
+        f'<add key="DbPassword" value="{_STRONG_PW}xyz" />\n',
+        True,
+        note='M2 FIXED: .config now scanned',
+    ),
+    Case(
+        'go_short',
+        'go',
+        'main.go',
+        f'apiKey := "{_STRONG_PW}qZ"\n',
+        True,
+        note='M4 FIXED: Go := now matched',
+    ),
+    Case(
+        'comment_secret',
+        'comment',
+        'legacy.py',
+        f'# old_key = "{_AWS}"\n',
+        True,
+        gap=True,
+        note='M3: pattern scan disabled on comment lines',
+    ),
     # ---- negatives: placeholders / safe values (must NOT flag) ----
     Case('ph_yourkey', 'placeholder', 'ph1.py', 'api_key = "your_api_key"\n', False),
     Case('ph_changeme', 'placeholder', 'ph2.py', 'password = "changeme"\n', False),
@@ -126,13 +181,31 @@ CASES: list[Case] = [
     Case('path', 'code-shape', 'c3.py', 'p = "/home/user/.ssh/config"\n', False),
     Case('url', 'code-shape', 'c4.py', 'u = "https://api.example.com/v1/endpoint"\n', False),
     Case('hash_var', 'code-shape', 'c5.py', f'password_hash = "{_HEX32}"\n', False),
-    Case('bcrypt', 'code-shape', 'c6.py',
-         'pw = "$2b$12$' + _alnum(53) + '"\n', False),
+    Case('bcrypt', 'code-shape', 'c6.py', 'pw = "$2b$12$' + _alnum(53) + '"\n', False),
     # ---- negatives: high-entropy NON-secrets (precision bait; some are current FPs) ----
-    Case('git_sha', 'entropy-bait', 'b1.py', f'COMMIT = "{_GIT_SHA}"\n', False,
-         gap=True, note='precision: 40-hex git SHA currently flagged as hex credential'),
-    Case('uuid', 'entropy-bait', 'b2.py',
-         'request_id = "550e8400-e29b-41d4-a716-446655440000"\n', False),
-    Case('b64_asset', 'entropy-bait', 'b3.py', f'BLOB = "{_B64_ASSET}"\n', False,
-         gap=True, note='precision: long base64 asset flagged as high-entropy string'),
+    Case(
+        'git_sha',
+        'entropy-bait',
+        'b1.py',
+        f'COMMIT = "{_GIT_SHA}"\n',
+        False,
+        gap=True,
+        note='precision: 40-hex git SHA currently flagged as hex credential',
+    ),
+    Case(
+        'uuid',
+        'entropy-bait',
+        'b2.py',
+        'request_id = "550e8400-e29b-41d4-a716-446655440000"\n',
+        False,
+    ),
+    Case(
+        'b64_asset',
+        'entropy-bait',
+        'b3.py',
+        f'BLOB = "{_B64_ASSET}"\n',
+        False,
+        gap=True,
+        note='precision: long base64 asset flagged as high-entropy string',
+    ),
 ]

@@ -46,6 +46,9 @@ jobs:
       - name: Lint
         run: ruff check credactor/ tests/ scripts/
 
+      - name: Format check
+        run: ruff format --check credactor/ tests/ scripts/
+
       - name: Type check
         run: mypy credactor/ scripts/
 

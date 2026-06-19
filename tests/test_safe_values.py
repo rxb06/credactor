@@ -6,17 +6,20 @@ from credactor.scanner import _is_safe_value
 
 
 class TestSafeValues:
-    @pytest.mark.parametrize('val', [
-        'your_api_key',
-        'placeholder',
-        'changeme',
-        'xxxxx',
-        'REDACTED_BY_CREDACTOR',
-        'none',
-        'null',
-        'true',
-        'false',
-    ])
+    @pytest.mark.parametrize(
+        'val',
+        [
+            'your_api_key',
+            'placeholder',
+            'changeme',
+            'xxxxx',
+            'REDACTED_BY_CREDACTOR',
+            'none',
+            'null',
+            'true',
+            'false',
+        ],
+    )
     def test_known_placeholders(self, val):
         assert _is_safe_value(val)
 
@@ -25,10 +28,13 @@ class TestSafeValues:
         assert _is_safe_value('Changeme')
         assert _is_safe_value('NULL')
 
-    @pytest.mark.parametrize('val', [
-        '$API_KEY',
-        '${SECRET}',
-    ])
+    @pytest.mark.parametrize(
+        'val',
+        [
+            '$API_KEY',
+            '${SECRET}',
+        ],
+    )
     def test_env_var_references(self, val):
         assert _is_safe_value(val)
 
@@ -41,11 +47,14 @@ class TestSafeValues:
         """CVE-03 fix: bare {value} must NOT be auto-safe."""
         assert not _is_safe_value('{real_credential_here_12345}')
 
-    @pytest.mark.parametrize('val', [
-        'get_secret()',
-        'Variable.get("key")',
-        'config.get("password")',
-    ])
+    @pytest.mark.parametrize(
+        'val',
+        [
+            'get_secret()',
+            'Variable.get("key")',
+            'config.get("password")',
+        ],
+    )
     def test_function_calls(self, val):
         assert _is_safe_value(val)
 
@@ -54,11 +63,14 @@ class TestSafeValues:
         assert not _is_safe_value('my_p@ss(word)123')
         assert not _is_safe_value('sk_live_abc(def)ghijk')
 
-    @pytest.mark.parametrize('val', [
-        './relative/path/to/key',
-        '~/config/secrets.yaml',
-        'C:\\Users\\key.pem',
-    ])
+    @pytest.mark.parametrize(
+        'val',
+        [
+            './relative/path/to/key',
+            '~/config/secrets.yaml',
+            'C:\\Users\\key.pem',
+        ],
+    )
     def test_file_paths(self, val):
         assert _is_safe_value(val)
 
@@ -70,11 +82,14 @@ class TestSafeValues:
         """Genuine paths with many slashes are still safe."""
         assert _is_safe_value('./a/b/c/d/e/f/g/config.yaml')
 
-    @pytest.mark.parametrize('val', [
-        'https://api.example.com/v1/endpoint',
-        'http://localhost:8080/api',
-        'ftp://files.example.com/data',
-    ])
+    @pytest.mark.parametrize(
+        'val',
+        [
+            'https://api.example.com/v1/endpoint',
+            'http://localhost:8080/api',
+            'ftp://files.example.com/data',
+        ],
+    )
     def test_urls_without_creds(self, val):
         assert _is_safe_value(val)
 

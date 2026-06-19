@@ -63,6 +63,11 @@ pythonpath = ["."]
 target-version = "py311"
 line-length = 100
 
+[tool.ruff.format]
+# Match the codebase's house style; enforced check-only via `ruff format --check`
+# in CI and pre-commit (no auto-rewrite in those gates).
+quote-style = "single"
+
 [tool.ruff.lint]
 select = [
     "E", "F", "W", "I", "B", "SIM", "RUF", "PERF",

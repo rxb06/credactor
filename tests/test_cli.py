@@ -21,10 +21,18 @@ from credactor.config import Config
 class TestConfigFromArgs:
     def test_round_trip(self):
         parser = build_parser()
-        args = parser.parse_args([
-            '--ci', '--no-backup', '--format', 'sarif',
-            '--replace-with', 'env', '--verbose', '/tmp/x',
-        ])
+        args = parser.parse_args(
+            [
+                '--ci',
+                '--no-backup',
+                '--format',
+                'sarif',
+                '--replace-with',
+                'env',
+                '--verbose',
+                '/tmp/x',
+            ]
+        )
         config = _config_from_args(args)
         assert isinstance(config, Config)
         assert config.ci_mode is True
@@ -56,7 +64,7 @@ class TestValidateInvocation:
     def test_dangerous_replacement_exits_2(self):
         config = Config(custom_replacement='$(rm -rf /)')
         with pytest.raises(SystemExit) as exc:
-            _validate_replacement(config)   # H5: guard moved out of _validate_invocation
+            _validate_replacement(config)  # H5: guard moved out of _validate_invocation
         assert exc.value.code == 2
 
 
@@ -152,8 +160,7 @@ class TestMainExitCodes:
         with open(path) as f:
             assert key in f.read()
         assert not os.path.exists(path + '.bak')
-        assert any('--dry-run takes precedence' in r.getMessage()
-                   for r in credactor_caplog.records)
+        assert any('--dry-run takes precedence' in r.getMessage() for r in credactor_caplog.records)
 
     def test_staged_dry_run_fix_all_warns_once_via_staged_only(self, credactor_caplog):
         # The staged message already covers the ignored --fix-all; the
@@ -169,8 +176,7 @@ class TestMainExitCodes:
         # (thresholds, extra_extensions, [ingest]) and can flip a failing
         # CI gate to a pass via a filename typo.
         with pytest.raises(SystemExit) as exc_info:
-            main(['--config', os.path.join(tmp_dir, 'missing.toml'),
-                  '--dry-run', tmp_dir])
+            main(['--config', os.path.join(tmp_dir, 'missing.toml'), '--dry-run', tmp_dir])
         assert exc_info.value.code == 2
         assert 'Config file not found' in credactor_caplog.text
 
@@ -190,8 +196,10 @@ class TestMainExitCodes:
         with pytest.raises(SystemExit) as exc_info:
             main(['--config', cfg, '--dry-run', tmp_dir])
         assert exc_info.value.code == 2
-        assert 'invalid TOML' in credactor_caplog.text.lower() \
+        assert (
+            'invalid TOML' in credactor_caplog.text.lower()
             or 'invalid toml' in credactor_caplog.text.lower()
+        )
 
     def test_invalid_toml_config_does_not_silently_skip_settings(self, tmp_dir):
         # The worst case spelled out: a config whose extra_extensions makes a
@@ -205,24 +213,25 @@ class TestMainExitCodes:
             f.write('extra_extensions = [".custom"]\n')
         with pytest.raises(SystemExit) as found:
             main(['--config', good, '--dry-run', tmp_dir])
-        assert found.value.code == 1            # config honored -> secret found
+        assert found.value.code == 1  # config honored -> secret found
 
         bad = os.path.join(tmp_dir, 'bad.toml')
         with open(bad, 'w') as f:
             f.write('extra_extensions = [".custom"\n')  # unterminated array
         with pytest.raises(SystemExit) as broken:
             main(['--config', bad, '--dry-run', tmp_dir])
-        assert broken.value.code == 2          # fatal, not a silent exit 0
+        assert broken.value.code == 2  # fatal, not a silent exit 0
 
-    @pytest.mark.skipif(sys.platform == 'win32',
-                        reason='chmod 000 unreadable semantics are POSIX-only')
+    @pytest.mark.skipif(
+        sys.platform == 'win32', reason='chmod 000 unreadable semantics are POSIX-only'
+    )
     def test_unreadable_explicit_config_exits_2(self, tmp_dir):
         cfg = os.path.join(tmp_dir, 'noperm.toml')
         with open(cfg, 'w') as f:
             f.write('entropy_threshold = 4.0\n')
         os.chmod(cfg, 0o000)
         try:
-            if os.access(cfg, os.R_OK):   # running as root reads it anyway
+            if os.access(cfg, os.R_OK):  # running as root reads it anyway
                 pytest.skip('cannot make file unreadable (running as root?)')
             with pytest.raises(SystemExit) as exc_info:
                 main(['--config', cfg, '--dry-run', tmp_dir])
@@ -238,8 +247,7 @@ class TestTtyGates:
 
     _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
-    def test_interactive_non_tty_exits_1_untouched(
-            self, make_file, monkeypatch, credactor_caplog):
+    def test_interactive_non_tty_exits_1_untouched(self, make_file, monkeypatch, credactor_caplog):
         path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
         monkeypatch.setattr('builtins.input', lambda *a: 'y')
         monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
@@ -249,11 +257,9 @@ class TestTtyGates:
         with open(path) as f:
             assert self._KEY in f.read()
         assert not os.path.exists(path + '.bak')
-        assert any('requires a TTY' in r.getMessage()
-                   for r in credactor_caplog.records)
+        assert any('requires a TTY' in r.getMessage() for r in credactor_caplog.records)
 
-    def test_fix_all_without_yes_non_tty_aborts(
-            self, make_file, monkeypatch, capsys):
+    def test_fix_all_without_yes_non_tty_aborts(self, make_file, monkeypatch, capsys):
         path = make_file('secret.py', f'aws_key = "{self._KEY}"\n')
         monkeypatch.setattr('builtins.input', lambda *a: 'y')
         monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
@@ -425,22 +431,27 @@ class TestConfigFileIngestCLI:
         the resulting exit code proves which report was actually ingested."""
         repo, _ = self._setup_project(tmp_dir)
         finding = {
-            'File': 'src/config.py', 'StartLine': 1, 'Secret': 'aaaaaaaaaa',
-            'Match': 'api_key = "aaaaaaaaaa"', 'RuleID': 'generic-api-key',
-            'Tags': [], 'Commit': '', 'SymlinkFile': '',
+            'File': 'src/config.py',
+            'StartLine': 1,
+            'Secret': 'aaaaaaaaaa',
+            'Match': 'api_key = "aaaaaaaaaa"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
         }
         cli_report = os.path.join(tmp_dir, 'cli.json')
         with open(cli_report, 'w') as f:
             json.dump([finding], f)
         cfg_report = os.path.join(tmp_dir, 'cfg.json')
         with open(cfg_report, 'w') as f:
-            json.dump([], f)   # empty: if config won, the run would exit 0
+            json.dump([], f)  # empty: if config won, the run would exit 0
         with open(os.path.join(repo, '.credactor.toml'), 'w') as f:
             f.write('[ingest]\n')
             f.write(f'from_gitleaks = "{Path(cfg_report).as_posix()}"\n')
         with pytest.raises(SystemExit) as exc_info:
             main(['--dry-run', '--from-gitleaks', cli_report, repo])
-        assert exc_info.value.code == 1   # CLI report's finding -> exit 1
+        assert exc_info.value.code == 1  # CLI report's finding -> exit 1
 
     def test_empty_from_gitleaks_is_fatal(self, tmp_dir):
         """S9 edge: an explicit --from-gitleaks "" (e.g. an unset shell var) is a
@@ -463,9 +474,14 @@ class TestConfigFileIngestCLI:
         it fails closed (exit 2) rather than flipping a CI gate green."""
         repo, _ = self._setup_project(tmp_dir)
         finding = {
-            'File': 'src/config.py', 'StartLine': 1, 'Secret': 'aaaaaaaaaa',
-            'Match': 'api_key = "aaaaaaaaaa"', 'RuleID': 'generic-api-key',
-            'Tags': [], 'Commit': '', 'SymlinkFile': '',
+            'File': 'src/config.py',
+            'StartLine': 1,
+            'Secret': 'aaaaaaaaaa',
+            'Match': 'api_key = "aaaaaaaaaa"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
         }
         cfg_report = os.path.join(tmp_dir, 'cfg.json')
         with open(cfg_report, 'w') as f:
@@ -559,8 +575,8 @@ class TestPhase1Fixes:
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         path = make_file('config.py', f'aws_key = "{key}"\n')
         with pytest.raises(SystemExit) as exc_info:
-            main(['--dry-run', path])          # file path, not its directory
-        assert exc_info.value.code == 1         # findings present
+            main(['--dry-run', path])  # file path, not its directory
+        assert exc_info.value.code == 1  # findings present
 
     def test_single_file_parity_with_directory(self, make_file):
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -593,13 +609,14 @@ class TestPhase1Fixes:
         try:
             with pytest.raises(SystemExit) as exc_info:
                 main(['--dry-run', os.path.dirname(path)])
-            assert exc_info.value.code == 0     # unread -> no findings, no error gate
+            assert exc_info.value.code == 0  # unread -> no findings, no error gate
         finally:
             os.chmod(path, 0o644)
 
     # --- H6: protected-dir guard resolves symlinked roots (macOS /etc) ---
     def test_etc_is_refused(self):
         from pathlib import Path
+
         if not Path('/etc').exists():
             pytest.skip('no /etc on this platform')
         with pytest.raises(SystemExit) as exc_info:
@@ -610,6 +627,7 @@ class TestPhase1Fixes:
         from pathlib import Path
 
         from credactor.cli import _PROTECTED_DIRS_RESOLVED
+
         # Require /etc to EXIST as well as resolve differently: on Windows
         # '/etc' also resolves to something else (C:\etc), which would run the
         # macOS-symlink assertion against a path that was never protected.
@@ -679,8 +697,7 @@ class TestStagedReadOnly:
         config = Config(staged_only=True, fix_all=True, dry_run=False)
         _validate_invocation(config)
         assert config.dry_run is True
-        assert any('--staged is read-only' in r.message
-                   for r in credactor_caplog.records)
+        assert any('--staged is read-only' in r.message for r in credactor_caplog.records)
 
 
 class TestScanHistoryReadOnly:
@@ -697,8 +714,7 @@ class TestScanHistoryReadOnly:
         config = Config(scan_history=True, fix_all=True, dry_run=False)
         _validate_invocation(config)
         assert config.dry_run is True
-        assert any('--scan-history is read-only' in r.message
-                   for r in credactor_caplog.records)
+        assert any('--scan-history is read-only' in r.message for r in credactor_caplog.records)
 
 
 class TestReplacementEnvModeWarning:
@@ -710,10 +726,8 @@ class TestReplacementEnvModeWarning:
         with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
             f.write(f'aws = "{key}"\n')
         with pytest.raises(SystemExit):
-            main(['--dry-run', '--replace-with', 'env',
-                  '--replacement', 'CUSTOM', tmp_dir])
-        assert any('--replacement has no effect' in r.message
-                   for r in credactor_caplog.records)
+            main(['--dry-run', '--replace-with', 'env', '--replacement', 'CUSTOM', tmp_dir])
+        assert any('--replacement has no effect' in r.message for r in credactor_caplog.records)
 
     def test_no_warning_without_env_mode(self, tmp_dir, credactor_caplog):
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -721,8 +735,7 @@ class TestReplacementEnvModeWarning:
             f.write(f'aws = "{key}"\n')
         with pytest.raises(SystemExit):
             main(['--dry-run', '--replacement', 'CUSTOM', tmp_dir])
-        assert not any('--replacement has no effect' in r.message
-                       for r in credactor_caplog.records)
+        assert not any('--replacement has no effect' in r.message for r in credactor_caplog.records)
 
 
 class TestReplacementPrecedence:
@@ -756,8 +769,7 @@ class TestReplacementPrecedence:
         monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
         monkeypatch.setattr('builtins.input', lambda *a: 'y')
         with pytest.raises(SystemExit):
-            main(['--fix-all', '--replace-with', 'custom',
-                  '--replacement', 'FROM_CLI', tmp_dir])
+            main(['--fix-all', '--replace-with', 'custom', '--replacement', 'FROM_CLI', tmp_dir])
         with open(src) as f:
             out = f.read()
         assert 'FROM_CLI' in out and 'FROM_CONFIG' not in out and key not in out
@@ -794,24 +806,26 @@ class TestFixAllYes:
 
         def _raise_eof(*_a):
             raise EOFError()
+
         monkeypatch.setattr('builtins.input', _raise_eof)
         with pytest.raises(SystemExit) as exc:
             main(['--fix-all', tmp_dir])
         assert exc.value.code == 1
         with open(src) as f:
-            assert key in f.read()            # file left untouched
+            assert key in f.read()  # file left untouched
 
     def test_fix_all_yes_proceeds_without_prompt(self, tmp_dir, monkeypatch):
         src, key = self._repo(tmp_dir)
 
         def _no_prompt(*_a):
             raise AssertionError('--yes must not prompt')
+
         monkeypatch.setattr('builtins.input', _no_prompt)
         with pytest.raises(SystemExit) as exc:
             main(['--fix-all', '--yes', tmp_dir])
         assert exc.value.code == 0
         with open(src) as f:
-            assert key not in f.read()         # redacted
+            assert key not in f.read()  # redacted
 
 
 class TestGitUnavailableExit:
@@ -851,32 +865,34 @@ class TestIngestErrorMessages:
         with pytest.raises(SystemExit) as exc:
             main(['--from-gitleaks', missing, tmp_dir])
         assert exc.value.code == 2
-        assert any('Gitleaks file not found' in r.getMessage()
-                   for r in credactor_caplog.records)
+        assert any('Gitleaks file not found' in r.getMessage() for r in credactor_caplog.records)
 
     def test_trufflehog_file_not_found_message(self, tmp_dir, credactor_caplog):
         missing = os.path.join(tmp_dir, 'nope.json')
         with pytest.raises(SystemExit) as exc:
             main(['--from-trufflehog', missing, tmp_dir])
         assert exc.value.code == 2
-        assert any('TruffleHog file not found' in r.getMessage()
-                   for r in credactor_caplog.records)
+        assert any('TruffleHog file not found' in r.getMessage() for r in credactor_caplog.records)
 
     def test_gitleaks_directory_target_message(self, tmp_dir, credactor_caplog):
         report = self._report(tmp_dir)
         with pytest.raises(SystemExit):
             main(['--from-gitleaks', report, self._file_target(tmp_dir)])
         msgs = [r.getMessage() for r in credactor_caplog.records]
-        assert any('--from-gitleaks requires a directory target' in m
-                   and 'Gitleaks report' in m for m in msgs)
+        assert any(
+            '--from-gitleaks requires a directory target' in m and 'Gitleaks report' in m
+            for m in msgs
+        )
 
     def test_trufflehog_directory_target_message(self, tmp_dir, credactor_caplog):
         report = self._report(tmp_dir)
         with pytest.raises(SystemExit):
             main(['--from-trufflehog', report, self._file_target(tmp_dir)])
         msgs = [r.getMessage() for r in credactor_caplog.records]
-        assert any('--from-trufflehog requires a directory target' in m
-                   and 'TruffleHog report' in m for m in msgs)
+        assert any(
+            '--from-trufflehog requires a directory target' in m and 'TruffleHog report' in m
+            for m in msgs
+        )
 
 
 class TestNoColorEnv:
@@ -930,6 +946,7 @@ class TestExitCodeEdgeBranches:
     def test_keyboard_interrupt_exits_130(self, monkeypatch, capsys):
         def boom(argv=None):
             raise KeyboardInterrupt
+
         monkeypatch.setattr('credactor.cli._main_inner', boom)
         with pytest.raises(SystemExit) as exc:
             main([])
@@ -947,7 +964,7 @@ class TestExitCodeEdgeBranches:
         assert exc.value.code == 1
         assert 'Aborted' in capsys.readouterr().out
         with open(path) as f:
-            assert key in f.read()       # nothing was redacted
+            assert key in f.read()  # nothing was redacted
 
 
 class TestScanJsonEndToEnd:
@@ -972,8 +989,7 @@ class TestScanJsonEndToEnd:
             main(['--dry-run', tmp_dir])
         assert exc.value.code == 0
 
-    def test_interactive_mode_scans_json_without_picker(
-            self, tmp_dir, monkeypatch, capsys):
+    def test_interactive_mode_scans_json_without_picker(self, tmp_dir, monkeypatch, capsys):
         # --scan-json is the explicit opt-in: interactive mode scans all
         # collected .json like every other mode. The former numbered
         # file-picker prompt is gone — the only prompt is Replace?.
@@ -982,9 +998,9 @@ class TestScanJsonEndToEnd:
         monkeypatch.setattr('builtins.input', lambda *a: 'n')
         with pytest.raises(SystemExit) as exc:
             main(['--scan-json', tmp_dir])
-        assert exc.value.code == 1           # found, then skipped at the prompt
+        assert exc.value.code == 1  # found, then skipped at the prompt
         out = capsys.readouterr().out
-        assert 'Selection' not in out        # no picker prompt
+        assert 'Selection' not in out  # no picker prompt
         assert 'INTERACTIVE REDACTION' in out  # went straight to review
 
 
@@ -995,9 +1011,7 @@ class TestCredactorignoreFileTarget:
 
     _KEY = 'AKIA4HJR6WPT3XLQ8NVB'
 
-    def test_file_target_warns_credactorignore_inert(
-        self, make_file, tmp_dir, credactor_caplog
-    ):
+    def test_file_target_warns_credactorignore_inert(self, make_file, tmp_dir, credactor_caplog):
         # The glob would suppress this file on a DIR scan (-> 0), but is inert
         # for the file target (finding stays -> exit 1). The miss must not be
         # silent: a default-visible WARN names it.
@@ -1007,15 +1021,13 @@ class TestCredactorignoreFileTarget:
         with pytest.raises(SystemExit) as exc:
             main(['--dry-run', path])
 
-        assert exc.value.code == 1   # NOT suppressed — proves the inertness
+        assert exc.value.code == 1  # NOT suppressed — proves the inertness
         assert any(
             'single-file target' in r.getMessage() and r.levelname == 'WARNING'
             for r in credactor_caplog.records
         )
 
-    def test_file_target_no_warn_without_ignore_file(
-        self, make_file, credactor_caplog
-    ):
+    def test_file_target_no_warn_without_ignore_file(self, make_file, credactor_caplog):
         # No .credactorignore present -> no spurious warning on a normal scan.
         path = make_file('app.py', f'aws_key = "{self._KEY}"\n')
 
@@ -1023,10 +1035,7 @@ class TestCredactorignoreFileTarget:
             main(['--dry-run', path])
 
         assert exc.value.code == 1
-        assert not any(
-            'single-file target' in r.getMessage()
-            for r in credactor_caplog.records
-        )
+        assert not any('single-file target' in r.getMessage() for r in credactor_caplog.records)
 
     def test_dir_target_applies_credactorignore_and_no_warn(
         self, make_file, tmp_dir, credactor_caplog
@@ -1039,8 +1048,5 @@ class TestCredactorignoreFileTarget:
         with pytest.raises(SystemExit) as exc:
             main(['--dry-run', tmp_dir])
 
-        assert exc.value.code == 0   # suppressed by the glob
-        assert not any(
-            'single-file target' in r.getMessage()
-            for r in credactor_caplog.records
-        )
+        assert exc.value.code == 0  # suppressed by the glob
+        assert not any('single-file target' in r.getMessage() for r in credactor_caplog.records)

@@ -9,6 +9,7 @@ Call ``configure(verbose)`` once at startup (from cli._main_inner) to adjust
 the log level.  The handler is registered at import time so that unit tests
 using ``capsys`` receive output without needing to call configure().
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,7 @@ import sys
 from typing import ClassVar, TextIO
 
 logger = logging.getLogger('credactor')
-logger.setLevel(logging.DEBUG)   # let the handler filter; logger sees everything
+logger.setLevel(logging.DEBUG)  # let the handler filter; logger sees everything
 logger.propagate = False
 
 
@@ -24,10 +25,10 @@ class _BracketFormatter(logging.Formatter):
     """Emit messages with the bracket prefixes credactor uses on stderr."""
 
     _PREFIX: ClassVar[dict[int, str]] = {
-        logging.DEBUG:   '  [SKIP] ',
-        logging.INFO:    '  [INFO] ',
+        logging.DEBUG: '  [SKIP] ',
+        logging.INFO: '  [INFO] ',
         logging.WARNING: '[WARN] ',
-        logging.ERROR:   '[ERROR] ',
+        logging.ERROR: '[ERROR] ',
     }
 
     def format(self, record: logging.LogRecord) -> str:
@@ -49,7 +50,7 @@ class _DynamicStderrHandler(logging.StreamHandler[TextIO]):
 
 
 _handler = _DynamicStderrHandler()
-_handler.setLevel(logging.WARNING)   # default: WARN and ERROR only
+_handler.setLevel(logging.WARNING)  # default: WARN and ERROR only
 _handler.setFormatter(_BracketFormatter())
 logger.addHandler(_handler)
 

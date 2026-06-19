@@ -9,6 +9,7 @@ fixed, raise the matching floor in the same commit.
 Run with ``-s`` to see the full table:
     python -m pytest tests/test_detection_benchmark.py -s
 """
+
 from __future__ import annotations
 
 import os
@@ -53,10 +54,14 @@ def _metrics():
 
 def _report() -> str:
     pos, neg, tp, fn, fp, tn, recall, precision = _metrics()
-    lines = ['', '=== Detection benchmark ===',
-             f'positives={len(pos)} negatives={len(neg)}  '
-             f'TP={len(tp)} FN={len(fn)} FP={len(fp)} TN={len(tn)}',
-             f'recall={recall:.2%}  precision={precision:.2%}', '']
+    lines = [
+        '',
+        '=== Detection benchmark ===',
+        f'positives={len(pos)} negatives={len(neg)}  '
+        f'TP={len(tp)} FN={len(fn)} FP={len(fp)} TN={len(tn)}',
+        f'recall={recall:.2%}  precision={precision:.2%}',
+        '',
+    ]
     # per-category recall
     by_cat: dict[str, list] = defaultdict(list)
     for c in pos:
@@ -79,9 +84,11 @@ def test_detection_benchmark():
     *_, recall, precision = _metrics()
     print(_report())
     assert recall >= RECALL_FLOOR, (
-        f'recall {recall:.2%} below ratchet floor {RECALL_FLOOR:.0%}\n{_report()}')
+        f'recall {recall:.2%} below ratchet floor {RECALL_FLOOR:.0%}\n{_report()}'
+    )
     assert precision >= PRECISION_FLOOR, (
-        f'precision {precision:.2%} below ratchet floor {PRECISION_FLOOR:.0%}\n{_report()}')
+        f'precision {precision:.2%} below ratchet floor {PRECISION_FLOOR:.0%}\n{_report()}'
+    )
 
 
 if __name__ == '__main__':

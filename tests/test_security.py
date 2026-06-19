@@ -44,8 +44,9 @@ class TestPathContainment:
     def test_unrelated_path_blocked(self):
         assert not is_within_root('/etc/passwd', '/tmp/repo/')
 
-    @pytest.mark.skipif(sys.platform == 'win32',
-                        reason='normcase folds case on Windows by design (NTFS)')
+    @pytest.mark.skipif(
+        sys.platform == 'win32', reason='normcase folds case on Windows by design (NTFS)'
+    )
     def test_case_differs_treated_as_distinct_on_case_sensitive_fs(self):
         """On Linux, paths differing only in case are distinct — not within root."""
         assert not is_within_root('/tmp/REPO/file.py', '/tmp/repo/')
@@ -54,14 +55,14 @@ class TestPathContainment:
 class TestSymlinkBoundary:
     """SEC-23: File symlinks resolving outside scan root are skipped."""
 
-    @pytest.mark.skipif(sys.platform == 'win32',
-                        reason='Symlinks require admin on Windows')
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Symlinks require admin on Windows')
     def test_scan_root_via_symlinked_alias(self, tmp_path):
         """A scan root reached THROUGH a symlink (macOS /var -> /private/var
         style) must still scan its files. The tmp_dir fixture used to hand
         tests such symlinked paths incidentally (tempfile's /var/...); pytest's
         tmp_path is pre-resolved, so this coverage is pinned deliberately."""
         from credactor.walker import walk_and_scan
+
         real = tmp_path / 'real'
         real.mkdir()
         # credactor:ignore
@@ -72,14 +73,11 @@ class TestSymlinkBoundary:
         findings, _, _, _ = walk_and_scan(str(alias), config=Config(no_color=True))
         assert any(f['full_value'] == key for f in findings), findings
 
-    @pytest.mark.skipif(sys.platform == 'win32',
-                        reason='Symlinks require admin on Windows')
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Symlinks require admin on Windows')
     def test_external_symlink_skipped(self, tmp_dir):
         """A symlink pointing outside the scan root must not be scanned."""
         # Create an external file with a credential
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.py', delete=False
-        ) as ext:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as ext:
             # credactor:ignore
             ext.write('api_key = "AKIA' + 'IOSFODNN7EXAMPLE"\n')
             ext_path = ext.name
@@ -97,8 +95,7 @@ class TestSymlinkBoundary:
         finally:
             os.unlink(ext_path)
 
-    @pytest.mark.skipif(sys.platform == 'win32',
-                        reason='Symlinks require admin on Windows')
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Symlinks require admin on Windows')
     def test_internal_symlink_scanned(self, tmp_dir):
         """A symlink pointing within the scan root should be scanned."""
         # Resolve tmp_dir to handle macOS /var -> /private/var
@@ -350,8 +347,10 @@ class TestConfigTrustBoundaryNonGit:
             f.write('entropy_threshold = 4.0\n')
         result = load_config_file(child)
         assert result == {}
-        assert any('Refusing to load config from outside project root' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'Refusing to load config from outside project root' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_outside_config_honored_with_explicit_path(self, tmp_dir):
         """M14: the same outside-root config IS loaded when the user points
@@ -391,9 +390,11 @@ class TestConfigTrustBoundaryNonGit:
             f.write('entropy_threshold = 4.0\n')
         result = load_config_file(scan_dir)
         assert result == {}
-        assert any('Refusing to load config from outside project root' in r.message
-                   and project in r.getMessage()
-                   for r in credactor_caplog.records)
+        assert any(
+            'Refusing to load config from outside project root' in r.message
+            and project in r.getMessage()
+            for r in credactor_caplog.records
+        )
 
     def test_parent_config_refused_implicitly_in_ci(self, tmp_dir):
         """The CI leg of 'refuse implicit outside-root in ALL modes'."""
@@ -409,6 +410,7 @@ class TestConfigTrustBoundaryNonGit:
 # ---------------------------------------------------------------------------
 # Phase 2 — P2 audit items: verify existing defenses + A11 normcase fix
 # ---------------------------------------------------------------------------
+
 
 class TestA6AllowlistPathResolution:
     """A6: AllowList._root and ingest target paths must resolve consistently.
@@ -478,11 +480,9 @@ class TestA8ExternalTypeInjection:
 
     def test_json_report_parseable_with_html_in_type(self):
         """json_report must produce valid JSON even with HTML in type field."""
-        finding = self._external_finding(
-            'external:trufflehog:<script>alert(1)</script>'
-        )
+        finding = self._external_finding('external:trufflehog:<script>alert(1)</script>')
         output = json_report([finding], '/tmp')
-        parsed = json.loads(output)   # must not raise
+        parsed = json.loads(output)  # must not raise
         assert parsed['count'] == 1
         # The type value must be present (json.dumps escapes it correctly)
         assert 'external:trufflehog:' in parsed['findings'][0]['type']
@@ -491,23 +491,19 @@ class TestA8ExternalTypeInjection:
         """json_report must produce valid JSON even with `"` and `}` in type."""
         finding = self._external_finding('external:gitleaks:evil"}]')
         output = json_report([finding], '/tmp')
-        parsed = json.loads(output)   # must not raise
+        parsed = json.loads(output)  # must not raise
         assert parsed['count'] == 1
 
     def test_sarif_report_parseable_with_html_in_type(self):
         """sarif_report must produce valid JSON even with HTML in type field."""
-        finding = self._external_finding(
-            'external:trufflehog:<script>alert(1)</script>'
-        )
+        finding = self._external_finding('external:trufflehog:<script>alert(1)</script>')
         output = sarif_report([finding], '/tmp')
-        parsed = json.loads(output)   # must not raise
+        parsed = json.loads(output)  # must not raise
         assert parsed['version'] == '2.1.0'
 
     def test_sarif_html_escaped_in_rule_id(self):
         """HTML in DetectorName must be escaped in SARIF rule id."""
-        finding = self._external_finding(
-            'external:trufflehog:<img/onerror=alert(1)>'
-        )
+        finding = self._external_finding('external:trufflehog:<img/onerror=alert(1)>')
         output = sarif_report([finding], '/tmp')
         parsed = json.loads(output)
         rules = parsed['runs'][0]['tool']['driver']['rules']
@@ -517,9 +513,7 @@ class TestA8ExternalTypeInjection:
 
     def test_sarif_html_escaped_in_short_description(self):
         """HTML in type must be escaped in SARIF shortDescription."""
-        finding = self._external_finding(
-            'external:gitleaks:<script>xss</script>'
-        )
+        finding = self._external_finding('external:gitleaks:<script>xss</script>')
         output = sarif_report([finding], '/tmp')
         parsed = json.loads(output)
         rules = parsed['runs'][0]['tool']['driver']['rules']
@@ -548,7 +542,7 @@ class TestA9CommitFieldInjection:
         """json_report must produce valid JSON even with `"`, `}` in commit."""
         finding = self._finding_with_commit('abc"};evil()')
         output = json_report([finding], '/tmp')
-        parsed = json.loads(output)   # must not raise
+        parsed = json.loads(output)  # must not raise
         assert parsed['count'] == 1
 
     def test_json_report_commit_value_round_trips(self):
@@ -563,7 +557,7 @@ class TestA9CommitFieldInjection:
         """json_report must produce valid JSON even with newlines in commit."""
         finding = self._finding_with_commit('abc\ndef')
         output = json_report([finding], '/tmp')
-        parsed = json.loads(output)   # must not raise
+        parsed = json.loads(output)  # must not raise
         assert parsed['count'] == 1
 
 
@@ -640,9 +634,7 @@ class TestUnconfirmedEncodingWarns:
         decoded = p.read_bytes().decode(enc)
         assert 'db_password' in decoded
 
-    def test_bomless_utf16le_detected_without_detectors(
-        self, tmp_path, monkeypatch
-    ):
+    def test_bomless_utf16le_detected_without_detectors(self, tmp_path, monkeypatch):
         # NUL-interleaved ASCII is *valid UTF-8*, so the no-detector heuristic
         # claimed utf-8 and the secret decoded to NUL-riddled text no pattern
         # could match — silently, despite the manual promising a WARN. NULs
@@ -656,9 +648,7 @@ class TestUnconfirmedEncodingWarns:
         assert enc.replace('_', '-').lower().startswith('utf-16')
         assert 'aws_key' in p.read_bytes().decode(enc)
 
-    def test_bomless_utf16be_detected_without_detectors(
-        self, tmp_path, monkeypatch
-    ):
+    def test_bomless_utf16be_detected_without_detectors(self, tmp_path, monkeypatch):
         self._no_detectors(monkeypatch)
         p = tmp_path / 'utf16be.py'
         p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-be'))
@@ -668,9 +658,7 @@ class TestUnconfirmedEncodingWarns:
         assert enc.replace('_', '-').lower().startswith('utf-16')
         assert 'aws_key' in p.read_bytes().decode(enc)
 
-    def test_utf16_secret_found_end_to_end_without_detectors(
-        self, tmp_path, monkeypatch
-    ):
+    def test_utf16_secret_found_end_to_end_without_detectors(self, tmp_path, monkeypatch):
         # The full scan path: a BOM-less UTF-16LE secret must produce a
         # finding on a stock install (no encoding extra).
         self._no_detectors(monkeypatch)
@@ -681,9 +669,7 @@ class TestUnconfirmedEncodingWarns:
 
         assert [f for f in findings if f['type'] == 'pattern:AWS access key']
 
-    def test_truncated_utf16_is_errored_not_crash(
-        self, tmp_path, monkeypatch, credactor_caplog
-    ):
+    def test_truncated_utf16_is_errored_not_crash(self, tmp_path, monkeypatch, credactor_caplog):
         # An odd-length BOM-less UTF-16LE file decodes as utf-16-le until the
         # incomplete final unit raises mid-stream. That must follow the
         # unreadable-file contract (warning + errored, --fail-on-error exit
@@ -699,9 +685,7 @@ class TestUnconfirmedEncodingWarns:
         assert exc.value.code == 2
         assert any('trunc.py' in r.getMessage() for r in credactor_caplog.records)
 
-    def test_truncated_utf16_single_file_target_no_crash(
-        self, tmp_path, monkeypatch
-    ):
+    def test_truncated_utf16_single_file_target_no_crash(self, tmp_path, monkeypatch):
         self._no_detectors(monkeypatch)
         p = tmp_path / 'trunc.py'
         p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-le')[:-1])
@@ -711,9 +695,7 @@ class TestUnconfirmedEncodingWarns:
 
         assert exc.value.code == 0  # errored-but-warned, not found, not fatal
 
-    def test_truncated_utf16le_not_misdetected_as_utf8_with_detectors(
-        self, tmp_path
-    ):
+    def test_truncated_utf16le_not_misdetected_as_utf8_with_detectors(self, tmp_path):
         # MV-1: with the [encoding] extra installed, charset_normalizer.best()
         # returns 'utf_8' for a truncated / odd-length UTF-16LE file (its
         # NUL-interleaved bytes are valid UTF-8). That verdict short-circuited
@@ -728,9 +710,7 @@ class TestUnconfirmedEncodingWarns:
 
         assert enc.replace('_', '-').lower().startswith('utf-16')  # not 'utf-8'
 
-    def test_truncated_utf16be_not_misdetected_as_utf8_with_detectors(
-        self, tmp_path
-    ):
+    def test_truncated_utf16be_not_misdetected_as_utf8_with_detectors(self, tmp_path):
         pytest.importorskip('charset_normalizer')
         p = tmp_path / 'trunc.py'
         p.write_bytes('aws_key = "AKIA4HJR6WPT3XLQ8NVB"\n'.encode('utf-16-be')[:-1])
@@ -739,9 +719,7 @@ class TestUnconfirmedEncodingWarns:
 
         assert enc.replace('_', '-').lower().startswith('utf-16')  # not 'utf-8'
 
-    def test_truncated_utf16_errored_with_detectors_not_silent(
-        self, tmp_path, credactor_caplog
-    ):
+    def test_truncated_utf16_errored_with_detectors_not_silent(self, tmp_path, credactor_caplog):
         # The manual's promise (lines 326-328: "never a silent all-clear") must
         # hold in the [encoding]-extra config too, not only on a stock install:
         # a truncated UTF-16 file is errored and warned, and --fail-on-error
@@ -756,9 +734,7 @@ class TestUnconfirmedEncodingWarns:
         assert exc.value.code == 2
         assert any('trunc.py' in r.getMessage() for r in credactor_caplog.records)
 
-    def test_utf32_falls_back_to_latin1_and_warns(
-        self, tmp_path, monkeypatch, credactor_caplog
-    ):
+    def test_utf32_falls_back_to_latin1_and_warns(self, tmp_path, monkeypatch, credactor_caplog):
         # UTF-32 has NULs at both byte parities, so it fails the UTF-16
         # signature and must keep taking the loud latin-1 fallback.
         self._no_detectors(monkeypatch)
@@ -773,9 +749,7 @@ class TestUnconfirmedEncodingWarns:
         assert 'credactor[encoding]' in msgs
         assert any(r.levelname == 'WARNING' for r in credactor_caplog.records)
 
-    def test_valid_utf8_does_not_warn(
-        self, tmp_path, monkeypatch, credactor_caplog
-    ):
+    def test_valid_utf8_does_not_warn(self, tmp_path, monkeypatch, credactor_caplog):
         self._no_detectors(monkeypatch)
         p = tmp_path / 'ok.py'
         # Non-ASCII content: pure ASCII would return at the isascii() fast
@@ -786,8 +760,5 @@ class TestUnconfirmedEncodingWarns:
 
         assert enc == 'utf-8'
         assert not any(
-            'could not confirm encoding' in r.getMessage()
-            for r in credactor_caplog.records
+            'could not confirm encoding' in r.getMessage() for r in credactor_caplog.records
         )
-
-

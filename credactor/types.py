@@ -37,14 +37,14 @@ class Finding(TypedDict):
                     git source metadata.
     """
 
-    file:          str
-    line:          int
-    type:          str
-    severity:      str
-    full_value:    str
+    file: str
+    line: int
+    type: str
+    severity: str
+    full_value: str
     value_preview: str
-    raw:           str
-    commit:        NotRequired[str]
+    raw: str
+    commit: NotRequired[str]
 
 
 # Severity ordering, highest first. Shared by the scanner's per-line span dedup

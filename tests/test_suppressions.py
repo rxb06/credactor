@@ -28,7 +28,8 @@ class TestInlineSuppression:
     def test_prose_mention_does_not_suppress(self):
         """A prose mention of the directive in a comment must NOT suppress."""
         assert not has_inline_suppression(
-            'aws = "secret"  # TODO: stop using credactor:ignore everywhere')
+            'aws = "secret"  # TODO: stop using credactor:ignore everywhere'
+        )
 
     def test_string_mention_does_not_suppress(self):
         """The directive inside a string value (not a comment) must NOT suppress."""
@@ -38,6 +39,7 @@ class TestInlineSuppression:
         """End-to-end: a real AWS key on a line whose comment only mentions the
         directive in prose is still reported (was silenced before H8)."""
         from credactor.scanner import scan_line
+
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         line = f'aws = "{key}"  # TODO: drop credactor:ignore usage'
         assert len(scan_line(1, line, 't.py')) == 1
@@ -47,7 +49,8 @@ class TestInlineSuppression:
         (the docs now show the directive on the same line, which works)."""
         from credactor.config import Config
         from credactor.scanner import scan_line
-        val = 'Xy9KmL2vQ7nR5tW8pA3bC6dE'   # high-entropy XML value
+
+        val = 'Xy9KmL2vQ7nR5tW8pA3bC6dE'  # high-entropy XML value
         line = f'<add key="Password" value="{val}" />  <!-- credactor:ignore -->'
         assert scan_line(1, line, 'web.config', config=Config()) == []
 
@@ -99,9 +102,9 @@ class TestAllowList:
         assert any('value-literal' in r.message for r in credactor_caplog.records)
 
     # --- #14: a read error mid-load must be surfaced, not swallowed ---
-    def test_load_logs_warning_on_read_error(self, tmp_dir, monkeypatch,
-                                             credactor_caplog):
+    def test_load_logs_warning_on_read_error(self, tmp_dir, monkeypatch, credactor_caplog):
         import pathlib
+
         ignore_path = os.path.join(tmp_dir, '.credactorignore')
         with open(ignore_path, 'w') as f:
             f.write('somevalue\n')
@@ -114,11 +117,9 @@ class TestAllowList:
 
         monkeypatch.setattr(pathlib.Path, 'open', boom)
         AllowList(tmp_dir)  # must not raise
-        assert any('could not be fully read' in r.message
-                   for r in credactor_caplog.records)
+        assert any('could not be fully read' in r.message for r in credactor_caplog.records)
 
-    def test_globs_and_file_lines_emit_no_value_literal_warning(self, tmp_dir,
-                                                                 credactor_caplog):
+    def test_globs_and_file_lines_emit_no_value_literal_warning(self, tmp_dir, credactor_caplog):
         ignore_path = os.path.join(tmp_dir, '.credactorignore')
         with open(ignore_path, 'w') as f:
             f.write('test_fixtures/*.py\nsrc/config.py:10\n')
@@ -187,8 +188,10 @@ class TestAllowList:
         with open(ignore_path, 'w') as f:
             f.write('src/config.py:10\n')
         AllowList(tmp_dir)
-        assert any('file:line' in r.message and 'line number only' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'file:line' in r.message and 'line number only' in r.message
+            for r in credactor_caplog.records
+        )
 
     # --- L6b: catch-all glob patterns warn (fnmatch has no globstar) ---
     def test_broad_glob_patterns_warn(self, tmp_dir, credactor_caplog):
@@ -198,8 +201,7 @@ class TestAllowList:
             with open(ignore_path, 'w') as f:
                 f.write(pat + '\n')
             AllowList(tmp_dir)
-            assert any('overly broad' in r.message
-                       for r in credactor_caplog.records), pat
+            assert any('overly broad' in r.message for r in credactor_caplog.records), pat
 
     def test_narrow_glob_does_not_warn_broad(self, tmp_dir, credactor_caplog):
         ignore_path = os.path.join(tmp_dir, '.credactorignore')
@@ -229,11 +231,16 @@ class TestAllowList:
     def test_verbose_audit_names_suppression_kind(self, tmp_dir, credactor_caplog):
         from credactor.config import Config
         from credactor.scanner import scan_line
+
         ignore_path = os.path.join(tmp_dir, '.credactorignore')
         with open(ignore_path, 'w') as f:
             f.write('value:AKIAIOSFODNN7EXAMPLE\n')
         al = AllowList(tmp_dir)
-        scan_line(1, 'key = "AKIA' + 'IOSFODNN7EXAMPLE"',
-                  os.path.join(tmp_dir, 'app.py'), config=Config(), allowlist=al)
-        assert any('allowlist (value-literal)' in r.message
-                   for r in credactor_caplog.records)
+        scan_line(
+            1,
+            'key = "AKIA' + 'IOSFODNN7EXAMPLE"',
+            os.path.join(tmp_dir, 'app.py'),
+            config=Config(),
+            allowlist=al,
+        )
+        assert any('allowlist (value-literal)' in r.message for r in credactor_caplog.records)

@@ -53,7 +53,7 @@ class AllowList:
                     # the char-based routing below would otherwise send to
                     # glob/path matching, leaving it un-allowlistable.
                     if line.startswith('value:'):
-                        literal = line[len('value:'):]
+                        literal = line[len('value:') :]
                         if literal:
                             self._value_literals.add(literal)
                         continue
@@ -72,11 +72,13 @@ class AllowList:
                         # evaded the narrow list. Flag a catch-all: an explicit
                         # broad pattern, OR one with no literal filename segment
                         # left after stripping glob metachars and separators.
-                        if (line in ('*', '**', '**/*', '*.*', '*/*', '**/*.*')
-                                or not re.sub(r'[*?/\\.]', '', line)):
+                        if line in ('*', '**', '**/*', '*.*', '*/*', '**/*.*') or not re.sub(
+                            r'[*?/\\.]', '', line
+                        ):
                             logger.warning(
                                 '.credactorignore contains overly broad pattern "%s" '
-                                '— this can suppress most or all files.', line,
+                                '— this can suppress most or all files.',
+                                line,
                             )
                         elif any(
                             (line.endswith(ext) and line.lstrip('*').lstrip('/').startswith('*'))
@@ -115,8 +117,7 @@ class AllowList:
                 )
         except OSError as exc:
             logger.warning(
-                '.credactorignore could not be fully read (%s); '
-                'the allowlist may be incomplete.',
+                '.credactorignore could not be fully read (%s); the allowlist may be incomplete.',
                 exc,
             )
 

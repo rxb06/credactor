@@ -46,6 +46,7 @@ class GitUnavailableError(RuntimeError):
 
 def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], None]:
     """Return a callback that prints a progress line to stderr."""
+
     def _progress(done: int) -> None:
         if sys.stderr.isatty() and not no_color:
             sys.stderr.write(f'\r  Scanning... {done}/{total} files')
@@ -53,6 +54,7 @@ def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], No
             if done == total:
                 sys.stderr.write('\r' + ' ' * 40 + '\r')
                 sys.stderr.flush()
+
     return _progress
 
 
@@ -86,15 +88,18 @@ def walk_and_scan(
     root_str = str(root_path) + os.sep
     for dirpath, dirnames, filenames in os.walk(root_path):
         dirnames[:] = [
-            d for d in dirnames
+            d
+            for d in dirnames
             if d not in extra_skip_dirs
             and is_within_root(str(Path(os.path.join(dirpath, d)).resolve()), root_str)
         ]
         if '.gitignore' in filenames:
-            gi_patterns.extend(parse_gitignore_file(
-                os.path.join(dirpath, '.gitignore'),
-                Path(dirpath).resolve(),
-            ))
+            gi_patterns.extend(
+                parse_gitignore_file(
+                    os.path.join(dirpath, '.gitignore'),
+                    Path(dirpath).resolve(),
+                )
+            )
         for filename in filenames:
             if filename in extra_skip_files:
                 continue
@@ -184,14 +189,18 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
         # the ANSI code page on Windows and mojibake non-ASCII paths.
         probe = subprocess.run(
             ['git', 'rev-parse', sub],
-            capture_output=True, text=True, encoding='utf-8',
-            cwd=root, timeout=_GIT_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            cwd=root,
+            timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
     if probe.returncode != 0:
         raise GitUnavailableError(
-            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}')
+            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}'
+        )
     return probe.stdout.strip()
 
 
@@ -219,8 +228,11 @@ def scan_staged_files(
         # instead of being scanned.
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-            capture_output=True, text=True, encoding='utf-8',
-            cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            cwd=str(root_path),
+            timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         # rev-parse already proved git is usable; a diff failure here is a
@@ -272,8 +284,8 @@ def scan_staged_files(
                 continue
             if not config.scan_json:
                 logger.warning(
-                    'Staged .json file skipped — pass --scan-json to include '
-                    'it: %s', line,
+                    'Staged .json file skipped — pass --scan-json to include it: %s',
+                    line,
                 )
                 continue
         elif not should_scan_file(line, config.extra_extensions):
@@ -284,15 +296,18 @@ def scan_staged_files(
         try:
             blob = subprocess.run(
                 ['git', 'show', f':{line}'],
-                capture_output=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+                capture_output=True,
+                cwd=str(root_path),
+                timeout=_GIT_TIMEOUT_S,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning('Cannot read staged %s: %s', line, exc)
             errored.append(full_path)
             continue
         if blob.returncode != 0:
-            logger.warning('Cannot read staged %s: %s', line,
-                           blob.stderr.decode('utf-8', 'replace').strip())
+            logger.warning(
+                'Cannot read staged %s: %s', line, blob.stderr.decode('utf-8', 'replace').strip()
+            )
             errored.append(full_path)
             continue
 
@@ -309,16 +324,18 @@ def scan_staged_files(
         # passes the pre-commit gate that the tree scan flags.
         raw = blob.stdout
         try:
-            content = raw.decode(utf16_variant(raw) or 'utf-8',
-                                 errors='surrogateescape')
+            content = raw.decode(utf16_variant(raw) or 'utf-8', errors='surrogateescape')
         except UnicodeDecodeError:
             # Truncated UTF-16 blob: never crash a pre-commit hook — keep the
             # historical utf-8 reading (lossy for this blob, but loud is the
             # working-tree scan's job; the hook must stay usable).
             content = raw.decode('utf-8', errors='surrogateescape')
         content = content.replace('\r\n', '\n').replace('\r', '\n')
-        findings.extend(scan_lines(full_path, content.splitlines(keepends=True),
-                                   config=config, allowlist=allowlist))
+        findings.extend(
+            scan_lines(
+                full_path, content.splitlines(keepends=True), config=config, allowlist=allowlist
+            )
+        )
 
     return findings, errored
 
@@ -345,10 +362,21 @@ def scan_git_history(
         # ANSI code page can't mojibake paths, and a stray non-UTF-8 byte in
         # historical diff content degrades to U+FFFD instead of crashing.
         result = subprocess.run(
-            ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
-             '--no-color', '--format=commit %H'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            [
+                'git',
+                'log',
+                f'-{max_commits}',
+                '-p',
+                '--diff-filter=ACMR',
+                '--no-color',
+                '--format=commit %H',
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=str(root_path),
+            timeout=_GIT_LOG_TIMEOUT_S,
         )
         if result.returncode != 0:
             # e.g. a valid repo with no commits yet — nothing to scan, not fatal.
@@ -365,8 +393,12 @@ def scan_git_history(
     try:
         depth = subprocess.run(
             ['git', 'rev-list', '--count', f'--max-count={max_commits + 1}', 'HEAD'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=str(root_path),
+            timeout=_GIT_LOG_TIMEOUT_S,
         )
         if depth.returncode == 0 and depth.stdout.strip() == str(max_commits + 1):
             logger.warning(
@@ -405,9 +437,13 @@ def scan_git_history(
             added_line = line[1:]  # strip the leading '+'
             if len(added_line) > _MAX_LINE_LENGTH:
                 long_added += 1
-            line_findings = scan_line(diff_lineno, added_line,
-                                      f'{current_file} (commit {current_commit})',
-                                      config=config, allowlist=allowlist)
+            line_findings = scan_line(
+                diff_lineno,
+                added_line,
+                f'{current_file} (commit {current_commit})',
+                config=config,
+                allowlist=allowlist,
+            )
             for f in line_findings:
                 f['commit'] = current_commit
             findings.extend(line_findings)
@@ -420,9 +456,8 @@ def scan_git_history(
         logger.warning(
             'history scan: %d added line(s) exceeded %d chars — content past '
             'that limit was not scanned by per-line matching',
-            long_added, _MAX_LINE_LENGTH,
+            long_added,
+            _MAX_LINE_LENGTH,
         )
 
     return findings
-
-

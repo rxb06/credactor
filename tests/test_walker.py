@@ -126,7 +126,8 @@ class TestWalkAndScan:
         walk_and_scan(tmp_dir, config=config, allowlist=allowlist)
 
         skip_records = [
-            r for r in credactor_caplog.records
+            r
+            for r in credactor_caplog.records
             if 'suppressed by allowlist (file-level)' in r.message
         ]
         assert skip_records, 'expected a file-level suppression log record'
@@ -143,8 +144,10 @@ class TestWalkAndScan:
         resolved = os.path.realpath(py_file)
         assert any(os.path.realpath(e) == resolved for e in errored)
 
-    @pytest.mark.skipif(not hasattr(os, 'getuid') or os.getuid() == 0,
-                        reason='chmod 000 is not honoured as root / on Windows')
+    @pytest.mark.skipif(
+        not hasattr(os, 'getuid') or os.getuid() == 0,
+        reason='chmod 000 is not honoured as root / on Windows',
+    )
     def test_unreadable_file_populates_errored(self, tmp_dir):
         """H4: a file that raises OSError on read lands in errored_files (so
         --fail-on-error can exit 2 on it)."""
@@ -165,8 +168,7 @@ class TestStagedScanning:
     """H3: --staged must scan the staged index blob, not the working tree."""
 
     def _init_repo(self, tmp_dir):
-        subprocess.run(['git', 'init', '-q'], cwd=tmp_dir, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'init', '-q'], cwd=tmp_dir, check=True, capture_output=True)
         return tmp_dir
 
     def test_scans_staged_blob_not_worktree(self, tmp_dir):
@@ -175,8 +177,7 @@ class TestStagedScanning:
         path = os.path.join(repo, 'app.py')
         with open(path, 'w') as f:
             f.write(f'aws = "{key}"\n')
-        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True, capture_output=True)
         # working tree is now clean; the INDEX still holds the secret
         with open(path, 'w') as f:
             f.write('aws = "clean"\n')
@@ -188,8 +189,10 @@ class TestStagedScanning:
         # L4: if rev-parse fails the dir isn't a usable git repo — this is a hard
         # GitUnavailableError (CLI exit 2), not a false-clean empty return.
         fake = mock.Mock(returncode=128, stdout='', stderr='fatal: not a git repo')
-        with mock.patch('credactor.walker.subprocess.run', return_value=fake), \
-                pytest.raises(GitUnavailableError):
+        with (
+            mock.patch('credactor.walker.subprocess.run', return_value=fake),
+            pytest.raises(GitUnavailableError),
+        ):
             scan_staged_files(tmp_dir, config=Config(no_color=True))
 
     def test_staged_in_non_git_dir_raises(self, tmp_dir):
@@ -226,11 +229,11 @@ class TestStagedScanning:
         subprocess.run(['git', 'add', '-A'], **env)
         subprocess.run(['git', 'commit', '-m', 'x'], **env)
         bare = os.path.join(tmp_dir, 'bare.git')
-        subprocess.run(['git', 'clone', '--bare', work, bare],
-                       check=True, capture_output=True)
-        findings = scan_git_history(bare, config=Config(no_color=True))   # must NOT raise
-        assert any(key in f.get('full_value', '') or 'AWS' in f.get('type', '')
-                   for f in findings), findings
+        subprocess.run(['git', 'clone', '--bare', work, bare], check=True, capture_output=True)
+        findings = scan_git_history(bare, config=Config(no_color=True))  # must NOT raise
+        assert any(
+            key in f.get('full_value', '') or 'AWS' in f.get('type', '') for f in findings
+        ), findings
 
     def _commit_n_times(self, repo, n):
         env = dict(check=True, capture_output=True, cwd=repo)
@@ -249,8 +252,7 @@ class TestStagedScanning:
         repo = self._init_repo(tmp_dir)
         self._commit_n_times(repo, 3)
         scan_git_history(repo, config=Config(no_color=True), max_commits=2)
-        truncations = [r for r in credactor_caplog.records
-                       if 'most recent 2' in r.getMessage()]
+        truncations = [r for r in credactor_caplog.records if 'most recent 2' in r.getMessage()]
         assert truncations and 'NOT scanned' in truncations[0].getMessage()
 
     def test_scan_history_no_warning_at_exact_window(self, tmp_dir, credactor_caplog):
@@ -258,8 +260,7 @@ class TestStagedScanning:
         repo = self._init_repo(tmp_dir)
         self._commit_n_times(repo, 3)
         scan_git_history(repo, config=Config(no_color=True), max_commits=3)
-        assert not [r for r in credactor_caplog.records
-                    if 'NOT scanned' in r.getMessage()]
+        assert not [r for r in credactor_caplog.records if 'NOT scanned' in r.getMessage()]
 
     def test_scan_history_warns_on_overlong_added_lines(self, tmp_dir, credactor_caplog):
         # Same silent-FN class as the working-tree line cap: an added line
@@ -276,8 +277,11 @@ class TestStagedScanning:
         subprocess.run(['git', 'commit', '-m', 'long'], **env)
         findings = scan_git_history(repo, config=Config(no_color=True))
         assert not [f for f in findings if f.get('full_value') == key]
-        warns = [r for r in credactor_caplog.records
-                 if r.levelname == 'WARNING' and 'exceeded' in r.getMessage()]
+        warns = [
+            r
+            for r in credactor_caplog.records
+            if r.levelname == 'WARNING' and 'exceeded' in r.getMessage()
+        ]
         assert len(warns) == 1
         assert '1 added line(s)' in warns[0].getMessage()
 
@@ -291,12 +295,12 @@ class TestStagedScanning:
         subprocess.run(['git', 'config', 'user.name', 't'], **env)
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(os.path.join(repo, 'app.py'), 'w') as f:
-            f.write(f'import os\nx = 1\naws = "{key}"\n')   # secret on line 3
+            f.write(f'import os\nx = 1\naws = "{key}"\n')  # secret on line 3
         subprocess.run(['git', 'add', '-A'], **env)
         subprocess.run(['git', 'commit', '-m', 'x'], **env)
         head = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True,
-            text=True, cwd=repo).stdout.strip()
+            ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True, cwd=repo
+        ).stdout.strip()
         findings = scan_git_history(repo, config=Config(no_color=True))
         hits = [f for f in findings if f['full_value'] == key]
         assert hits, findings
@@ -308,8 +312,7 @@ class TestStagedScanning:
         path = os.path.join(repo, 'app.py')
         with open(path, 'w') as f:
             f.write('aws = "clean"\n')
-        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True, capture_output=True)
         # secret exists only in the working tree, NOT staged
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(path, 'w') as f:
@@ -328,8 +331,7 @@ class TestStagedScanning:
         path = os.path.join(subdir, 'app.py')
         with open(path, 'w') as f:
             f.write(f'aws = "{key}"\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(subdir, config=Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
@@ -344,8 +346,7 @@ class TestStagedScanning:
         path = os.path.join(repo, 'café_\U0001f3af.py')
         with open(path, 'w') as f:
             f.write(f'aws = "{key}"\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert len(findings) >= 1
         assert errored == []
@@ -354,8 +355,7 @@ class TestStagedScanning:
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(os.path.join(repo, name), 'w') as f:
             f.write(f'{{"aws_key": "{key}"}}\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         return key
 
     def test_staged_txt_scanned(self, tmp_dir):
@@ -366,8 +366,7 @@ class TestStagedScanning:
         path = os.path.join(repo, 'notes.txt')
         with open(path, 'w') as f:
             f.write(f'prod key: aws_key = "{key}"\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert [f for f in findings if f.get('full_value') == key]
 
@@ -379,10 +378,8 @@ class TestStagedScanning:
         repo = self._init_repo(tmp_dir)
         path = os.path.join(repo, 'u16.py')
         with open(path, 'wb') as f:
-            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
-                    .encode('utf-16-le'))
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'.encode('utf-16-le'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert [f for f in findings if f['type'] == 'variable:secret_key']
 
@@ -392,10 +389,8 @@ class TestStagedScanning:
         repo = self._init_repo(tmp_dir)
         path = os.path.join(repo, 'trunc.py')
         with open(path, 'wb') as f:
-            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'
-                    .encode('utf-16-le')[:-1])
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'.encode('utf-16-le')[:-1])
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         # No exception is the contract; finding presence is not promised.
 
@@ -404,13 +399,11 @@ class TestStagedScanning:
         # staged path previously never consulted config.scan_json at all.
         repo = self._init_repo(tmp_dir)
         key = self._stage_json_secret(repo)
-        findings, errored = scan_staged_files(
-            repo, config=Config(scan_json=True, no_color=True))
+        findings, errored = scan_staged_files(repo, config=Config(scan_json=True, no_color=True))
         assert any(key == f['full_value'] for f in findings), findings
         assert errored == []
 
-    def test_staged_json_skipped_with_warning_without_scan_json(
-            self, tmp_dir, credactor_caplog):
+    def test_staged_json_skipped_with_warning_without_scan_json(self, tmp_dir, credactor_caplog):
         # Without --scan-json the .json file is skipped, but never silently:
         # the pre-commit gate must not give a false all-clear with no signal.
         repo = self._init_repo(tmp_dir)
@@ -419,9 +412,10 @@ class TestStagedScanning:
         assert findings == []
         assert errored == []
         # the warning must NAME the skipped file, not just announce a skip
-        assert any('Staged .json file skipped' in r.message
-                   and 'credentials.json' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'Staged .json file skipped' in r.message and 'credentials.json' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_staged_crlf_blob_normalized(self, tmp_dir):
         # Staged content is universal-newline normalized like the file path.
@@ -429,13 +423,13 @@ class TestStagedScanning:
         # always rstrip()ed, but the multiline pass's block preview leaked
         # literal \r from CRLF blobs before normalization.
         repo = self._init_repo(tmp_dir)
-        subprocess.run(['git', 'config', 'core.autocrlf', 'false'],
-                       cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ['git', 'config', 'core.autocrlf', 'false'], cwd=repo, check=True, capture_output=True
+        )
         secret = 'aB3dE5gH7jK9mN1pQ4sU6wX8zC2vF0yT5rL8nM3kP7qW1eR9tY4uI6oA2sD5fG8h'
         with open(os.path.join(repo, 'note.py'), 'wb') as f:
             f.write(f'doc = """\r\nembedded blob\r\n{secret}\r\n"""\r\n'.encode())
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         multiline = [f for f in findings if f['type'].startswith('multiline:')]
         assert any(f['full_value'] == secret for f in multiline), findings
@@ -451,11 +445,11 @@ class TestStagedScanning:
         secret = 'aB3dE5gH7jK9mN1pQ4sU6wX8zC2vF0yT5rL8nM3kP7qW1eR9tY4uI6oA2sD5fG8h'
         with open(os.path.join(repo, 'note.py'), 'w') as f:
             f.write(f'doc = """\nembedded config blob\n{secret}\n"""\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
-        assert any(f['type'].startswith('multiline:')
-                   and f['full_value'] == secret for f in findings), findings
+        assert any(
+            f['type'].startswith('multiline:') and f['full_value'] == secret for f in findings
+        ), findings
         assert errored == []
 
     def test_staged_pem_scanned_as_block(self, tmp_dir):
@@ -464,15 +458,17 @@ class TestStagedScanning:
         # old per-line loop labelled it 'private key header' instead.
         repo = self._init_repo(tmp_dir)
         with open(os.path.join(repo, 'server.pem'), 'w') as f:
-            f.write('-----BEGIN RSA PRIVATE KEY-----\n'
-                    'MIIEpAIBAAKCAQEA7examplebodyline1\n'
-                    'MIIEpAIBAAKCAQEA7examplebodyline2\n'
-                    '-----END RSA PRIVATE KEY-----\n')
-        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True,
-                       capture_output=True)
+            f.write(
+                '-----BEGIN RSA PRIVATE KEY-----\n'
+                'MIIEpAIBAAKCAQEA7examplebodyline1\n'
+                'MIIEpAIBAAKCAQEA7examplebodyline2\n'
+                '-----END RSA PRIVATE KEY-----\n'
+            )
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
-        assert any(f['type'] == 'pattern:private key block' and f['line'] == 1
-                   for f in findings), findings
+        assert any(f['type'] == 'pattern:private key block' and f['line'] == 1 for f in findings), (
+            findings
+        )
         assert errored == []
 
     def test_staged_json_lockfile_stays_excluded(self, tmp_dir, credactor_caplog):
@@ -483,8 +479,7 @@ class TestStagedScanning:
         for cfg in (Config(scan_json=True, no_color=True), Config(no_color=True)):
             findings, _errored = scan_staged_files(repo, config=cfg)
             assert findings == []
-        assert not any('Staged .json file skipped' in r.message
-                       for r in credactor_caplog.records)
+        assert not any('Staged .json file skipped' in r.message for r in credactor_caplog.records)
 
 
 class TestSequentialScanErrors:
@@ -500,16 +495,24 @@ class TestSequentialScanErrors:
         def fake_scan_file(fp, *, config=None, allowlist=None):
             if fp == bad_file:
                 raise OSError('permission denied')
-            return [{'file': fp, 'line': 1, 'type': 'variable:x', 'severity': 'low',
-                     'full_value': 'v', 'value_preview': 'v', 'raw': 'x'}]
+            return [
+                {
+                    'file': fp,
+                    'line': 1,
+                    'type': 'variable:x',
+                    'severity': 'low',
+                    'full_value': 'v',
+                    'value_preview': 'v',
+                    'raw': 'x',
+                }
+            ]
 
         monkeypatch.setattr(walker, 'scan_file', fake_scan_file)
         findings, errored = walker._scan_files(files, Config(no_color=True), None)
 
         assert errored == [bad_file]
-        assert len(findings) == 2            # the other two still scanned
-        assert any('Error scanning' in r.message
-                   for r in credactor_caplog.records)
+        assert len(findings) == 2  # the other two still scanned
+        assert any('Error scanning' in r.message for r in credactor_caplog.records)
 
 
 class TestIsSafeRelpath:

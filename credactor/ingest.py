@@ -1,6 +1,7 @@
 """
 External scanner ingestion: Gitleaks JSON and TruffleHog NDJSON.
 """
+
 from __future__ import annotations
 
 import functools
@@ -60,6 +61,7 @@ _GITLEAKS_SEVERITY: dict[str, str] = {
 # Severity helpers
 # ---------------------------------------------------------------------------
 
+
 def _gitleaks_severity(rule_id: str, tags: list[str] | None = None) -> str:
     """Map a Gitleaks RuleID (and optional Tags) to a Credactor severity string.
 
@@ -76,6 +78,7 @@ def _gitleaks_severity(rule_id: str, tags: list[str] | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Raw line synthesis
 # ---------------------------------------------------------------------------
+
 
 @functools.lru_cache(maxsize=256)
 def _read_file_lines(filepath: str) -> tuple[str, ...]:
@@ -110,6 +113,7 @@ def _synthesise_raw(filepath: str, lineno: int) -> str:
 # Shared path-resolution helper for external scanners
 # ---------------------------------------------------------------------------
 
+
 def _resolve_external_finding_path(
     raw_file: str,
     target_resolved: str,
@@ -125,22 +129,24 @@ def _resolve_external_finding_path(
     ingest_trufflehog share identical handling.
     """
     try:
-        resolved = str(Path(os.path.normpath(
-            os.path.join(target_resolved, raw_file))).resolve())
+        resolved = str(Path(os.path.normpath(os.path.join(target_resolved, raw_file))).resolve())
     except ValueError:
         # L5b: a NUL byte (or similar) in the path makes Path.resolve() raise;
         # skip just this one finding rather than aborting the whole ingest batch
         # (the CLI turns an uncaught ValueError here into a fatal exit 2).
         logger.warning(
             'Skipping %s finding: path %r is invalid (e.g. embedded NUL).',
-            scanner_name, raw_file,
+            scanner_name,
+            raw_file,
         )
         return None
 
     if not is_within_root(resolved, target_resolved):
         logger.warning(
             'Skipping %s finding: path %r resolves outside target directory '
-            '(possible path traversal).', scanner_name, raw_file,
+            '(possible path traversal).',
+            scanner_name,
+            raw_file,
         )
         return None
 
@@ -148,7 +154,8 @@ def _resolve_external_finding_path(
         logger.info(
             'Skipping %s finding: path resolves to the report file itself '
             '(%r); skipping to avoid self-corruption.',
-            scanner_name, resolved,
+            scanner_name,
+            resolved,
         )
         return None
 
@@ -156,8 +163,7 @@ def _resolve_external_finding_path(
         # L5a: redaction (this tool's primary action) cannot touch a file that
         # isn't on disk, and a phantom finding inflates counts / exit codes —
         # skip it (was previously kept with only an info log).
-        logger.warning(
-            '%s finding references missing file %r; skipping.', scanner_name, resolved)
+        logger.warning('%s finding references missing file %r; skipping.', scanner_name, resolved)
         return None
 
     return resolved
@@ -167,8 +173,12 @@ def _resolve_external_finding_path(
 # Gitleaks parser
 # ---------------------------------------------------------------------------
 
+
 def _load_report_preamble(
-    filepath: str, target: str, *, scanner_name: str,
+    filepath: str,
+    target: str,
+    *,
+    scanner_name: str,
 ) -> tuple[str, str]:
     """Resolve the report's target/filepath and run the size guards shared by both
     external-report parsers. Returns ``(target_resolved, filepath_resolved)``.
@@ -184,9 +194,9 @@ def _load_report_preamble(
         # file. Using the file's parent prevents broken path joins like
         # <file>/src/config.py, but a warning is emitted so the caller knows.
         logger.warning(
-            '%s: target %r is a file; '
-            'using its parent directory for path resolution.',
-            scanner_name, str(target_path),
+            '%s: target %r is a file; using its parent directory for path resolution.',
+            scanner_name,
+            str(target_path),
         )
         target_path = target_path.parent
     target_resolved = str(target_path)
@@ -197,9 +207,7 @@ def _load_report_preamble(
     try:
         report_size = os.path.getsize(filepath)
     except OSError as exc:
-        raise ValueError(
-            f'Cannot open {scanner_name} file {filepath!r}: {exc}'
-        ) from exc
+        raise ValueError(f'Cannot open {scanner_name} file {filepath!r}: {exc}') from exc
     if report_size > _MAX_REPORT_BYTES:
         raise ValueError(
             f'{scanner_name} file {filepath!r} is {report_size:,} bytes; refusing to '
@@ -218,33 +226,28 @@ def ingest_gitleaks(
     resolved paths are within the target directory.
     """
     target_resolved, filepath_resolved = _load_report_preamble(
-        filepath, target, scanner_name='Gitleaks')
+        filepath, target, scanner_name='Gitleaks'
+    )
 
     # Load JSON
     try:
         with open(filepath, encoding='utf-8', errors='strict') as fh:
             data = json.load(fh)
     except OSError as exc:
-        raise ValueError(
-            f'Cannot open Gitleaks file {filepath!r}: {exc}'
-        ) from exc
+        raise ValueError(f'Cannot open Gitleaks file {filepath!r}: {exc}') from exc
     except UnicodeDecodeError as exc:
         raise ValueError(
-            f'Gitleaks file {filepath!r} contains non-UTF-8 bytes; '
-            f'cannot parse safely: {exc}'
+            f'Gitleaks file {filepath!r} contains non-UTF-8 bytes; cannot parse safely: {exc}'
         ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f'Gitleaks file is not valid JSON ({filepath!r}): {exc}'
-        ) from exc
+        raise ValueError(f'Gitleaks file is not valid JSON ({filepath!r}): {exc}') from exc
     except RecursionError as exc:
         # Deeply-nested JSON (e.g. '['*200k) exhausts the interpreter recursion
         # limit. RecursionError is a RuntimeError, not one of the above, so it
         # would otherwise escape as an uncaught traceback (exit 1) instead of
         # the contracted fatal exit 2. Fail closed like any unparseable report.
         raise ValueError(
-            f'Gitleaks file {filepath!r} is too deeply nested to parse '
-            f'safely: {exc}'
+            f'Gitleaks file {filepath!r} is too deeply nested to parse safely: {exc}'
         ) from exc
 
     if not isinstance(data, list):
@@ -256,7 +259,8 @@ def ingest_gitleaks(
     if len(data) > _MAX_FINDINGS:
         logger.warning(
             'Gitleaks report contains %d findings; truncating to %d.',
-            len(data), _MAX_FINDINGS,
+            len(data),
+            _MAX_FINDINGS,
         )
         data = data[:_MAX_FINDINGS]
 
@@ -281,7 +285,9 @@ def ingest_gitleaks(
             continue
 
         resolved = _resolve_external_finding_path(
-            raw_file, target_resolved, filepath_resolved,
+            raw_file,
+            target_resolved,
+            filepath_resolved,
             scanner_name='Gitleaks',
         )
         if resolved is None:
@@ -372,6 +378,7 @@ def _trufflehog_severity(detector_name: str, verified: bool) -> str:
 # TruffleHog parser
 # ---------------------------------------------------------------------------
 
+
 def _parse_trufflehog_record(
     obj: dict[str, Any],
     lineno_file: int,
@@ -454,7 +461,9 @@ def _parse_trufflehog_record(
         return None
 
     resolved = _resolve_external_finding_path(
-        file_path_raw, target_resolved, filepath_resolved,
+        file_path_raw,
+        target_resolved,
+        filepath_resolved,
         scanner_name='TruffleHog',
     )
     if resolved is None:
@@ -524,21 +533,20 @@ def ingest_trufflehog(
     checks resolved paths are within the target directory.
     """
     target_resolved, filepath_resolved = _load_report_preamble(
-        filepath, target, scanner_name='TruffleHog')
+        filepath, target, scanner_name='TruffleHog'
+    )
 
     try:
         # Closed via `with fh:` below; opened inside try only to convert OSError
         # into a ValueError with a clearer message.
         fh = open(filepath, encoding='utf-8', errors='replace')  # noqa: SIM115
     except OSError as exc:
-        raise ValueError(
-            f'Cannot open TruffleHog file {filepath!r}: {exc}'
-        ) from exc
+        raise ValueError(f'Cannot open TruffleHog file {filepath!r}: {exc}') from exc
 
     findings: list[Finding] = []
     count = 0
-    saw_content = False   # any non-blank line
-    saw_object = False    # any line that parsed to a JSON object
+    saw_content = False  # any non-blank line
+    saw_object = False  # any line that parsed to a JSON object
 
     with fh:
         for lineno_file, line in enumerate(fh, start=1):
@@ -552,7 +560,8 @@ def ingest_trufflehog(
             except json.JSONDecodeError as exc:
                 logger.info(
                     'TruffleHog file line %d: skipping invalid JSON: %s',
-                    lineno_file, exc,
+                    lineno_file,
+                    exc,
                 )
                 continue
             except RecursionError as exc:
@@ -573,12 +582,12 @@ def ingest_trufflehog(
 
             if count >= _MAX_FINDINGS:
                 logger.warning(
-                    'TruffleHog report exceeds %d findings; truncating.', _MAX_FINDINGS,
+                    'TruffleHog report exceeds %d findings; truncating.',
+                    _MAX_FINDINGS,
                 )
                 break
 
-            finding = _parse_trufflehog_record(
-                obj, lineno_file, target_resolved, filepath_resolved)
+            finding = _parse_trufflehog_record(obj, lineno_file, target_resolved, filepath_resolved)
             if finding is None:
                 continue
 
@@ -625,6 +634,7 @@ def deduplicate_findings(
     then trufflehog.  First occurrence wins, so priority is automatically
     Credactor > Gitleaks > TruffleHog.
     """
+
     def _base(f: Finding) -> BaseKey:
         path_norm = os.path.normpath(os.path.realpath(f.get('file', '')))
         line = f.get('line', 1)
@@ -665,13 +675,17 @@ def deduplicate_findings(
             # higher severity so the escalation is honoured (count unchanged).
             survivor = result[seen[key]]
             dropped_sev = f.get('severity', 'medium')
-            if (SEVERITY_RANK.get(dropped_sev, 1)
-                    > SEVERITY_RANK.get(survivor.get('severity', 'medium'), 1)):
+            if SEVERITY_RANK.get(dropped_sev, 1) > SEVERITY_RANK.get(
+                survivor.get('severity', 'medium'), 1
+            ):
                 logger.info(
                     'Dedup raised severity %s -> %s at %s:%s (kept %s, merged %s).',
-                    survivor.get('severity'), dropped_sev,
-                    survivor.get('file'), survivor.get('line'),
-                    survivor.get('type'), f.get('type'),
+                    survivor.get('severity'),
+                    dropped_sev,
+                    survivor.get('file'),
+                    survivor.get('line'),
+                    survivor.get('type'),
+                    f.get('type'),
                 )
                 survivor['severity'] = dropped_sev
             continue
