@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.11+
-- No required dependencies. Optional: `charset-normalizer` or `chardet` for non-UTF-8 files.
+- No required dependencies. Optional: the `[encoding]` extra (`charset-normalizer`) for non-UTF-8 files.
 
 ## Installation
 
@@ -59,8 +59,6 @@ Better encoding detection for legacy codebases:
 
 ```bash
 pip install charset-normalizer
-# or
-pip install chardet
 ```
 
 If you installed from PyPI, you can pull in the recommended encoding extra directly:

@@ -115,9 +115,9 @@ credactor --from-gitleaks gitleaks.json --fix-all --yes .
 
 ## Scanned file types
 
-> `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.env.*` `.cfg` `.ini` `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl` `.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt`
+> `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.cfg` `.ini` `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl` `.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt` `.txt`
 
-Plus SSH / private-key files matched by name (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`). JSON is excluded by default (high false-positive rate from API responses) — add `--scan-json` to include it. A file named directly on the command line is scanned even if its extension isn't in this list.
+Plus `.env.*` / `.env-*` variants (`.env.local`, `.env.production`) and SSH / private-key files (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) — all matched by filename rather than extension. JSON is excluded by default (high false-positive rate from API responses) — add `--scan-json` to include it. A file named directly on the command line is scanned even if its extension isn't in this list.
 
 ## Exit codes
 

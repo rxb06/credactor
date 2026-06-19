@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects the 2.4.1 release. For limitations and safe usage see the
+Reflects Credactor 2.4.1 (unreleased; see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -319,7 +319,7 @@ journaling filesystems.
 - **Encoding** — UTF-8 (including BOM), Latin-1, and UTF-16 with an
   ASCII-dominant payload (with or without BOM — recognised by its NUL
   byte-parity signature) work out of the box. ⚠ Other encodings (e.g. UTF-32,
-  mixed-script UTF-16) need the optional `charset-normalizer` / `chardet`
+  mixed-script UTF-16) need the optional `charset-normalizer` (`[encoding]`)
   extra (`pip install 'credactor[encoding]'`). Without it such a file is read
   as Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
   whenever it cannot confirm a file's encoding and falls back to Latin-1, so
@@ -654,6 +654,6 @@ detail; these are the behaviours most likely to surprise.)
   minified one-liner) is not detected. A `[WARN]` names every affected file;
   the warning also fires for staged blobs and history scans.
 - **UTF-8 / Latin-1 / ASCII-payload UTF-16 by default.** Other encodings
-  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer` /
-  `chardet` extra; without it such files are read as Latin-1 and their secrets
+  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer`
+  (`[encoding]`) extra; without it such files are read as Latin-1 and their secrets
   can be missed (Credactor prints a `[WARN]` when it falls back to Latin-1).

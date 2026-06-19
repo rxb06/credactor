@@ -29,6 +29,19 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   `--dry-run`, and suppress via `.credactorignore` (e.g. `docs/*.txt`) or
   `extra_safe_values` before redacting. `.md` remains out by default — it is
   example-credential-dense by convention; use `extra_extensions` to opt in.
+- An explicit CLI `--from-gitleaks` / `--from-trufflehog` now takes precedence
+  over a same-kind `.credactor.toml` `[ingest]` entry (**CLI > config**,
+  consistent with `--replacement` and every other setting). Previously the
+  config entry won and the explicit flag was silently ignored. **Upgrade note:**
+  anyone who set `[ingest]` expecting it to override a flag will now see the flag
+  win; supplying both is redundant — keep one source per kind. An explicitly
+  empty `--from-*` value (e.g. an unset shell variable) is now a fatal error
+  (exit 2), not a silent no-op that could disable ingestion or drop a config
+  source into a false-clean exit 0.
+- The ingest report size cap is lowered from 100 MB to 20 MB. The stdlib
+  `json.load` is non-streaming and transiently uses on the order of 10× the file
+  size in memory; 20 MB keeps ~4× headroom over the largest realistic report
+  (10k findings ≈ 5 MB) while removing a 100 MB → ~1 GB allocation vector.
 
 ### Added
 
@@ -78,9 +91,38 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   previously silently, so a user expecting their allowlist to apply got no
   suppression and no signal. Inline `# credactor:ignore` still works on a file
   target; the manual now documents the directory-scan scope.
+- The PyPI publish workflow now verifies, after building and before publishing,
+  that the package version matches the release tag (compared with PEP 440
+  normalization, so `v2.5.0-beta` and a `2.5.0b0` wheel are correctly treated as
+  the same version). The wheel's version is read from `credactor.__version__`,
+  not the tag, so a mismatch could previously have shipped a wrong-versioned,
+  immutable PyPI artifact.
 
 ### Fixed
 
+- Redaction now refuses a symlinked target: it logs a warning and skips, rather
+  than following the link and rewriting a file outside the one named. Backups
+  destined for a `--secure-backup-dir` are now written directly inside that
+  directory (no transient plaintext `.bak` beside the original).
+- An empty or non-allowlisted `--replacement` is now rejected (exit 2) before any
+  file is touched, instead of deleting the secret outright or injecting
+  characters that could corrupt surrounding code. The allowlist is validated at
+  the redaction sink, not only at the CLI boundary.
+- Quoted hex / Base64 values on a line keyed like a commit SHA, checksum, SRI
+  integrity, digest, or revision field are no longer auto-rewritten under
+  `--fix-all`. They are hash outputs, not credentials, and rewriting them
+  silently corrupted code (e.g. a pinned `GIT_REV` or `integrity="sha384-…"`).
+  A genuinely credential-named value is still flagged.
+- The connection-string detector now matches in linear time on adversarial input
+  (bounded quantifiers), closing an O(n²) backtracking (ReDoS) path within the
+  per-line length cap.
+- A deeply-nested JSON ingest report is now a fatal error (exit 2) for both the
+  Gitleaks and TruffleHog paths, instead of escaping as an uncaught
+  `RecursionError` traceback (exit 1).
+- SARIF output now declares `columnKind: unicodeCodePoints`. Columns were already
+  computed in Unicode code points, but SARIF 2.1.0 defaults to UTF-16 code units
+  when the field is absent, so GitHub Code Scanning mis-highlighted any line with
+  astral-plane characters before the secret.
 - A TruffleHog report (`--from-trufflehog`) that is wholly unparseable —
   content with no JSON object on any line (an HTML error page, a typo'd file,
   or a Gitleaks JSON array fed to the NDJSON path) — is now a fatal error
