@@ -676,7 +676,6 @@ class TestUnreadableFileFailsAlone:
 
     def test_truncated_utf16_counts_failed_not_crash(self, tmp_dir, monkeypatch):
         monkeypatch.setattr('credactor.utils.charset_normalizer', None)
-        monkeypatch.setattr('credactor.utils.chardet', None)
         path = os.path.join(tmp_dir, 'trunc.py')
         with open(path, 'wb') as f:
             f.write(f'aws_key = "{_AWS_KEY}"\n'.encode('utf-16-le')[:-1])

@@ -616,13 +616,12 @@ class TestUnconfirmedEncodingWarns:
 
     @staticmethod
     def _no_detectors(monkeypatch):
-        # Simulate neither charset_normalizer nor chardet being installed, so the
-        # last-resort latin-1 branch is exercised deterministically regardless of
-        # what the test environment happens to have available. The libraries are
-        # imported once at credactor.utils module load (not per call), so patch
-        # the module-level bindings, not sys.modules.
+        # Simulate charset_normalizer not being installed, so the last-resort
+        # latin-1 branch is exercised deterministically regardless of what the
+        # test environment happens to have available. The library is imported
+        # once at credactor.utils module load (not per call), so patch the
+        # module-level binding, not sys.modules.
         monkeypatch.setattr('credactor.utils.charset_normalizer', None)
-        monkeypatch.setattr('credactor.utils.chardet', None)
 
     def test_bomless_utf16_not_short_circuited_to_utf8(self, tmp_path):
         # BOM-less UTF-16 with an ASCII payload is NUL-interleaved ASCII bytes,
