@@ -394,6 +394,61 @@ class TestStagedScanning:
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         # No exception is the contract; finding presence is not promised.
 
+    def test_staged_oversized_blob_skipped(self, tmp_dir, monkeypatch, credactor_caplog):
+        # Parity with scan_file's 50 MB ceiling: the staged path buffers the
+        # whole index blob, so a too-large file must be skip-with-WARN (not
+        # scanned, not OOM) exactly like the working-tree path. The cap is
+        # monkeypatched down so the test stays small.
+        import credactor.walker as walker
+
+        repo = self._init_repo(tmp_dir)
+        monkeypatch.setattr(walker, '_MAX_FILE_SIZE', 64)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = os.path.join(repo, 'big.py')
+        with open(path, 'w') as f:
+            f.write('# ' + 'x' * 200 + f'\naws = "{key}"\n')  # well over 64 bytes
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert findings == []  # skipped, not scanned
+        assert errored == []  # too-large is a skip, not an error
+        assert any(
+            'file too large' in r.message and 'big.py' in r.message
+            for r in credactor_caplog.records
+        )
+
+    def test_staged_nul_bearing_non_utf16_warns_encoding(self, tmp_dir, credactor_caplog):
+        # NUL-bearing but NOT clean UTF-16 (here UTF-32-LE): the working-tree
+        # path's detect_encoding falls back to latin-1 AND warns. The staged
+        # path must emit the same encoding WARN so the pre-commit gate signals
+        # the ambiguous-encoding miss instead of a quiet pass.
+        repo = self._init_repo(tmp_dir)
+        path = os.path.join(repo, 'u32.py')
+        with open(path, 'wb') as f:
+            f.write('secret_key = "x9Kp2mQv8rT4wYbN7jHs3fLd"\n'.encode('utf-32-le'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert errored == []
+        assert any(
+            'could not confirm encoding of staged' in r.message and 'u32.py' in r.message
+            for r in credactor_caplog.records
+            if r.levelname == 'WARNING'
+        )
+
+    def test_staged_json_dotfile_consistent_with_walk(self, tmp_dir):
+        # A file literally named '.json' has suffix '' (not '.json'), so it is
+        # NOT treated as JSON — matching the directory walk's suffix check, not
+        # the old name.endswith() which classified it as JSON. With no
+        # scannable extension it is simply skipped, never raising the .json
+        # skip warning.
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, '.json'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        findings, errored = scan_staged_files(repo, config=Config(no_color=True))
+        assert findings == []
+        assert errored == []
+
     def test_staged_json_scanned_with_scan_json(self, tmp_dir):
         # A staged .json secret must be caught when --scan-json is set — the
         # staged path previously never consulted config.scan_json at all.

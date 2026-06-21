@@ -16,6 +16,7 @@ from .config import Config
 from .gitignore import matches_gitignore, parse_gitignore_file
 from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import (
+    _MAX_FILE_SIZE,
     _MAX_LINE_LENGTH,
     scan_file,
     scan_line,
@@ -24,7 +25,7 @@ from .scanner import (
 )
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, utf16_variant
+from .utils import is_within_root, sanitize_for_terminal, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -279,7 +280,10 @@ def scan_staged_files(
         # here so an extra_extensions '.json' entry can't re-admit them through
         # the should_scan_file fallback below.
         name_lower = Path(line).name.lower()
-        if name_lower.endswith('.json'):
+        # Classify .json via the suffix (matching the directory walk's
+        # Path(...).suffix check) so a file literally named '.json' is treated
+        # the same on both paths, not as JSON only here.
+        if Path(line).suffix.lower() == '.json':
             if name_lower in SKIP_FILES:
                 continue
             if not config.scan_json:
@@ -311,6 +315,21 @@ def scan_staged_files(
             errored.append(full_path)
             continue
 
+        # Size guard, mirroring scan_file's working-tree ceiling: the staged
+        # path buffers the whole index blob into memory, so without this the
+        # 50 MB _MAX_FILE_SIZE cap is bypassed in the pre-commit path and a
+        # huge staged file can OOM the hook. Skip-with-WARN (same signal shape
+        # as scan_file) so the gate degrades loudly, not silently.
+        raw = blob.stdout
+        if len(raw) > _MAX_FILE_SIZE:
+            logger.warning(
+                'Skipping staged %s: file too large (%.1f MB > %.0f MB limit)',
+                line,
+                len(raw) / 1024 / 1024,
+                _MAX_FILE_SIZE / 1024 / 1024,
+            )
+            continue
+
         # scan_lines runs the same full pass as scan_file (PEM blocks, per-line,
         # multi-line strings), so staged content gets identical coverage to a
         # working-tree scan. keepends=True: the multi-line pass joins the lines
@@ -322,9 +341,23 @@ def scan_staged_files(
         # UTF-16 parity: the working-tree path detects NUL-interleaved blobs
         # via detect_encoding; the staged blob must match or a UTF-16 secret
         # passes the pre-commit gate that the tree scan flags.
-        raw = blob.stdout
+        variant = utf16_variant(raw)
+        if variant is None and b'\x00' in raw:
+            # NUL-bearing but NOT clean UTF-16 (odd/truncated UTF-16, UTF-32,
+            # stray NULs): the working-tree path's detect_encoding falls back to
+            # latin-1 AND warns. utf-8/surrogateescape leaves the NULs
+            # interleaved so patterns can't match, so emit the same WARN the
+            # tree scan does — the pre-commit gate must signal the ambiguous
+            # miss instead of a quiet pass.
+            logger.warning(
+                'could not confirm encoding of staged %s; secrets may be missed — '
+                'if it is UTF-16 or another multibyte encoding the staged scan '
+                'cannot read it reliably. For detection install the encoding '
+                'extra: pip install "credactor[encoding]"',
+                sanitize_for_terminal(line),
+            )
         try:
-            content = raw.decode(utf16_variant(raw) or 'utf-8', errors='surrogateescape')
+            content = raw.decode(variant or 'utf-8', errors='surrogateescape')
         except UnicodeDecodeError:
             # Truncated UTF-16 blob: never crash a pre-commit hook — keep the
             # historical utf-8 reading (lossy for this blob, but loud is the
