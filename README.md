@@ -30,9 +30,9 @@ db_password = os.environ["DB_PASSWORD"]
 ## Why Credactor
 
 - **Redaction, not just detection.** Most scanners stop at the finding. Credactor replaces the secret in place: a loud `REDACTED_BY_CREDACTOR` sentinel that fails at runtime by default, or a language-aware environment-variable reference (Python, JavaScript/TypeScript, Go, Java/Kotlin, Ruby, PHP, and shell) such as `os.environ["KEY"]`. The replacement is valid code. If the file does not already include the matching import (for example `import os`), add it.
-- **Safe by default.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup cannot be written, Credactor skips the file rather than rewrite it blind. Your tree is never left in a worse state than it started.
+- **Safe by default.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup cannot be written, Credactor skips the file rather than rewrite it blind, and a crash mid-write leaves the original intact.
 - **Zero runtime dependencies.** Pure Python 3.11+ standard library, plus an optional extra for non-UTF-8 encodings.
-- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook (beta), and ingestion of Gitleaks or TruffleHog reports (BETA, with more on the way). Detect with anything, remediate with Credactor.
+- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook (beta), and ingestion of Gitleaks or TruffleHog reports (BETA, with more on the way). Detect with Gitleaks or TruffleHog, remediate with Credactor.
 
 ## Install
 
@@ -96,9 +96,11 @@ Credactor detects the credential types that leak most often, and assigns each a 
 
 Deterministic provider tokens (the prefixes above) are flagged regardless of entropy. Heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex or Base64 is flagged only when quoted. An unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. For the full detection and severity rules, see the [Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#detection--severity).
 
+> Credactor's native rule set is narrower than a dedicated scanner's, and some provider formats (for example SendGrid, Twilio, and Slack webhooks) are not detected. Its edge is remediation: pair it with Gitleaks or TruffleHog for the broadest detection, or run it on its own.
+
 ## Pair it with another scanner, redact the lot (BETA)
 
-Credactor stands on its own, and it gets stronger in company. Already run Gitleaks or TruffleHog? Pass their report to Credactor and it redacts the combined set, deduplicated against its own findings (on overlap, the higher severity wins). One remediation pass covers every tool's findings:
+Credactor stands on its own, and it gets stronger in company. Already run Gitleaks or TruffleHog? Pass their report to Credactor and it redacts the combined set, deduplicated against its own findings (on overlap, the higher severity wins). One remediation pass covers your scan and theirs:
 
 ```bash
 gitleaks dir . -f json -r gitleaks.json
@@ -135,7 +137,7 @@ A security tool earns trust by being safe to install, not only safe to run. Cred
 
 - **Nothing to vet at install time.** Credactor declares zero runtime dependencies, so a default `pip install credactor` pulls in no third-party packages (the only add-on is the optional `[encoding]` extra).
 - **Hash-pinned toolchain.** CI and build steps install from a `pip-compile --generate-hashes` lockfile via `pip install --require-hashes`, so a tampered dependency artifact fails the build. The build backend is covered too: releases run `python -m build --no-isolation` against a hash-pinned setuptools instead of fetching the backend fresh at publish time.
-- **The artifacts must match the source.** On every push and before every publish, `scripts/audit_wheel.py` checks both the wheel and the sdist against the committed source: every `credactor/` file is compared byte for byte (sha256) to its `git HEAD` blob, and any untracked file, any missing tracked file, or no artifact at all fails the gate. A build step cannot inject or alter code without being caught.
+- **The artifacts must match the source.** On every push and before every publish, `scripts/audit_wheel.py` checks both the wheel and the sdist against the committed source: every `credactor/` file is compared byte for byte (sha256) to its `git HEAD` blob, and any untracked file, any missing tracked file, or no artifact at all fails the gate. A build step cannot inject or alter the package's code without being caught.
 - **Token-less publishing.** Releases reach PyPI through OIDC Trusted Publishing from a dedicated `pypi` environment, with no long-lived API token stored in the repo, and request signed build-provenance attestations (PEP 740 / Sigstore).
 - **No mis-versioned release.** A pre-publish step blocks the upload unless `credactor.__version__` matches the release tag (compared with PEP 440 normalisation).
 - **Pinned, least-privilege CI.** GitHub Actions are pinned to commit SHAs (the PyPI publisher follows PyPA's recommended `release/v1` ref), and workflow tokens stay narrow: `contents: read` by default, with `id-token: write` granted only to the publish job.
