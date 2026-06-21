@@ -5,6 +5,7 @@ File modification: backup, batch replacement, env-var mode.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import re
 import shutil
@@ -238,7 +239,17 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
         )
         return None
     dest_dir = Path(secure_dir).resolve()
-    dest = str(dest_dir / (Path(filepath).name + '.bak'))
+    # R1: the destination must be unambiguous per source file. Deriving it from
+    # the basename alone (Path(filepath).name + '.bak') flattens the whole tree
+    # into one namespace, so two sources sharing a basename in different dirs
+    # (a/config.py, b/config.py) map to the same .bak and the second os.replace
+    # silently clobbers the first file's only recovery copy. Append a short,
+    # stable hash of the ABSOLUTE source path so distinct sources never collide,
+    # while keeping the readable basename for the user. The hash is stable across
+    # runs for the same source (re-running overwrites that source's own backup,
+    # which is the intended behaviour).
+    digest = hashlib.sha256(os.path.abspath(filepath).encode('utf-8')).hexdigest()[:12]
+    dest = str(dest_dir / f'{Path(filepath).name}.{digest}.bak')
     tmp: str | None = None
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)

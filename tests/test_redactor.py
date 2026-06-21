@@ -509,6 +509,67 @@ class TestSecureBackupDirUnwritable:
             os.chmod(ro_parent, 0o700)
 
 
+class TestSecureBackupDirCollision:
+    """R1: two scanned files that share a basename in different directories must
+    map to DISTINCT backups in one --secure-backup-dir, so the second redaction
+    cannot silently clobber the first file's only recovery copy."""
+
+    def _finding(self, path):
+        return _mk_finding(path, _AWS_KEY)
+
+    def test_same_basename_distinct_subdirs_both_recoverable(self, make_file, tmp_dir):
+        backup = os.path.join(tmp_dir, 'securebak')
+        config = Config(secure_backup_dir=backup, replace_mode='sentinel')
+
+        # Two same-basename sources in different subdirs, each with its own secret.
+        secret_a = 'AKIA' + 'IOSFODNN7AAAAAAA'
+        secret_b = 'AKIA' + 'IOSFODNN7BBBBBBB'
+        path_a = make_file('a/config.py', f'api_key = "{secret_a}"\n')
+        path_b = make_file('b/config.py', f'api_key = "{secret_b}"\n')
+
+        ra, _ = batch_replace_in_file(path_a, [_mk_finding(path_a, secret_a)], config)
+        rb, _ = batch_replace_in_file(path_b, [_mk_finding(path_b, secret_b)], config)
+        assert ra == 1
+        assert rb == 1
+
+        # Both backups must coexist in the secure dir (no basename collision).
+        baks = os.listdir(backup)
+        assert len(baks) == 2
+
+        # Nothing landed beside either original.
+        assert not os.path.exists(path_a + '.bak')
+        assert not os.path.exists(path_b + '.bak')
+
+        # Each original must be recoverable from its OWN distinct backup — neither
+        # secret was clobbered by the other.
+        recovered = []
+        for name in baks:
+            with open(os.path.join(backup, name)) as f:
+                recovered.append(f.read())
+        joined = '\n'.join(recovered)
+        assert secret_a in joined
+        assert secret_b in joined
+
+    def test_backup_name_stable_across_runs(self, make_file, tmp_dir):
+        # Re-running on the same source maps to the same backup name (the source
+        # owns its backup), so a re-run overwrites its own copy, not a sibling's.
+        backup = os.path.join(tmp_dir, 'securebak')
+        config = Config(secure_backup_dir=backup, replace_mode='sentinel')
+        path = make_file('pkg/config.py', f'api_key = "{_AWS_KEY}"\n')
+
+        batch_replace_in_file(path, [self._finding(path)], config)
+        first = sorted(os.listdir(backup))
+
+        # Restore the secret and redact again — same source, same backup name.
+        with open(path, 'w') as f:
+            f.write(f'api_key = "{_AWS_KEY}"\n')
+        batch_replace_in_file(path, [self._finding(path)], config)
+        second = sorted(os.listdir(backup))
+
+        assert first == second
+        assert len(second) == 1
+
+
 class TestEnvRefForLanguage:
     """SEC-30: Verify bracket notation for JS and quoting for other languages."""
 
