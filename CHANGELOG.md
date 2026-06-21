@@ -26,7 +26,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 - A `.github/dependabot.yml` (monthly: github-actions and pip) to keep the SHA/hash-pinned CI dependencies refreshed.
 - A `.pre-commit-config.yaml` for this repo's developers (ruff, mypy strict, and the credactor self-scan).
 - PyPI sidebar links: `[project.urls]` now declares Issues, Changelog, and Documentation alongside Repository.
-- The wheel audit gate now also fails when `dist/` contains no wheel, and flags a tracked source file missing from the wheel (the "match exactly" contract now runs both directions).
+- The build-artifact audit (`scripts/audit_wheel.py`) now verifies the **wheel and sdist** against the committed source: every `credactor/` file is content-hashed (sha256) against its `git HEAD` blob, and an added, missing, or altered package file, an unexpected file in the wheel, a stray `.py` in the sdist, or no artifact at all fails the gate. Byte-level comparison catches an in-place code edit that the previous file-name check would have missed.
 - Test coverage for three previously untested core paths: the interactive redaction flow, `--scan-json` end-to-end, and the non-UTF-8 (Latin-1) redaction round-trip.
 - Unknown top-level keys in `.credactor.toml` now log a warning instead of being dropped silently (a typo such as `entropy_treshold` could otherwise scan at the wrong sensitivity unnoticed). The guard also covers the `[ingest]` table.
 - A single-file target (`credactor app.py`) that finds a `.credactorignore` beside it now warns, since an allowlist file applies only to a directory scan.
