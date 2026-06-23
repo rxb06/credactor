@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects Credactor 2.5.0 (unreleased; see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
+Reflects Credactor 2.5.0 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---

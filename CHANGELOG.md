@@ -10,7 +10,7 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [2.5.0] - 2026-06-21
+## [2.5.0] - 2026-06-24
 
 ### Changed (behaviour)
 
