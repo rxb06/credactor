@@ -23,10 +23,11 @@ pip install --require-hashes -r requirements-ci.txt
 ```bash
 pytest tests/ -v
 ruff check credactor/ tests/ scripts/
+ruff format --check credactor/ tests/ scripts/
 mypy credactor/ scripts/
 ```
 
-CI runs exactly these three checks (`make lint` covers the last two). A type
+CI runs exactly these four checks (`make lint` covers the last three). A type
 error fails the build, so run mypy locally before pushing. To run the lint,
 type-check, and self-scan automatically on every commit (the hooks use the
 project venv's own tools, so commit with the venv active):
@@ -43,13 +44,14 @@ python -m build
 python scripts/audit_wheel.py
 ```
 
-The wheel audit (`scripts/audit_wheel.py`) verifies that the built wheel exactly matches the files tracked in the git repo (nothing extra smuggled in, nothing tracked left out), and fails if no wheel was built at all. See [docs/security.md](docs/security.md#supply-chain-hardening) for details.
+The artifact audit (`scripts/audit_wheel.py`) verifies that the built wheel **and sdist** match the files tracked in the git repo, byte-for-byte against git HEAD (nothing extra smuggled in, nothing tracked left out, no sdist member escaping the archive root), and fails if no wheel or sdist was built at all. See [docs/security.md](docs/security.md#supply-chain-hardening) for details.
 
 ## Code Style
 
-- Linted with [Ruff](https://docs.astral.sh/ruff/) (`ruff check`); **no
-  auto-formatter is used**. Do not run `ruff format`. Match the surrounding
-  style instead (single quotes, 100-column lines)
+- Linted with [Ruff](https://docs.astral.sh/ruff/) (`ruff check`) and
+  format-checked (`ruff format --check`; single quotes, 100-column lines). Run
+  `ruff format credactor/ tests/ scripts/` before committing so CI's format
+  check passes
 - Type hints on all public functions (mypy strict)
 - No external runtime dependencies, stdlib only
 

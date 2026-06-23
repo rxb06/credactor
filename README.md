@@ -74,7 +74,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.4.0   # pin to the latest release tag
+    rev: v2.5.0   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
@@ -133,15 +133,12 @@ Plus `.env.*` / `.env-*` variants (`.env.local`, `.env.production`) and SSH / pr
 
 ## Supply-chain hardening
 
-A security tool earns trust by being safe to install, not only safe to run. Credactor's build and release pipeline has controls at each step, and the artifacts are audited on every push, not just at release. Full detail in the [Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md#supply-chain-hardening).
+A security tool should be safe to install, not only safe to run. Credactor's build and release pipeline is hardened end to end; full detail in the [Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md#supply-chain-hardening).
 
-- **Nothing to vet at install time.** Credactor declares zero runtime dependencies, so a default `pip install credactor` pulls in no third-party packages (the only add-on is the optional `[encoding]` extra).
-- **Hash-pinned toolchain.** CI and build steps install from a `pip-compile --generate-hashes` lockfile via `pip install --require-hashes`, so a tampered dependency artifact fails the build. The build backend is covered too: releases run `python -m build --no-isolation` against a hash-pinned setuptools instead of fetching the backend fresh at publish time.
-- **The artifacts must match the source.** On every push and before every publish, `scripts/audit_wheel.py` checks both the wheel and the sdist against the committed source: every `credactor/` file is compared byte for byte (sha256) to its `git HEAD` blob, and an added, missing, or altered package file, an unexpected file in the wheel, a stray `.py` in the sdist, or no artifact at all fails the gate. A build step cannot inject or alter the package's code without being caught.
-- **Token-less publishing.** Releases reach PyPI through OIDC Trusted Publishing from a dedicated `pypi` environment, with no long-lived API token stored in the repo, and request signed build-provenance attestations (PEP 740 / Sigstore).
-- **No mis-versioned release.** A pre-publish step blocks the upload unless `credactor.__version__` matches the release tag (compared with PEP 440 normalisation).
-- **Pinned, least-privilege CI.** GitHub Actions are pinned to commit SHAs, and workflow tokens stay narrow: `contents: read` by default, with `id-token: write` granted only to the publish job.
-- **Pins stay fresh.** Dependabot opens monthly grouped pull requests to update the pinned Actions and regenerate the hash-locked lockfile, so the frozen toolchain gets reviewed rather than left to rot.
+- **Zero runtime dependencies.** A default `pip install credactor` pulls in no third-party packages (only the optional `[encoding]` extra), so there is nothing to vet at install time.
+- **Hash-pinned toolchain.** CI and release builds install from a `--require-hashes` lockfile, build backend included (`python -m build --no-isolation` against a pinned setuptools), so a tampered dependency fails the build.
+- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed.
+- **SHA-pinned, least-privilege CI.** GitHub Actions pin to commit SHAs, and workflow tokens stay narrow — `contents: read` by default, `id-token: write` only for the publish job.
 
 ## Docs
 

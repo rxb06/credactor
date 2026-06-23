@@ -19,7 +19,7 @@ To install from source so `credactor` works globally from any directory:
 
 ```bash
 git clone https://github.com/rxb06/credactor.git
-cd Credactor
+cd credactor
 pip install -e .
 ```
 
@@ -49,7 +49,7 @@ If you want to run it from the cloned repo without a global install:
 
 ```bash
 git clone https://github.com/rxb06/credactor.git
-cd Credactor
+cd credactor
 python -m credactor --help
 ```
 

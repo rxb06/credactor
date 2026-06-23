@@ -118,9 +118,51 @@ See `mydocs/vulnerability-chains.md` for the full chain analysis including attac
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
+### v2.5.0 (pre-commit parity, redaction safety, ingest + supply-chain hardening)
+
+**Pre-commit (`--staged`) brought to parity with a working-tree scan** — closing silent false negatives at the gate:
+
+- The staged scan runs the same `scanner.scan_lines()` pass as a working-tree scan (PEM blocks, multi-line strings included), enforces the same 50 MB file-size cap, and emits the same encoding warning on a NUL-bearing file whose encoding it cannot confirm — so the gate is no longer a quieter false negative than the tree scan.
+- Staged blob lines are split with the same universal-newline `readlines()` the working-tree path uses, so a secret value embedding a form-feed, NEL, or Unicode line separator is no longer split across two lines and slipped past the gate.
+- Lockfiles (`pnpm-lock.yaml` and the rest of `SKIP_FILES`) and configured `skip_files` are excluded before extension classification, exactly as in a directory walk.
+- `--staged` and `--scan-history` are read-only (force dry-run; `--fix-all` is warned and ignored), and `--scan-history` warns when the repository is deeper than its 100-commit window so a truncated scan is distinguishable from a clean one.
+
+**Redaction safety:**
+
+- **Symlinked targets refused** — redaction skips (and counts unresolved) a symlinked file rather than following the link and rewriting a file outside the one named.
+- **Empty / non-allowlisted `--replacement` rejected** (exit 2) before any file is touched, so a redaction can never delete the secret or inject metacharacters into surrounding code.
+- **Hash fields are not auto-rewritten** — a quoted hex/Base64 value on a line keyed like a commit SHA, checksum, SRI integrity, digest, or revision field is left alone under `--fix-all` (key-scoped, with a credential-keyword veto so a genuine credential name still flags), so `--fix-all` cannot corrupt a lockfile checksum or SRI hash.
+- **Value-global copy sweep** — after a rewrite, remaining word-boundary-delimited copies of a redacted value in the same file are cleared (bounded to that file, never overriding a skipped finding), so a deduplicated second copy is not left in plaintext.
+- **Interactive backups are per-session** — a file is backed up once, on the first approval, so the `.bak` / `--secure-backup-dir` copy holds the true original of every approved finding rather than a partially-redacted intermediate from a later approval to the same file.
+- **Machine-readable output stays clean** — `-f json` / `-f sarif` with `--fix-all` route the banner, prompts, and summary to stderr, keeping stdout a single parseable document.
+- **TTY required** — interactive mode and the `--fix-all` confirmation require a TTY on stdin, so piped `y` input cannot auto-approve file rewrites.
+
+**Ingest hardening (extends SEC-40):**
+
+- A deeply-nested JSON report is a fatal error (exit 2) on both the Gitleaks and TruffleHog paths, instead of an uncaught `RecursionError`.
+- A wholly-unparseable TruffleHog report (no JSON object on any line) is fatal, matching the Gitleaks path; a mixed report still ingests its valid findings.
+- The report size cap is lowered from 100 MB to 20 MB, bounding `json.load` peak memory.
+- An explicit `--from-*` overrides a config `[ingest]` entry, and an empty `--from-*` value is fatal (exit 2) rather than a silent no-op that could disable a config-sourced scan.
+
+**Config trust:**
+
+- An explicit `--config` that is missing, not a file, unreadable, or invalid TOML is a fatal error (exit 2) instead of a silent fall-back to default sensitivity; a *discovered* `.credactor.toml` that fails to parse still warns and falls back to defaults.
+- Unknown top-level keys (and `[ingest]` keys) in `.credactor.toml` warn rather than being dropped silently, so a typo such as `entropy_treshold` cannot scan at the wrong sensitivity unnoticed.
+
+**Detection robustness:**
+
+- The connection-string detector matches in linear time on adversarial input (ReDoS path closed).
+- BOM-less UTF-16 files are detected and scanned instead of being silently misread as UTF-8; a truncated/odd-length UTF-16 file follows the unreadable-file contract (warning, `--fail-on-error` exit 2, never a silent all-clear).
+- A line past the 4096-character matching cap is reported with a `[WARN]` (naming the file on the working-tree, single-file, and `--staged` paths; a per-scan count on `--scan-history`), instead of scanning clean with no signal.
+
+**Supply chain (see *Supply Chain Hardening* below):** the artifact audit now covers the **sdist** as strictly as the wheel (byte-for-byte against `git HEAD`, an archive-root-escape guard, and tracked non-package files verified too), and the PyPI publish workflow blocks an upload whose package version does not match the release tag (PEP 440 normalised).
+
+This hardening shipped in **2.5.0**.
+
 ## Supply Chain Hardening
 
-- **Artifact integrity audit:** `scripts/audit_wheel.py` verifies the wheel and sdist against the committed source: every `credactor/` file is hashed (sha256) against its `git HEAD` blob, and an extra file, a missing tracked file, an unexpected `.py` in the sdist, or no artifact at all each fail the gate.
+- **Artifact integrity audit:** `scripts/audit_wheel.py` verifies the wheel and sdist against the committed source: every `credactor/` file — and every tracked non-package file the sdist ships (`pyproject.toml`, `README`, `LICENSE`) — is hashed (sha256) against its `git HEAD` blob, and an extra file, a missing tracked file, an unexpected `.py` in the sdist, an sdist member whose path escapes the archive root, or no artifact at all each fail the gate. Byte-level comparison catches an in-place edit a file-name check would miss, and verifying the sdist's build config means a tampered `pyproject.toml` cannot ride along in a source distribution.
+- **Version-tag gate:** the publish workflow blocks an upload unless `credactor.__version__` matches the release tag (PEP 440 normalised), so a mis-versioned release cannot reach PyPI.
 - **SHA-pinned GitHub Actions:** All `uses:` references pin to commit SHAs, including `pypa/gh-action-pypi-publish`.
 - **Hash-pinned CI dependencies:** Installed with `pip install --require-hashes`. This covers the build backend too: release artifacts are built with `python -m build --no-isolation` against the hash-pinned setuptools, not a backend downloaded fresh at publish time.
 - **OIDC trusted publishing:** Short-lived tokens tied to this specific repo and workflow.

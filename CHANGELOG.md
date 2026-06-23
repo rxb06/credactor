@@ -10,7 +10,7 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [2.5.0] - 2026-06-21
+## [2.5.0] - 2026-06-24
 
 ### Changed (behaviour)
 
@@ -26,7 +26,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 - A `.github/dependabot.yml` (monthly: github-actions and pip) to keep the SHA/hash-pinned CI dependencies refreshed.
 - A `.pre-commit-config.yaml` for this repo's developers (ruff, mypy strict, and the credactor self-scan).
 - PyPI sidebar links: `[project.urls]` now declares Issues, Changelog, and Documentation alongside Repository.
-- The build-artifact audit (`scripts/audit_wheel.py`) now verifies the **wheel and sdist** against the committed source: every `credactor/` file is content-hashed (sha256) against its `git HEAD` blob, and an added, missing, or altered package file, any untracked member in the wheel, any untracked `credactor/` member or stray `.py` in the sdist, a sdist member whose path escapes the archive root, or no artifact at all fails the gate. Byte-level comparison catches an in-place code edit that the previous file-name check would have missed.
+- The build-artifact audit (`scripts/audit_wheel.py`) now verifies the **wheel and sdist** against the committed source: every `credactor/` file — and every tracked non-package file the sdist ships (`pyproject.toml`, `README`, `LICENSE`) — is content-hashed (sha256) against its `git HEAD` blob, and an added, missing, or altered package file, any untracked member in the wheel, any untracked `credactor/` member or stray `.py` in the sdist, a sdist member whose path escapes the archive root, or no artifact at all fails the gate. Byte-level comparison catches an in-place code edit that the previous file-name check would have missed, and verifying the sdist's tracked build config means a tampered `pyproject.toml` cannot ride along in a source distribution.
 - Test coverage for three previously untested core paths: the interactive redaction flow, `--scan-json` end-to-end, and the non-UTF-8 (Latin-1) redaction round-trip.
 - Unknown top-level keys in `.credactor.toml` now log a warning instead of being dropped silently (a typo such as `entropy_treshold` could otherwise scan at the wrong sensitivity unnoticed). The guard also covers the `[ingest]` table.
 - A single-file target (`credactor app.py`) that finds a `.credactorignore` beside it now warns, since an allowlist file applies only to a directory scan.
@@ -35,6 +35,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 ### Fixed
 
 - Redaction now refuses a symlinked target (warns and skips) rather than following the link and rewriting a file outside the one named. `--secure-backup-dir` backups are written directly inside the directory you pass (never beside the original, even momentarily), and each backup name is made unique per source path so two same-named files in different directories cannot clobber each other's backup.
+- Interactive redaction now backs each file up once per review session (on the first approval), so the `.bak` / `--secure-backup-dir` copy holds the true original of every approved finding rather than a partially-redacted intermediate from a later approval to the same file. `--fix-all` was already correct.
 - An empty or non-allowlisted `--replacement` is now rejected (exit 2) before any file is touched, instead of deleting the secret or injecting characters that could corrupt surrounding code.
 - Quoted hex/Base64 values on a line keyed like a commit SHA, checksum, SRI integrity, digest, or revision field are no longer auto-rewritten under `--fix-all`; they are hash outputs, not credentials. A genuinely credential-named value is still flagged.
 - The connection-string detector now matches in linear time on adversarial input, closing a ReDoS backtracking path.
@@ -51,7 +52,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 - `-f json`/`-f sarif` combined with `--fix-all` no longer corrupts the machine-readable stream: the confirmation banner, prompts, and summary now go to stderr for non-text formats (text output is unchanged).
 - `--dry-run --fix-all` now warns that dry-run takes precedence and `--fix-all` is ignored, matching the signal the other read-only combinations already give.
 - The post-redaction ".bak files contain plaintext" footer now reflects the backup mode, instead of printing unconditionally (it previously warned under `--no-backup` about files that never existed, and recommended `--secure-delete` when it was already in use).
-- Lines longer than the 4096-character matching cap are now reported with a `[WARN]` naming the file, instead of scanning clean with no signal. Covers working-tree, single-file, `--staged`, and `--scan-history` paths.
+- Lines longer than the 4096-character matching cap are now reported with a `[WARN]` instead of scanning clean with no signal — naming the file on the working-tree, single-file, and `--staged` paths, and a per-scan count on `--scan-history`.
 - `--scan-history` now warns when the repository is deeper than its 100-commit window, so a truncated all-clear is no longer indistinguishable from a full clean scan. The window and exit code are unchanged.
 - `.credactor.toml` discovery now reaches the documented five parent directories (an off-by-one previously stopped at four).
 - Redaction now clears every unreported copy of a secret in a file it rewrites, not just the reported occurrence (for example a value a detector deduplicated). The sweep is value-global within each rewritten file, never opens other files, and never overrides a finding the user skipped; a `[WARN]` states how many extra copies were cleared.
@@ -60,12 +61,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 - `--scan-history` is now read-only (forces dry-run, like `--staged`); it previously flowed into redaction that failed on every finding. Passing `--fix-all` now warns and is ignored.
 - `--staged` now honours `--scan-json`: a staged `.json` file is scanned with the flag and skipped without it, matching the directory walk. Lockfiles remain excluded either way.
 - Git subprocess output is decoded as UTF-8 explicitly, so non-ASCII staged filenames are scanned on Windows instead of being mojibaked into the error list. History-scan decoding degrades stray bytes to U+FFFD rather than crashing.
-- Staged blob content is universal-newline normalised before scanning, so CRLF blobs no longer leak literal `\r` into previews and lone-`\r` endings no longer skew multiline line numbers.
+- Staged blob content is universal-newline normalised before scanning, so CRLF blobs no longer leak literal `\r` into previews and lone-`\r` endings no longer skew multiline line numbers. The staged scan now splits lines with the same `readlines()` the working-tree path uses, so a secret value embedding a form-feed, NEL, or Unicode line separator is no longer split across two lines and slipped past the gate.
+- `--staged` now excludes lockfiles and configured `skip_files` before extension classification, so `pnpm-lock.yaml` (a `.yaml` lockfile) and a `skip_files` entry are skipped on the staged path exactly as in a directory walk.
 - The `--staged` pre-commit scan now enforces the same 50 MB file-size cap as the working-tree scan, and emits the same encoding warning on a NUL-bearing file whose encoding it cannot confirm, so the staged path is no longer a silently quieter false negative than the tree scan.
 - README links now use absolute GitHub URLs; the relative links resolved against pypi.org (the README is the PyPI landing page) and returned 404s.
 - The published sdist no longer ships a partial copy of the test suite (a new `MANIFEST.in` prunes `tests/`); the wheel was never affected.
 - `build-system.requires` now demands `setuptools>=77`, the first version that understands the PEP 639 SPDX `license` string; the obsolete `wheel` requirement is dropped.
-- `SECURITY.md`'s Supported Versions table now lists 2.4.x (it still said 2.3.x).
+- `SECURITY.md`'s Supported Versions table now lists 2.5.x, the supported minor for this release.
 - The pre-commit hook manifest declares `minimum_pre_commit_version: 3.2.0`, matching its `stages: [pre-commit]` spelling.
 
 ### Changed
