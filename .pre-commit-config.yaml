@@ -10,6 +10,11 @@ repos:
         entry: ruff check credactor/ tests/ scripts/
         language: system
         pass_filenames: false
+      - id: ruff-format
+        name: ruff format --check
+        entry: ruff format --check credactor/ tests/ scripts/
+        language: system
+        pass_filenames: false
       - id: mypy
         name: mypy strict
         entry: mypy credactor/ scripts/

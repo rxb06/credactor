@@ -30,6 +30,7 @@ def credactor_caplog(caplog):
     attaches caplog.handler directly and sets the capture level to DEBUG.
     """
     from credactor._log import logger
+
     caplog.set_level(logging.DEBUG, logger='credactor')
     logger.addHandler(caplog.handler)
     try:
@@ -55,10 +56,12 @@ def tmp_dir(tmp_path):
 @pytest.fixture
 def make_file(tmp_dir):
     """Factory to create a file with given content inside tmp_dir."""
+
     def _make(name: str, content: str) -> str:
         path = os.path.join(tmp_dir, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as fh:
             fh.write(content)
         return path
+
     return _make

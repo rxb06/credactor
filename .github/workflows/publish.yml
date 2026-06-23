@@ -26,10 +26,30 @@ jobs:
           pip install --require-hashes -r requirements-ci.txt
           python -m build --no-isolation
 
+      - name: Verify version matches release tag
+        # The published wheel's version is the PEP 440 normalization of
+        # credactor.__version__ (pyproject dynamic attr; single-sourced, no
+        # setup.py). Compare with packaging.Version — not raw strings — so a
+        # non-canonical tag/version form (e.g. tag v2.5.0-beta <-> wheel 2.5.0b0)
+        # can neither publish a mis-versioned, immutable PyPI artifact nor
+        # false-fail a correct release. packaging is installed by Build above;
+        # the quoted heredoc keeps the tag out of the shell (read via os.environ).
+        run: |
+          python - <<'PY'
+          import os, sys
+          from packaging.version import Version
+          import credactor
+          tag = os.environ['GITHUB_REF_NAME']
+          pkg = credactor.__version__
+          if Version(pkg) != Version(tag):
+              sys.exit(f'::error::package version {pkg} does not match release tag {tag}')
+          print(f'version OK: package {pkg} matches release tag {tag}')
+          PY
+
       - name: Audit wheel for supply chain attacks
         run: python scripts/audit_wheel.py
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1  # Docker action — SHA pins don't resolve for container images
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
           attestations: true

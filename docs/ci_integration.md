@@ -22,7 +22,7 @@ If you use [pre-commit](https://pre-commit.com), add this to `.pre-commit-config
 
 ```yaml
 repos:
-  - repo: https://github.com/rxb06/Credactor
+  - repo: https://github.com/rxb06/credactor
     rev: v2.4.0  # pin to a release tag
     hooks:
       - id: credactor
@@ -58,20 +58,20 @@ Make it executable:
 chmod +x .git/hooks/pre-commit
 ```
 
-`--ci` exits 1 on findings, blocking the commit. `--staged` scans only staged files and is **read-only** — it forces dry-run, so no files are modified or backed up even if `--fix-all` is also passed.
+`--ci` exits 1 on findings, blocking the commit. `--staged` scans only staged files and is **read-only**: it forces dry-run, so no files are modified or backed up even if `--fix-all` is also passed.
 
 ## CI Pipeline
 
 ### GitHub Actions
 
-Basic — fail on findings:
+Basic, fail on findings:
 
 ```yaml
 - name: Credential scan
   run: credactor --ci .
 ```
 
-Strict — also fail if files could not be scanned:
+Strict, also fail if files could not be scanned:
 
 ```yaml
 - name: Credential scan
@@ -124,7 +124,7 @@ credactor --ci --fail-on-error .  # strict mode
 
 ### CI Security Notes
 
-- `--ci` is read-only by design — it blocks `--fix-all` and forces `--dry-run`.
+- `--ci` is read-only by design: it blocks `--fix-all` and forces `--dry-run`.
 - `.credactor.toml` files discovered *implicitly* outside the project root are refused (SEC-29 / M14): in CI they are always refused; in non-CI you can still load one by pointing `--config` at it explicitly.
 - `--fail-on-error` ensures files skipped due to permissions are not silently ignored.
 
@@ -134,7 +134,7 @@ credactor --ci --fail-on-error .  # strict mode
 
 Credactor can ingest findings from [Gitleaks](https://github.com/gitleaks/gitleaks) and [TruffleHog](https://github.com/trufflesecurity/trufflehog), merge them into its own pipeline, and gate (or redact) on the combined set. Ingested findings are deduplicated against native Credactor findings, and on a duplicate the higher severity is kept.
 
-Both `--from-gitleaks` and `--from-trufflehog` **require a directory target** (the repository root) so report file paths resolve correctly — a file target exits with code 2. Ingestion also **cannot be combined with `--scan-history`** (exits 2): external reports reference on-disk files, history scanning references committed content.
+Both `--from-gitleaks` and `--from-trufflehog` **require a directory target** (the repository root) so report file paths resolve correctly. A file target exits with code 2. Ingestion also **cannot be combined with `--scan-history`** (exits 2): external reports reference on-disk files, history scanning references committed content.
 
 Run the external scanner first, then feed its report to Credactor as a CI gate:
 
@@ -168,7 +168,7 @@ from_trufflehog = "trufflehog.json"
 
 ## Automated Remediation (non-interactive)
 
-`--ci` is a read-only gate and **cannot** be combined with `--fix-all`. To actually rewrite files in an unattended job, use `--fix-all` with `--yes` (`-y`) to skip the confirmation prompt — without `--yes`, `--fix-all` aborts when stdin is not a TTY:
+`--ci` is a read-only gate and **cannot** be combined with `--fix-all`. To actually rewrite files in an unattended job, use `--fix-all` with `--yes` (`-y`) to skip the confirmation prompt. Without `--yes`, `--fix-all` aborts when stdin is not a TTY:
 
 ```bash
 credactor --dry-run .          # preview first

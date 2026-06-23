@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -67,12 +66,6 @@ def _resolve_protected_dirs() -> frozenset[str]:
 
 _PROTECTED_DIRS_RESOLVED: frozenset[str] = _resolve_protected_dirs()
 
-# M5: a custom replacement string must match the documented contract exactly —
-# alphanumeric, underscore, hyphen only. fullmatch (not search) is required: the
-# regex `$` matches before a trailing newline, so search would let "X\n" slip
-# through and inject a source line.
-_SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]*')
-
 
 def _fatal(msg: str, *args: object) -> NoReturn:
     """Log an error and exit with code 2 — the CLI's standard fatal path."""
@@ -105,135 +98,171 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        '--version', action='version',
+        '--version',
+        action='version',
         version=f'%(prog)s {__version__}',
     )
 
     parser.add_argument(
-        'target', nargs='?', default='.',
+        'target',
+        nargs='?',
+        default='.',
         help='directory or file to scan (default: current directory)',
     )
 
     # Mode flags
     mode = parser.add_argument_group('scan mode')
     mode.add_argument(
-        '--ci', action='store_true',
+        '--ci',
+        action='store_true',
         help='CI/CD mode — report findings and exit 1, no interactive prompts; '
-             'suitable for pipeline gates',
+        'suitable for pipeline gates',
     )
     mode.add_argument(
-        '--dry-run', action='store_true',
+        '--dry-run',
+        action='store_true',
         help='show what would be found without modifying any files; '
-             'use this to preview before committing to replacements',
+        'use this to preview before committing to replacements',
     )
     mode.add_argument(
-        '--fix-all', action='store_true',
+        '--fix-all',
+        action='store_true',
         help='replace all findings in a single batch (no per-finding prompts); '
-             'asks for one confirmation before proceeding — pass --yes to skip it '
-             'in non-interactive/CI runs',
+        'asks for one confirmation before proceeding — pass --yes to skip it '
+        'in non-interactive/CI runs',
     )
     mode.add_argument(
-        '--yes', '-y', action='store_true', dest='assume_yes',
+        '--yes',
+        '-y',
+        action='store_true',
+        dest='assume_yes',
         help='skip the --fix-all confirmation prompt; required for '
-             'non-interactive use (a piped/CI run without a TTY otherwise aborts)',
+        'non-interactive use (a piped/CI run without a TTY otherwise aborts)',
     )
     mode.add_argument(
-        '--staged', action='store_true',
+        '--staged',
+        action='store_true',
         help='scan only git-staged files (git diff --cached); '
-             'read-only — no files are modified, ideal for pre-commit hooks',
+        'read-only — no files are modified, ideal for pre-commit hooks',
     )
     mode.add_argument(
-        '--scan-history', action='store_true',
+        '--scan-history',
+        action='store_true',
         help='scan git commit history (up to 100 commits) for leaked credentials; '
-             'reports the commit hash where each secret was introduced; '
-             'read-only — committed secrets cannot be redacted in place',
+        'reports the commit hash where each secret was introduced; '
+        'read-only — committed secrets cannot be redacted in place',
     )
 
     # Output flags
     output = parser.add_argument_group('output')
     output.add_argument(
-        '--format', '-f', choices=['text', 'json', 'sarif'], default='text',
+        '--format',
+        '-f',
+        choices=['text', 'json', 'sarif'],
+        default='text',
         dest='output_format',
         help='output format: text (human-readable, default), '
-             'json (machine-readable), sarif (SARIF 2.1.0 for GitHub Code Scanning)',
+        'json (machine-readable), sarif (SARIF 2.1.0 for GitHub Code Scanning)',
     )
     output.add_argument(
-        '--no-color', action='store_true',
-        help='disable ANSI color codes in text output; '
-             'auto-disabled when stdout is not a terminal',
+        '--no-color',
+        action='store_true',
+        help='disable ANSI color codes in text output; auto-disabled when stdout is not a terminal',
     )
 
     # Replacement flags
     replace = parser.add_argument_group('replacement and backup')
     replace.add_argument(
-        '--replace-with', choices=['sentinel', 'env', 'custom'], default='sentinel',
+        '--replace-with',
+        choices=['sentinel', 'env', 'custom'],
+        default='sentinel',
         dest='replace_mode',
         help='replacement strategy: '
-             'sentinel = REDACTED_BY_CREDACTOR (fails loudly at runtime), '
-             'env = language-aware env var lookup (e.g. os.environ["KEY"]), '
-             'custom = your own string via --replacement',
+        'sentinel = REDACTED_BY_CREDACTOR (fails loudly at runtime), '
+        'env = language-aware env var lookup (e.g. os.environ["KEY"]), '
+        'custom = your own string via --replacement',
     )
     replace.add_argument(
-        '--replacement', type=str, default=None,
+        '--replacement',
+        type=str,
+        default=None,
         help='custom replacement string used with --replace-with sentinel or custom '
-             '(default: REDACTED_BY_CREDACTOR). An explicit value here overrides a '
-             "'replacement' set in .credactor.toml.",
+        '(default: REDACTED_BY_CREDACTOR). An explicit value here overrides a '
+        "'replacement' set in .credactor.toml.",
     )
     replace.add_argument(
-        '--no-backup', action='store_true',
+        '--no-backup',
+        action='store_true',
         help='skip creating .bak backup files before modifying; '
-             'WARNING: original file content is lost — only use if git history '
-             'is your safety net',
+        'WARNING: original file content is lost — only use if git history '
+        'is your safety net',
     )
     replace.add_argument(
-        '--secure-backup-dir', type=str, default=None, metavar='DIR',
+        '--secure-backup-dir',
+        type=str,
+        default=None,
+        metavar='DIR',
         help='store .bak backup files in DIR instead of beside the original files; '
-             'keeps plaintext backups outside the repository tree',
+        'keeps plaintext backups outside the repository tree',
     )
     replace.add_argument(
-        '--secure-delete', action='store_true',
+        '--secure-delete',
+        action='store_true',
         help='after successful replacement, overwrite .bak files with random data '
-             'and delete them; prevents credential recovery from backups via '
-             'disk forensics',
+        'and delete them; prevents credential recovery from backups via '
+        'disk forensics',
     )
 
     # Configuration
     config_group = parser.add_argument_group('configuration')
     config_group.add_argument(
-        '--config', type=str, default=None, metavar='PATH',
+        '--config',
+        type=str,
+        default=None,
+        metavar='PATH',
         help='path to .credactor.toml config file; by default searches current '
-             'directory and up to 5 parent directories',
+        'directory and up to 5 parent directories',
     )
     config_group.add_argument(
-        '--scan-json', action='store_true',
+        '--scan-json',
+        action='store_true',
         help='include .json files in the scan; by default JSON files are '
-             'collected but only scanned when explicitly requested',
+        'collected but only scanned when explicitly requested',
     )
     config_group.add_argument(
-        '--fail-on-error', action='store_true',
+        '--fail-on-error',
+        action='store_true',
         help='exit with code 2 if any files could not be scanned '
-             '(e.g. permission denied, encoding errors); useful in CI to '
-             'ensure complete coverage',
+        '(e.g. permission denied, encoding errors); useful in CI to '
+        'ensure complete coverage',
     )
     config_group.add_argument(
-        '--verbose', '-v', action='store_true',
+        '--verbose',
+        '-v',
+        action='store_true',
         help='show detailed scan activity on stderr including suppressed '
-             'findings, skipped files, and safe-value decisions',
+        'findings, skipped files, and safe-value decisions',
     )
 
     # External tool ingestion
     ingest = parser.add_argument_group('external tool ingestion (BETA)')
     ingest.add_argument(
-        '--from-gitleaks', type=str, default=None, metavar='FILE',
+        '--from-gitleaks',
+        type=str,
+        default=None,
+        metavar='FILE',
         help='[BETA] ingest findings from a Gitleaks JSON report file; '
-             'file paths in the report are resolved relative to the '
-             'target directory',
+        'file paths in the report are resolved relative to the '
+        'target directory',
     )
     ingest.add_argument(
-        '--from-trufflehog', type=str, default=None, metavar='FILE',
+        '--from-trufflehog',
+        type=str,
+        default=None,
+        metavar='FILE',
         help='[BETA] ingest findings from a TruffleHog JSON output file '
-             '(newline-delimited); file paths are resolved relative to '
-             'the target directory',
+        '(newline-delimited); file paths are resolved relative to '
+        'the target directory',
     )
 
     return parser
@@ -251,6 +280,7 @@ def main(argv: list[str] | None = None) -> None:
 # ---------------------------------------------------------------------------
 # Pipeline helpers extracted from _main_inner
 # ---------------------------------------------------------------------------
+
 
 def _emit_report(findings: list[Finding], target: str, config: Config) -> None:
     """Emit findings to stdout in the configured format.
@@ -332,8 +362,7 @@ def _validate_invocation(config: Config) -> None:
         # preferred dry-run silently. dry-run winning is the safe outcome —
         # this is consistency of signal, not a behaviour change.
         logger.warning(
-            '--dry-run takes precedence; ignoring --fix-all — no files will '
-            'be modified.',
+            '--dry-run takes precedence; ignoring --fix-all — no files will be modified.',
         )
 
     if config.staged_only:
@@ -362,6 +391,16 @@ def _validate_invocation(config: Config) -> None:
             )
         config.dry_run = True
 
+    if config.no_backup and (config.secure_backup_dir or config.secure_delete):
+        # --no-backup means no .bak is ever written (redactor skips _create_backup),
+        # so --secure-backup-dir/--secure-delete become silent no-ops. Surface the
+        # ignored secure intent so a user expecting a secured out-of-repo backup
+        # isn't left with no backup at all.
+        logger.warning(
+            '--no-backup overrides --secure-backup-dir/--secure-delete; '
+            'no backup will be created, so those flags have no effect.',
+        )
+
     if hasattr(os, 'getuid') and os.getuid() == 0:
         logger.warning(
             'Running as root — backup files may have restrictive ownership. '
@@ -387,13 +426,13 @@ def _validate_replacement(config: Config) -> None:
     and quote characters (``<>"'/``) through to inject into XML/HTML/code. The
     allowlist also subsumes the M6 newline/control-character rejection.
     """
-    if config.replace_mode not in ('sentinel', 'custom'):
-        return
-    if not _SAFE_REPLACEMENT_RE.fullmatch(config.custom_replacement):
+    try:
+        config.validate_replacement()
+    except ValueError:
         _fatal(
-            'Replacement string contains characters outside the allowed set.\n'
-            '  Value: %r\n'
-            '  Use only alphanumeric characters, underscores, and hyphens.',
+            'Replacement string is empty or contains characters outside the '
+            'allowed set.\n  Value: %r\n  Use only alphanumeric characters, '
+            'underscores, and hyphens (at least one).',
             config.custom_replacement,
         )
 
@@ -410,9 +449,8 @@ def _validate_target(target: str) -> Path:
     target_resolved_path = Path(target).resolve()
     resolved = str(target_resolved_path)
 
-    if (
-        resolved in _PROTECTED_DIRS_RESOLVED
-        or (sys.platform == 'win32' and len(resolved) == 3 and resolved[1:] == ':\\')
+    if resolved in _PROTECTED_DIRS_RESOLVED or (
+        sys.platform == 'win32' and len(resolved) == 3 and resolved[1:] == ':\\'
     ):
         _fatal(
             'refusing to scan system directory: %s\n'
@@ -435,10 +473,8 @@ def _validate_target(target: str) -> Path:
 def _print_banner(target_resolved_path: Path) -> None:
     """Emit the scan-start banner and the network-mount warning if relevant."""
     print(f'Scanning: {target_resolved_path}', file=sys.stderr)
-    print('  Note: Credactor scans forward (into subdirectories) only.',
-          file=sys.stderr)
-    print('  For best results, point it at your project root directory.',
-          file=sys.stderr)
+    print('  Note: Credactor scans forward (into subdirectories) only.', file=sys.stderr)
+    print('  For best results, point it at your project root directory.', file=sys.stderr)
     resolved = str(target_resolved_path)
     if resolved.startswith(('/mnt/', '/media/', '/Volumes/', '/net/')):
         logger.warning(
@@ -454,8 +490,10 @@ def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int
     # document, so every human-facing line here goes to stderr instead.
     out = sys.stdout if config.output_format == 'text' else sys.stderr
     by_file = group_by_file(findings)
-    print(f'\n  --fix-all will modify {len(by_file)} file(s) '
-          f'with {len(findings)} replacement(s).', file=out)
+    print(
+        f'\n  --fix-all will modify {len(by_file)} file(s) with {len(findings)} replacement(s).',
+        file=out,
+    )
     if not config.no_backup:
         print('  .bak backups will be created (contain original secrets).', file=out)
     else:
@@ -473,8 +511,9 @@ def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int
     elif sys.stdin is None or not sys.stdin.isatty():
         # A pipe whose first line starts with 'y' would otherwise answer the
         # confirmation below — scripts must opt in explicitly with --yes.
-        print('  Aborted: confirmation requires a TTY — pass --yes for '
-              'non-interactive use.', file=out)
+        print(
+            '  Aborted: confirmation requires a TTY — pass --yes for non-interactive use.', file=out
+        )
         sys.exit(1)
     else:
         try:
@@ -535,7 +574,9 @@ def _collect_findings(
             return [], [target]
 
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
-        target, config=config, allowlist=allowlist,
+        target,
+        config=config,
+        allowlist=allowlist,
     )
 
     if config.output_format == 'text':
@@ -543,8 +584,11 @@ def _collect_findings(
         # Avoid a false-clean impression: .json files are collected but only
         # scanned under --scan-json, so flag that the type was held back.
         if not config.scan_json and json_files:
-            print(f'  [note] {len(json_files)} .json file(s) present but not scanned — '
-                  f'pass --scan-json to include them.', file=sys.stderr)
+            print(
+                f'  [note] {len(json_files)} .json file(s) present but not scanned — '
+                f'pass --scan-json to include them.',
+                file=sys.stderr,
+            )
 
     if config.scan_json and json_files:
         # --scan-json is already the explicit opt-in, so scan every collected
@@ -582,7 +626,8 @@ def _ingest_external(
         return allowlist.is_suppressed(f['file'], f['line'], f['full_value'])
 
     def _ingest_one(
-        name: str, report_path: str,
+        name: str,
+        report_path: str,
         ingest_fn: Callable[[str, str], list[Finding]],
     ) -> None:
         if not Path(report_path).is_file():
@@ -592,7 +637,8 @@ def _ingest_external(
                 '--from-%s requires a directory target, not a file. '
                 'Pass the repository root directory so that file paths in the '
                 '%s report can be resolved correctly.',
-                name.lower(), name,
+                name.lower(),
+                name,
             )
         try:
             ext = ingest_fn(report_path, target)
@@ -631,6 +677,25 @@ def _main_inner(argv: list[str] | None = None) -> None:
         _fatal('%s', exc)
     if file_data:
         apply_config_file(config, file_data)
+
+    # S9: an explicit CLI --from-* overrides a same-kind .credactor.toml
+    # [ingest] entry (precedence CLI > config > default, consistent with
+    # --replacement and every other setting). argparse default is None, so a
+    # non-None value means the flag was actually passed; re-assert it here
+    # because apply_config_file above may have replaced it with the config
+    # value. Done before _validate_invocation so validation sees the final
+    # effective config. An explicitly-empty value (e.g. --from-gitleaks "" from
+    # an unset shell var) is a fatal user error, not a silent no-op: it must
+    # not swallow ingest or clobber a config source into a false-clean exit 0
+    # (parity with --replacement "", which is also fatal).
+    if args.from_gitleaks is not None:
+        if not args.from_gitleaks:
+            _fatal('--from-gitleaks requires a non-empty report path')
+        config.from_gitleaks = args.from_gitleaks
+    if args.from_trufflehog is not None:
+        if not args.from_trufflehog:
+            _fatal('--from-trufflehog requires a non-empty report path')
+        config.from_trufflehog = args.from_trufflehog
 
     # Validate invocation flags AFTER the config file is applied so a
     # .credactor.toml [ingest] table can't slip past the --scan-history/ingest

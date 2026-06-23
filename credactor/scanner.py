@@ -43,7 +43,8 @@ _MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 # Function call heuristic: identifier(...) complete call
 _FUNC_CALL_RE = re.compile(
-    r'^[a-zA-Z_][\w.]*\(.*\)$', re.DOTALL,
+    r'^[a-zA-Z_][\w.]*\(.*\)$',
+    re.DOTALL,
 )
 
 # Truncated function call: unquoted capture stopped mid-call, e.g. "func(arg,"
@@ -61,15 +62,36 @@ _DOTTED_ACCESS_RE = re.compile(
 
 # Placeholder words commonly found in example/template config values
 _PLACEHOLDER_WORDS = {
-    'change', 'replace', 'your', 'here', 'insert',
-    'update', 'fill', 'set', 'put', 'add', 'todo',
-    'fixme', 'example', 'sample', 'default', 'enter',
+    'change',
+    'replace',
+    'your',
+    'here',
+    'insert',
+    'update',
+    'fill',
+    'set',
+    'put',
+    'add',
+    'todo',
+    'fixme',
+    'example',
+    'sample',
+    'default',
+    'enter',
 }
 
 # Strong single-word indicators that never appear in real credentials
-_STRONG_PLACEHOLDER_WORDS = frozenset({
-    'changeme', 'placeholder', 'replace', 'fixme', 'todo', 'change', 'insert',
-})
+_STRONG_PLACEHOLDER_WORDS = frozenset(
+    {
+        'changeme',
+        'placeholder',
+        'replace',
+        'fixme',
+        'todo',
+        'change',
+        'insert',
+    }
+)
 
 # Hash/encrypted value prefixes — these store derived values, not raw secrets
 _HASH_PREFIX_RE = re.compile(
@@ -78,8 +100,14 @@ _HASH_PREFIX_RE = re.compile(
 
 # Variable name suffixes indicating stored hashes, not raw credentials
 _HASH_VAR_SUFFIXES = (
-    '_hash', '_hashed', '_digest', '_checksum',
-    '_fingerprint', '_hmac', '_encrypted', '_cipher',
+    '_hash',
+    '_hashed',
+    '_digest',
+    '_checksum',
+    '_fingerprint',
+    '_hmac',
+    '_encrypted',
+    '_cipher',
 )
 
 # Cap line length to prevent regex backtracking on adversarial input
@@ -89,20 +117,71 @@ _MAX_LINE_LENGTH = 4096
 # Cap multiline block size to prevent ReDoS on huge triple-quoted strings.
 _MAX_BLOCK_SIZE = 8192
 
-# Line-level context check: if the line assigns to a hash/digest variable,
-# hex values on that line are likely hash outputs, not raw credentials
+# Key-scoped context check: a hex/base64 value whose OWN assignment key looks
+# like a hash/digest/checksum/commit/integrity/revision field is a hash output,
+# not a raw credential, so the quoted hex/Base64 value detectors skip it. S3: the
+# widened name set stops --fix-all auto-rewriting commit SHAs, SRI integrity
+# hashes, and checksums (which would silently corrupt code).
+#
+# SCAN-1: the terms are matched against the key bound to the matched value only
+# (extracted by _HASH_KEY_RE), NOT line-global, so (a) a hash key on one part of
+# a multi-assignment line cannot suppress an unrelated secret elsewhere, and (b)
+# a credential keyword in the key (see _CRED_KEYWORDS) vetoes the suppression so
+# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit
+# still flag — the credential keyword takes precedence (matches the manual).
 _HASH_CONTEXT_RE = re.compile(
-    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|md5)\s*[:=]',
+    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|md5'
+    r'|commit|integrity|checksum|digest|rev|sri)$',
     re.IGNORECASE,
 )
+
+# Capture the assignment key immediately preceding a value's opening quote, i.e.
+# the trailing `KEY :=/=/:` of the text before the value. Anchored at the end so
+# it isolates the single key bound to THIS value on a multi-assignment line.
+_HASH_KEY_RE = re.compile(
+    r'["\']?(?P<key>[\w.\-]{1,128})["\']?\s*(?::=|[:=])\s*$',
+)
+
+# SCAN-1: credential keywords whose presence ANYWHERE in the key vetoes the
+# hash-context suppression (the credential keyword takes precedence per the
+# manual). These are plain substrings — unlike CRED_VAR_PATTERNS' \b-anchored
+# alternatives — so a credential-keyed name with a hash-ish suffix such as
+# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit /
+# token_integrity is correctly NOT treated as a hash and flags again (as on
+# origin/main). None of the genuine hash keys (commit/checksum/digest/integrity/
+# md5/sha256/*_hash/git_rev) contains one of these, so they still suppress.
+_CRED_KEYWORDS = (
+    'api',
+    'key',
+    'token',
+    'secret',
+    'password',
+    'passwd',
+    'passphrase',
+    'pwd',
+    'auth',
+    'cred',
+    'oauth',
+    'private',
+    'bearer',
+)
+
+# The two entropy-based value detectors share the same extra guards (path/slash +
+# quote-prefix, then hash-context suppression). Named once so the guard block and
+# its membership test cannot drift apart.
+_HEURISTIC_VALUE_LABELS = ('hex credential', 'high-entropy string')
 
 # POSIX env var name — used by the bare $VAR safe-value check.
 _ENV_VAR_NAME_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
-def _is_safe_value(val: str, extra_safe: set[str] | None = None,
-                   *, skip_dotted_access: bool = False,
-                   safe_values: set[str] | None = None) -> bool:
+def _is_safe_value(
+    val: str,
+    extra_safe: set[str] | None = None,
+    *,
+    skip_dotted_access: bool = False,
+    safe_values: set[str] | None = None,
+) -> bool:
     """Return True if the value is clearly NOT a real hardcoded credential.
 
     ``skip_dotted_access`` (L1): when True, the dotted-property-access heuristic
@@ -118,8 +197,11 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None,
     raw = val.strip()
     cleaned = raw.lower().strip('"\'')
 
-    safe = safe_values if safe_values is not None else (
-        SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES)
+    safe = (
+        safe_values
+        if safe_values is not None
+        else (SAFE_VALUES | extra_safe if extra_safe else SAFE_VALUES)
+    )
     if cleaned in safe:
         return True
 
@@ -168,8 +250,7 @@ def _is_safe_value(val: str, extra_safe: set[str] | None = None,
 
     # File paths: ./, ~/, Windows drive letter
     # NOTE: bare / prefix is NOT safe (could hide creds); require ./ or ~/
-    if (cleaned.startswith(('./', '~/'))
-            or (len(cleaned) >= 3 and cleaned[1:3] in (':\\', ':/'))):
+    if cleaned.startswith(('./', '~/')) or (len(cleaned) >= 3 and cleaned[1:3] in (':\\', ':/')):
         return True
 
     # URLs without embedded credentials
@@ -203,6 +284,25 @@ def _is_password_family(var_name: str) -> bool:
     return any(kw in low for kw in _PASSWORD_VAR_KEYWORDS)
 
 
+def _is_hash_context_at(line: str, value_start: int) -> bool:
+    """True if the heuristic hex/Base64 value at ``value_start`` is keyed like a
+    hash/digest/commit/integrity field (a hash output, not a raw credential).
+
+    SCAN-1: the key is taken from the single assignment immediately preceding the
+    value's opening quote — scoped to THIS value, not line-global — so a hash key
+    elsewhere on a multi-assignment line cannot suppress an unrelated secret. A
+    credential keyword anywhere in the key vetoes the suppression (the credential
+    keyword takes precedence), so api_key_rev / token_rev / private_key_rev /
+    oauth_token_sri / api_key_commit still flag as on origin/main."""
+    key_match = _HASH_KEY_RE.search(line[:value_start])
+    if key_match is None:
+        return False
+    key = key_match.group('key').lower()
+    if any(kw in key for kw in _CRED_KEYWORDS):
+        return False
+    return bool(_HASH_CONTEXT_RE.search(key))
+
+
 def _severity_for_variable(var_name: str) -> str:
     """Assign severity based on the variable name pattern."""
     low = var_name.lower()
@@ -216,27 +316,36 @@ def _severity_for_variable(var_name: str) -> str:
 
 
 def _make_finding(
-    filepath: str, lineno: int, *,
-    type: str, severity: str, value: str, raw: str,
+    filepath: str,
+    lineno: int,
+    *,
+    type: str,
+    severity: str,
+    value: str,
+    raw: str,
 ) -> Finding:
     """Build the shared 7-key Finding dict (preview computed once via utils)."""
     return {
-        'file':          filepath,
-        'line':          lineno,
-        'type':          type,
-        'severity':      severity,
-        'full_value':    value,
+        'file': filepath,
+        'line': lineno,
+        'type': type,
+        'severity': severity,
+        'full_value': value,
         'value_preview': preview(value),
-        'raw':           raw,
+        'raw': raw,
     }
 
 
 def _evaluate_candidate(
-    val: str, *,
-    min_len: int, floor: float,
-    filepath: str, lineno: int,
+    val: str,
+    *,
+    min_len: int,
+    floor: float,
+    filepath: str,
+    lineno: int,
     allowlist: AllowList | None,
-    skip_dotted_access: bool = False, allow_short: bool = False,
+    skip_dotted_access: bool = False,
+    allow_short: bool = False,
     safe_values: set[str] | None = None,
 ) -> str | None:
     """Run the shared four-step acceptance gate and return *val* if it should be
@@ -301,8 +410,6 @@ def scan_line(
     candidates: list[tuple[int, int, Finding]] = []
 
     # --- 1. High-value VALUE_PATTERNS scan ---
-    # #35: _HASH_CONTEXT_RE is line-invariant — evaluate it at most once, lazily.
-    hash_context: bool | None = None
     for pattern, label, min_ent, severity in VALUE_PATTERNS:
         # M3: on comment lines, scan only the deterministic provider prefixes
         # (critical severity — AWS/GCP/Stripe-live/GitHub/.../PEM, near-zero
@@ -314,37 +421,50 @@ def scan_line(
         for match in pattern.finditer(line):
             val = match.group(0)
 
-            # high-entropy / hex credential: additional path/slash guard
-            if label in ('high-entropy string', 'hex credential'):
+            # high-entropy / hex credential value detectors: a path/slash +
+            # quote-prefix guard, then suppression when the line keys a hash.
+            if label in _HEURISTIC_VALUE_LABELS:
                 if val.count('/') > 2:
                     continue
                 start = match.start()
                 if start == 0 or line[start - 1] not in ('"', "'"):
                     continue
-
-            # hex/high-entropy: skip if line contains a hash/digest variable
-            if label in ('hex credential', 'high-entropy string'):
-                if hash_context is None:
-                    hash_context = bool(_HASH_CONTEXT_RE.search(line))
-                if hash_context:
+                # SCAN-1: suppress only when THIS value's own key is a hash key
+                # (and not a credential key) — scoped, not line-global.
+                if _is_hash_context_at(line, start - 1):
                     logger.debug('%s:%d suppressed by hash context', filepath, lineno)
                     continue
 
             # L1: a compact JWT (3 segments <=40 chars) matches _DOTTED_ACCESS_RE
             # inside _is_safe_value; bypass that one heuristic for JWT tokens only.
             accepted = _evaluate_candidate(
-                val, min_len=min_len, floor=min_ent,
-                filepath=filepath, lineno=lineno,
+                val,
+                min_len=min_len,
+                floor=min_ent,
+                filepath=filepath,
+                lineno=lineno,
                 allowlist=allowlist,
                 skip_dotted_access=(label == 'JWT token'),
                 allow_short=(severity == 'critical'),
-                safe_values=safe_set)
+                safe_values=safe_set,
+            )
             if accepted is None:
                 continue
 
-            candidates.append((match.start(), match.end(), _make_finding(
-                filepath, lineno, type=f'pattern:{label}',
-                severity=severity, value=val, raw=line.rstrip())))
+            candidates.append(
+                (
+                    match.start(),
+                    match.end(),
+                    _make_finding(
+                        filepath,
+                        lineno,
+                        type=f'pattern:{label}',
+                        severity=severity,
+                        value=val,
+                        raw=line.rstrip(),
+                    ),
+                )
+            )
 
     # --- 2. XML attribute check (#21) ---
     if not is_comment:
@@ -353,16 +473,33 @@ def scan_line(
                 continue
             # Gate on the stripped value (matches the prior length/entropy checks);
             # the Finding still stores the full xml_val for redaction matching.
-            if _evaluate_candidate(
-                    xml_val.strip(), min_len=min_len, floor=ent_threshold,
-                    filepath=filepath, lineno=lineno,
+            if (
+                _evaluate_candidate(
+                    xml_val.strip(),
+                    min_len=min_len,
+                    floor=ent_threshold,
+                    filepath=filepath,
+                    lineno=lineno,
                     allowlist=allowlist,
-                    safe_values=safe_set) is None:
+                    safe_values=safe_set,
+                )
+                is None
+            ):
                 continue
-            candidates.append((xml_span[0], xml_span[1], _make_finding(
-                filepath, lineno, type=f'xml-attr:{xml_key}',
-                severity=_severity_for_variable(xml_key),
-                value=xml_val, raw=line.rstrip())))
+            candidates.append(
+                (
+                    xml_span[0],
+                    xml_span[1],
+                    _make_finding(
+                        filepath,
+                        lineno,
+                        type=f'xml-attr:{xml_key}',
+                        severity=_severity_for_variable(xml_key),
+                        value=xml_val,
+                        raw=line.rstrip(),
+                    ),
+                )
+            )
 
     # --- 3. Assignment check ---
     # L2: pass 3 is skipped (not early-returned) under these conditions so passes
@@ -396,19 +533,39 @@ def scan_line(
             val_stripped = val.strip()
             # H7: a password-family variable gets a lower entropy floor so memorable
             # weak passwords (e.g. "Summer2024!") are not silently dropped.
-            floor = (min(ent_threshold, PASSWORD_ENTROPY_FLOOR)
-                     if _is_password_family(var) else ent_threshold)
-            if _evaluate_candidate(
-                    val_stripped, min_len=min_len, floor=floor,
-                    filepath=filepath, lineno=lineno,
+            floor = (
+                min(ent_threshold, PASSWORD_ENTROPY_FLOOR)
+                if _is_password_family(var)
+                else ent_threshold
+            )
+            if (
+                _evaluate_candidate(
+                    val_stripped,
+                    min_len=min_len,
+                    floor=floor,
+                    filepath=filepath,
+                    lineno=lineno,
                     allowlist=allowlist,
-                    safe_values=safe_set) is None:
+                    safe_values=safe_set,
+                )
+                is None
+            ):
                 continue
 
-            candidates.append((match.start(grp), match.end(grp), _make_finding(
-                filepath, lineno, type=f'variable:{var}',
-                severity=_severity_for_variable(var),
-                value=val_stripped, raw=line.rstrip())))
+            candidates.append(
+                (
+                    match.start(grp),
+                    match.end(grp),
+                    _make_finding(
+                        filepath,
+                        lineno,
+                        type=f'variable:{var}',
+                        severity=_severity_for_variable(var),
+                        value=val_stripped,
+                        raw=line.rstrip(),
+                    ),
+                )
+            )
 
     return _dedup_findings(candidates)
 
@@ -455,7 +612,9 @@ def scan_file(
         if file_size > _MAX_FILE_SIZE:
             logger.warning(
                 'Skipping %s: file too large (%.1f MB > %.0f MB limit)',
-                filepath, file_size / 1024 / 1024, _MAX_FILE_SIZE / 1024 / 1024,
+                filepath,
+                file_size / 1024 / 1024,
+                _MAX_FILE_SIZE / 1024 / 1024,
             )
             return []
     except OSError:
@@ -504,7 +663,9 @@ def scan_lines(
         logger.warning(
             '%s: %d line(s) longer than %d chars \u2014 content past that limit '
             'was not scanned by per-line matching',
-            filepath, truncated, _MAX_LINE_LENGTH,
+            filepath,
+            truncated,
+            _MAX_LINE_LENGTH,
         )
 
     # PEM private key block detection (multi-line)
@@ -519,14 +680,22 @@ def scan_lines(
                 continue
             # L11: the PEM-block suppression was previously absent from the
             # --verbose audit trail — log which allowlist rule fired.
-            reason = (allowlist.suppression_reason(filepath, lineno, line.strip())
-                      if allowlist else None)
+            reason = (
+                allowlist.suppression_reason(filepath, lineno, line.strip()) if allowlist else None
+            )
             if reason:
                 logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
                 continue
-            findings.append(_make_finding(
-                filepath, lineno, type='pattern:private key block',
-                severity='critical', value=line.strip(), raw=line.rstrip()))
+            findings.append(
+                _make_finding(
+                    filepath,
+                    lineno,
+                    type='pattern:private key block',
+                    severity='critical',
+                    value=line.strip(),
+                    raw=line.rstrip(),
+                )
+            )
         elif in_pem_block and '-----END' in line and 'PRIVATE KEY' in line:
             in_pem_block = False
             pem_block_lines = 0
@@ -537,15 +706,17 @@ def scan_lines(
                 pem_block_lines = 0
                 logger.warning(
                     '%s:%d: unclosed PEM block (>%d lines) — resuming scan',
-                    filepath, lineno, _MAX_PEM_BLOCK_LINES,
+                    filepath,
+                    lineno,
+                    _MAX_PEM_BLOCK_LINES,
                 )
-                findings.extend(scan_line(lineno, line, filepath,
-                                          config=config, allowlist=allowlist))
+                findings.extend(
+                    scan_line(lineno, line, filepath, config=config, allowlist=allowlist)
+                )
             else:
                 continue  # skip lines inside PEM block
         else:
-            findings.extend(scan_line(lineno, line, filepath,
-                                      config=config, allowlist=allowlist))
+            findings.extend(scan_line(lineno, line, filepath, config=config, allowlist=allowlist))
 
     # basic multi-line detection: triple-quoted strings in Python
     _scan_multiline_strings(filepath, lines, findings, config, allowlist)
@@ -583,7 +754,7 @@ def _scan_multiline_strings(
             end_idx = full_text.find(close_delim, idx + len(open_delim))
             if end_idx < 0:
                 break  # no more closing delimiters — done with this delimiter type
-            block = full_text[idx + len(open_delim):end_idx]
+            block = full_text[idx + len(open_delim) : end_idx]
             if len(block) > _MAX_BLOCK_SIZE:
                 block = block[:_MAX_BLOCK_SIZE]
             # Determine line number of the opening delimiter
@@ -596,17 +767,30 @@ def _scan_multiline_strings(
             for pattern, label, min_ent, severity in VALUE_PATTERNS:
                 for match in pattern.finditer(block):
                     val = match.group(0)
-                    if _evaluate_candidate(
-                            val, min_len=min_len, floor=min_ent,
-                            filepath=filepath, lineno=block_lineno,
+                    if (
+                        _evaluate_candidate(
+                            val,
+                            min_len=min_len,
+                            floor=min_ent,
+                            filepath=filepath,
+                            lineno=block_lineno,
                             allowlist=allowlist,
                             allow_short=(severity == 'critical'),
-                            safe_values=safe_set) is None:
+                            safe_values=safe_set,
+                        )
+                        is None
+                    ):
                         continue
-                    existing_findings.append(_make_finding(
-                        filepath, block_lineno, type=f'multiline:{label}',
-                        severity=severity, value=val,
-                        raw=block.replace('\n', '\\n')[:120]))
+                    existing_findings.append(
+                        _make_finding(
+                            filepath,
+                            block_lineno,
+                            type=f'multiline:{label}',
+                            severity=severity,
+                            value=val,
+                            raw=block.replace('\n', '\\n')[:120],
+                        )
+                    )
                     break  # one finding per block is enough
 
             start = end_idx + len(close_delim)

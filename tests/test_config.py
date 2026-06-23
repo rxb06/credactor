@@ -34,6 +34,30 @@ class TestConfigPostInit:
         with pytest.raises(ValueError, match='output_format'):
             Config(output_format='xml')
 
+    def test_validate_replacement_rejects_empty_and_bad_chars(self):
+        # S6: data-layer validation of custom_replacement (charset + non-empty),
+        # gated on the mode that consumes it (sentinel/custom).
+        with pytest.raises(ValueError, match='custom_replacement'):
+            Config(replace_mode='custom', custom_replacement='').validate_replacement()
+        with pytest.raises(ValueError, match='custom_replacement'):
+            Config(replace_mode='custom', custom_replacement='bad;rm').validate_replacement()
+        # valid value, and env mode (which derives names), do not raise
+        Config(replace_mode='custom', custom_replacement='OK-1_x').validate_replacement()
+        Config(replace_mode='env', custom_replacement='ignored;here').validate_replacement()
+
+    def test_toml_replacement_charset_validated(self):
+        # S6 (plan step 2.2): a .credactor.toml that sets a dangerous
+        # 'replacement' must not smuggle an unsafe string into file writes.
+        # apply_config_file applies the raw TOML value to custom_replacement; the
+        # shared validate_replacement() (also run at the CLI front door and the
+        # redactor sink) rejects it — so the TOML-application path is covered,
+        # not only the direct-construction case above.
+        cfg = Config(replace_mode='custom')
+        apply_config_file(cfg, {'replacement': 'bad;rm -rf'})
+        assert cfg.custom_replacement == 'bad;rm -rf'  # raw TOML value applied
+        with pytest.raises(ValueError, match='custom_replacement'):
+            cfg.validate_replacement()  # ...but rejected on validate
+
     def test_accepts_valid_extremes(self):
         Config(entropy_threshold=0.0, min_value_length=1)
         Config(entropy_threshold=6.0, min_value_length=200)
@@ -144,7 +168,7 @@ class TestLoadConfigFile:
         # repo down. It warns and falls back to defaults (no raise).
         with open(os.path.join(tmp_dir, '.credactor.toml'), 'w') as f:
             f.write('min_value_length = = 9\n')
-        result = load_config_file(tmp_dir)          # implicit discovery
+        result = load_config_file(tmp_dir)  # implicit discovery
         assert result == {}
         assert 'invalid toml' in credactor_caplog.text.lower()
 
@@ -174,29 +198,37 @@ class TestApplyConfigFile:
         c = Config()
         apply_config_file(c, {'entropy_threshold': 'not-a-number'})
         assert c.entropy_threshold == 3.5
-        assert any('entropy_threshold' in r.message and 'invalid type' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'entropy_threshold' in r.message and 'invalid type' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_apply_entropy_out_of_range_uses_default(self, credactor_caplog):
         c = Config()
         apply_config_file(c, {'entropy_threshold': 99.0})
         assert c.entropy_threshold == 3.5
-        assert any('entropy_threshold' in r.message and 'out of valid range' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'entropy_threshold' in r.message and 'out of valid range' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_apply_min_value_length_invalid_type_uses_default(self, credactor_caplog):
         c = Config()
         apply_config_file(c, {'min_value_length': 'not-a-number'})
         assert c.min_value_length == 8
-        assert any('min_value_length' in r.message and 'invalid type' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'min_value_length' in r.message and 'invalid type' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_apply_min_value_length_out_of_range_uses_default(self, credactor_caplog):
         c = Config()
         apply_config_file(c, {'min_value_length': 9999})
         assert c.min_value_length == 8
-        assert any('min_value_length' in r.message and 'out of valid range' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'min_value_length' in r.message and 'out of valid range' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_apply_skip_dirs(self):
         c = Config()
@@ -224,16 +256,20 @@ class TestApplyConfigFile:
         c = Config()
         apply_config_file(c, {'extra_safe_values': [123, 'OK']})
         assert c.extra_safe_values == {'ok'}
-        assert any('extra_safe_values' in r.message and 'not a string' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'extra_safe_values' in r.message and 'not a string' in r.message
+            for r in credactor_caplog.records
+        )
 
     # M9: a bare string is rejected whole, not char-split into single letters
     def test_list_key_given_string_is_rejected(self, credactor_caplog):
         c = Config()
         apply_config_file(c, {'skip_dirs': 'vendor'})
         assert c.skip_dirs == set()
-        assert any('skip_dirs' in r.message and 'list of strings' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'skip_dirs' in r.message and 'list of strings' in r.message
+            for r in credactor_caplog.records
+        )
 
     # M9: a non-iterable scalar is rejected instead of raising TypeError
     def test_list_key_given_scalar_is_rejected(self, credactor_caplog):
@@ -251,6 +287,7 @@ class TestApplyConfigFile:
     # M15: extra_extensions entries are lowercased to match the lowercased suffix
     def test_extra_extensions_lowercased(self):
         from credactor.scanner import should_scan_file
+
         c = Config()
         apply_config_file(c, {'extra_extensions': ['.TXT']})
         assert should_scan_file('foo.txt', c.extra_extensions)
@@ -260,8 +297,10 @@ class TestApplyConfigFile:
     def test_extra_extensions_no_leading_dot_warns(self, credactor_caplog):
         c = Config()
         apply_config_file(c, {'extra_extensions': ['txt']})
-        assert any('extra_extensions' in r.message and 'leading dot' in r.message
-                   for r in credactor_caplog.records)
+        assert any(
+            'extra_extensions' in r.message and 'leading dot' in r.message
+            for r in credactor_caplog.records
+        )
 
     def test_extra_extensions_dotted_does_not_warn(self, credactor_caplog):
         c = Config()
@@ -272,6 +311,7 @@ class TestApplyConfigFile:
     # — `dockerfile` still matches a file named Dockerfile but not *.dockerfile.
     def test_extra_extensions_name_match_preserved(self):
         from credactor.scanner import should_scan_file
+
         c = Config()
         apply_config_file(c, {'extra_extensions': ['dockerfile']})
         assert should_scan_file('Dockerfile', c.extra_extensions)
@@ -293,25 +333,26 @@ class TestApplyConfigFile:
         c = Config()
         apply_config_file(c, {'entropy_treshold': 3.0})
         assert c.entropy_threshold == ENTROPY_DEFAULT  # typo did not take effect
-        assert any('entropy_treshold' in r.message
-                   for r in credactor_caplog.records)
+        assert any('entropy_treshold' in r.message for r in credactor_caplog.records)
 
     def test_known_keys_do_not_warn_as_unknown(self, credactor_caplog):
         # All eight consumed keys at once — a key dropped from _KNOWN_KEYS (or
         # a future consumed key not added to it) would warn spuriously here.
         c = Config()
-        apply_config_file(c, {
-            'entropy_threshold': 4.0,
-            'min_value_length': 10,
-            'skip_dirs': ['vendor'],
-            'skip_files': ['generated.py'],
-            'extra_extensions': ['.dockerfile'],
-            'extra_safe_values': ['sample'],
-            'replacement': 'GONE',
-            'ingest': {'from_gitleaks': 'r.json'},
-        })
-        assert not any('Unknown config key' in r.message
-                       for r in credactor_caplog.records)
+        apply_config_file(
+            c,
+            {
+                'entropy_threshold': 4.0,
+                'min_value_length': 10,
+                'skip_dirs': ['vendor'],
+                'skip_files': ['generated.py'],
+                'extra_extensions': ['.dockerfile'],
+                'extra_safe_values': ['sample'],
+                'replacement': 'GONE',
+                'ingest': {'from_gitleaks': 'r.json'},
+            },
+        )
+        assert not any('Unknown config key' in r.message for r in credactor_caplog.records)
 
     def test_merges_with_existing(self):
         c = Config(skip_dirs={'existing'})
@@ -363,8 +404,7 @@ class TestApplyConfigFile:
         # means ingestion silently never runs.
         c = Config()
         apply_config_file(c, {'ingest': {'from_gitleeks': 'r.json'}})
-        assert any("ingest.from_gitleeks" in r.message
-                   for r in credactor_caplog.records)
+        assert any('ingest.from_gitleeks' in r.message for r in credactor_caplog.records)
 
     def test_apply_unknown_ingest_keys_ignored(self):
         c = Config()
@@ -379,8 +419,7 @@ class TestReplacementValidation:
         c = Config()
         apply_config_file(c, {'replacement': 123})
         assert c.custom_replacement == 'REDACTED_BY_CREDACTOR'
-        assert any('replacement must be a string' in r.message
-                   for r in credactor_caplog.records)
+        assert any('replacement must be a string' in r.message for r in credactor_caplog.records)
 
     def test_string_replacement_applied(self):
         c = Config()
@@ -397,6 +436,7 @@ def test_threshold_defaults_single_sourced():
         ENTROPY_DEFAULT,
         MIN_LEN_DEFAULT,
     )
+
     defaults = {key: default for key, _coerce, _bounds, default in _SCALAR_VALIDATORS}
     assert Config().entropy_threshold == ENTROPY_DEFAULT == defaults['entropy_threshold']
     assert Config().min_value_length == MIN_LEN_DEFAULT == defaults['min_value_length']

@@ -12,8 +12,9 @@ dev: ## Install with dev dependencies
 test: ## Run tests
 	python -m pytest tests/ -v
 
-lint: ## Run linter and type checker (same checks as CI)
+lint: ## Run linter, formatter check, and type checker (same checks as CI)
 	ruff check credactor/ tests/ scripts/
+	ruff format --check credactor/ tests/ scripts/
 	mypy credactor/ scripts/
 
 scan: ## Run credactor on the project

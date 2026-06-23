@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects the 2.4.1 release. For limitations and safe usage see the
+Reflects Credactor 2.5.0 (unreleased; see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -219,9 +219,12 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   finding (a `ghp_…` token) → `os.environ["GITHUB_TOKEN"]`. Verified for Python
   (`os.environ[...]`), JS (`process.env[...]`), Ruby (`ENV[...]`); Java/Go/PHP
   forms are covered by the test suite.
-- **Replacement is validated** (allowlist `[A-Za-z0-9_-]`): a dangerous value
+- **Replacement is validated** (allowlist `[A-Za-z0-9_-]+`): a dangerous value
   (`bad;rm -rf`, markup, newlines, control chars) is **rejected with exit 2**
-  (verified). This guards against injection into rewritten files.
+  (verified). This guards against injection into rewritten files. An **empty**
+  `--replacement` (e.g. from an unset shell variable) is **also rejected with
+  exit 2**: the allowlist requires `+` (one or more), so an empty value cannot
+  silently excise the secret with no marker.
 - Env-mode output is syntactically valid: a redacted `.py`/`.js`/`.rb` still
   parses (verified). Note it emits an env **reference** (e.g. `os.environ["KEY"]`),
   not the import it needs — add the matching import (e.g. `import os`) if the file
@@ -230,10 +233,17 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   quoted assignment — a bare token on its own line, or a secret embedded in a
   larger string (a `Bearer` header, a connection URL): inserting a code
   expression there would break syntax, so the value becomes
-  `REDACTED_BY_CREDACTOR` instead. Such findings still count as *replaced*.
+  `REDACTED_BY_CREDACTOR` instead. This sentinel fallback applies to the
+  **language file types** (`.py`, `.js`, `.rb`), whose env reference is a code
+  expression (`os.environ[…]`, `process.env[…]`, `ENV[…]`). In
+  shell/config/plain-text file types (`.sh`, `.env`, `.yaml`, `.txt`) the env
+  reference is the shell-style `${VAR}` form, which is valid in place, so a bare
+  token there is rewritten to `${VAR}` (e.g. `${GITHUB_TOKEN}`) — and a quoted
+  assignment keeps its quotes (`token = "${GITHUB_TOKEN}"`) — rather than the
+  sentinel. Such findings still count as *replaced*.
   The duplicate-copy sweep also uses the sentinel in env mode, so a single
-  env-mode run can legitimately leave a mix of `os.environ[…]` and sentinel
-  styles in one file.
+  env-mode run can legitimately leave a mix of `os.environ[…]` / `${…}` and
+  sentinel styles in one file.
 - **The duplicate-copy sweep never overrides an adjudication.** When a
   rewritten file still holds exact copies of a redacted value beyond the
   adjudicated findings (e.g. a detector deduplicated a repeated value, or a
@@ -259,7 +269,7 @@ it. Verified behaviour:
 |-------|--------------------|------------------|-----------------|
 | *(default)* | yes (contains the original secret) | next to the file | kept — delete manually |
 | `--no-backup` | **no** | — | original is lost unless in git |
-| `--secure-backup-dir DIR` | no | moved into `DIR` | kept in `DIR` |
+| `--secure-backup-dir DIR` | no | written into `DIR` as `<name>.<hash>.bak` | kept in `DIR` |
 | `--secure-delete` | created then wiped | next to the file | overwritten with random bytes, deleted |
 
 - **`--secure-backup-dir` fails closed.** If the directory is unwritable, or its
@@ -283,6 +293,18 @@ The `.bak` is your undo (verified):
 ```bash
 diff src/config.py.bak src/config.py   # see exactly what changed
 mv   src/config.py.bak src/config.py   # restore the original
+```
+
+With `--secure-backup-dir DIR`, the backup lives in `DIR` rather than beside the
+file, and its name carries a short hash of the original path
+(`config.py.<hash>.bak`) so two files with the same basename in different
+directories never overwrite each other's backup. Recover by matching on that
+basename (use `diff` to confirm the right copy before restoring):
+
+```bash
+ls DIR/config.py.*.bak                          # find the backup(s) for that file
+diff DIR/config.py.<hash>.bak src/config.py     # confirm it is the right copy
+cp   DIR/config.py.<hash>.bak src/config.py     # restore the original
 ```
 
 With `--no-backup` or `--secure-delete` there is no `.bak` — recover from git:
@@ -319,7 +341,7 @@ journaling filesystems.
 - **Encoding** — UTF-8 (including BOM), Latin-1, and UTF-16 with an
   ASCII-dominant payload (with or without BOM — recognised by its NUL
   byte-parity signature) work out of the box. ⚠ Other encodings (e.g. UTF-32,
-  mixed-script UTF-16) need the optional `charset-normalizer` / `chardet`
+  mixed-script UTF-16) need the optional `charset-normalizer` (`[encoding]`)
   extra (`pip install 'credactor[encoding]'`). Without it such a file is read
   as Latin-1 and its secrets can be missed — but Credactor prints a `[WARN]`
   whenever it cannot confirm a file's encoding and falls back to Latin-1, so
@@ -459,8 +481,9 @@ breadcrumbs name the kind: `inline`, `allowlist
 
 ### Inline
 
-`credactor:ignore` in any comment style, **on the same line** as the secret
-(per-line only — a directive on the line above does not carry over):
+`credactor:ignore` in a `#`, `//`, `/* … */`, or `<!-- … -->` comment, **on the
+same line** as the secret (per-line only — a directive on the line above does
+not carry over). Other comment markers (`--`, `;`, `%`) are **not** recognised:
 
 ```python
 test_key = "abc123"  # credactor:ignore
@@ -506,14 +529,28 @@ locations. Verified — each of the following yields 0 findings:
   calls/defs (`get_secret()`, `def get_password(password="default")`), and
   Terraform refs (`var.password`, `local.secret`, `module.db.password`, `data.*`).
 - **Hashes, not secrets** — three cases. (1) A credential-named variable whose
-  name ends in `_hash`, `_hashed`, `_digest`, `_checksum`, `_fingerprint`,
-  `_hmac`, `_encrypted`, or `_cipher` (e.g. `secret_hash`). (2) Hash *values*
+  name ends in `_hash`, `_hashed`, `_digest`, `_checksum`, `_fingerprint`, or
+  `_hmac` (e.g. `secret_hash`). Two further suffixes, `_encrypted` and
+  `_cipher`, suppress the *variable/entropy* detector but **not** the quoted-hex
+  value detector — a quoted hex value on such a variable
+  (`data_cipher = "<hex>"`) still flags as `pattern:hex credential` (medium).
+  (2) Hash *values*
   (`$2b$…` bcrypt, `$argon2id$…`). (3) A quoted hex / high-entropy **value** on
-  a line keyed like a digest — a key ending in one of those `_hash`-family
-  suffixes, or being `md5` / `sha<digits>` (`md5 = "<hex>"`, `sha256: <hex>`).
-  Case 3 gates the **value** detector only: it is not an open `sha*` / `md5*`
-  prefix (`md5sum`, `shasum`, bare `sha`, `sha256_value` still flag), and it
-  does **not** override a credential keyword — `secret_md5 = "…"` is flagged.
+  a line whose key names a hash/digest/checksum/commit/integrity/revision
+  field. The key may end in a `_hash`-family suffix, or contain `md5`,
+  `sha<digits>`, `commit`, `integrity`, `checksum`, `digest`, `rev`, or `sri`
+  before the `=`/`:` (`md5 = "<hex>"`, `git_commit = "<sha>"`,
+  `integrity: "sha384-…"`). The `sha`/`md5` forms need the keyword *immediately*
+  before the delimiter (`md5sum`, `shasum`, bare `sha`, `sha256_value` still
+  flag); the bare words match as substrings, so they also catch names merely
+  containing them (`my_rev`, `precommit`). Case 3 gates the **value** detector
+  only — it does **not** override a credential keyword (`secret_md5 = "…"` still
+  flags) or a deterministic provider pattern (`rev = "AKIA…"` still flags).
+  **Trade-off — false negative:** a *genuine* bare-hex / high-entropy secret in
+  such a field (an HMAC in `integrity = "<hex>"`, a token in a `*_rev` variable)
+  is **not** caught by the entropy detectors — the deliberate cost of not
+  corrupting commit SHAs / SRI integrity hashes / lockfile checksums under
+  `--fix-all`. `--dry-run` and allowlist if you keep raw secrets in such fields.
 - **Non-credential shapes** — file paths, credential-free URLs, values under 8
   characters, and low-entropy values.
 
@@ -558,10 +595,11 @@ Verified behaviour and **requirements**:
   a **file target exits 2** (verified).
 - Ingestion **cannot be combined with `--scan-history`** — **exits 2** (verified).
 - Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
-  discovered `[ingest]` entry takes **precedence over** a same-kind CLI
-  `--from-*` flag (the flag does not override or merge with it), and a broken
-  `[ingest]` path is fatal (exit 2) even alongside a valid CLI flag — keep one
-  source per kind.
+  same-kind CLI `--from-*` flag takes **precedence over** an `[ingest]` entry
+  (**CLI > config**, consistent with every other setting): when the flag is
+  given, that `[ingest]` entry is ignored entirely (not merged, not even
+  validated). An `[ingest]` entry applies only when no same-kind flag is
+  passed — keep one source per kind.
 - The report is **untrusted input**, with two distinct contracts:
   - *The report file itself* is read from the path you supply — **not** confined
     to the target. A **missing or unreadable** report path is a **fatal error,
@@ -610,6 +648,7 @@ Verified rules:
 | `--staged --ci` | read-only gate over staged files |
 | `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |
 | `--replacement` (CLI) vs `.credactor.toml` `replacement` | **CLI wins** (CLI > config > default) |
+| `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry is ignored |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
 | `--from-*` with a **file** target | **rejected, exit 2** (needs a directory) |
@@ -626,7 +665,7 @@ Verified rules:
 detail; these are the behaviours most likely to surprise.)
 
 - **Recognised file types only.** Credactor scans a fixed extension allowlist
-  (code/config types, plus `.txt` as of 2.4.1); secrets in unrecognised text
+  (code/config types, plus `.txt` as of 2.5.0); secrets in unrecognised text
   types (`.md`, custom) are skipped unless added via `extra_extensions`.
   General-purpose scanners read every file.
 - **False positives are rewritten under `--fix-all`.** Redaction acts on every
@@ -652,6 +691,6 @@ detail; these are the behaviours most likely to surprise.)
   minified one-liner) is not detected. A `[WARN]` names every affected file;
   the warning also fires for staged blobs and history scans.
 - **UTF-8 / Latin-1 / ASCII-payload UTF-16 by default.** Other encodings
-  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer` /
-  `chardet` extra; without it such files are read as Latin-1 and their secrets
+  (UTF-32, mixed-script UTF-16, …) require the optional `charset-normalizer`
+  (`[encoding]`) extra; without it such files are read as Latin-1 and their secrets
   can be missed (Credactor prints a `[WARN]` when it falls back to Latin-1).

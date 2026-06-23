@@ -4,8 +4,8 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 2.4.x   | :white_check_mark: |
-| < 2.4   | :x:                |
+| 2.5.x   | :white_check_mark: |
+| < 2.5   | :x:                |
 
 Only the latest minor release receives security patches. We recommend always running the most recent version.
 
@@ -67,15 +67,15 @@ For the full security model, trust boundaries, hardening measures, and known lim
 
 ## Defensive measures ledger (SR-2 Stage A)
 
-This ledger inventories every defensive marker that was originally present as an inline `# SEC-XX:` / `# CVE-XX` / `# HIGH-XX` / `# MED-XX` / `A1`–`A13` / `P2` comment in the source. The three-stage review is now **complete** (see the dated status note at the end of this section): Stage A catalogued every marker, Stage B decided per-row whether the inline comment was **K** (keep — explains an invariant) or **P** (purge from source — motivation now lives only here in the ledger), and Stage C executed the purge. This table is therefore the canonical record of the motivation behind each defence; the inline `# SEC-XX:`-style prefixes have already been removed from source for the P-marked rows.
+This ledger inventories every defensive marker that was originally present as an inline `# SEC-XX:` / `# CVE-XX` / `# HIGH-XX` / `# MED-XX` / `A1`–`A13` / `P2` comment in the source. The three-stage review is now **complete** (see the dated status note at the end of this section): Stage A catalogued every marker, Stage B decided per-row whether the inline comment was **K** (keep, explains an invariant) or **P** (purge from source, motivation now lives only here in the ledger), and Stage C executed the purge. This table is therefore the canonical record of the motivation behind each defence; the inline `# SEC-XX:`-style prefixes have already been removed from source for the P-marked rows.
 
 ### Format
 
-`ID — one-line summary  ·  primary site(s)`
+`ID: one-line summary  ·  primary site(s)`
 
 If an ID has multiple sites, the first is the primary defence; the rest are propagation/usage points.
 
-> **Note:** Line numbers in the *Primary site(s)* column are a snapshot from the Stage A catalogue and may have drifted after the Stage C source sweep and later refactors. Treat them as approximate — locate each defence by its summary, not the exact line.
+> **Note:** Line numbers in the *Primary site(s)* column are a snapshot from the Stage A catalogue and may have drifted after the Stage C source sweep and later refactors. Treat them as approximate, and locate each defence by its summary, not the exact line.
 
 ### SEC series
 
@@ -98,14 +98,14 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-15 | Best-effort advisory file lock (`fcntl.LOCK_EX\|LOCK_NB`) attempted before read-modify-write; **proceeds unlocked on contention**, so it is a courtesy marker, not a hard TOCTOU guarantee | `redactor.py:215,244,313` |
 | SEC-16 | Strip ANSI escapes and control chars from terminal output to prevent injection | `utils.py:88,96`, `redactor.py:369` |
 | SEC-17 | Warn when target appears to be on a mounted/network volume (NFS/SMB atomicity) | `cli.py` (`_print_banner`) |
-| SEC-18 | Warn when running as root (Unix only) — backup ownership concerns | `cli.py:289` |
+| SEC-18 | Warn when running as root (Unix only) due to backup ownership concerns | `cli.py:289` |
 | SEC-19 | Cap multiline block size (8 KiB) to prevent ReDoS on huge triple-quoted strings | `scanner.py:449,462` |
 | SEC-20 | Refuse to use `--secure-backup-dir` if it's a symlink (untrusted destination) | `redactor.py:148` |
 | SEC-22 | Preserve full mode bits (incl. setuid/setgid/sticky) when restoring permissions | `redactor.py:208` |
 | SEC-23 | Skip file symlinks that resolve outside the scan root | `walker.py:103` |
 | SEC-24 | HTML-escape masked preview in SARIF `message.text` | `report.py:200` |
 | SEC-25 | Reject git-output paths containing `..` components | `walker.py:321` |
-| SEC-26 | `--ci` implies `--dry-run` (read-only by design) — block `--fix-all` combo | `cli.py:269` |
+| SEC-26 | `--ci` implies `--dry-run` (read-only by design), block `--fix-all` combo | `cli.py:269` |
 | SEC-27 | Verbose audit trail when a finding is suppressed by inline `credactor:ignore` | `scanner.py:211` |
 | SEC-28 | Warn once about plaintext backups when neither secure option is set | `redactor.py:137` |
 | SEC-29 | Hard-block external-config loading in CI mode (no warning, refuse) | `config.py:113,134` |
@@ -121,7 +121,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-39 | Fall back to scan root when no `.git` ancestor; warn (do not silently load) | `config.py:125` |
 | SEC-40 | Top-level `--scan-history` vs ingest mutual exclusion; ingest is stdlib-json only | `cli.py:262`, `ingest.py:3` |
 | SEC-40a | Top-level JSON must be a list (Gitleaks) / per-line dict (TruffleHog) | `ingest.py:168,224,366` |
-| SEC-40b | Cap 10 000 findings + 100 MB file-size guard pre-`json.load()` | `ingest.py:20,169,188,231,367,384,435` |
+| SEC-40b | Cap 10 000 findings + 20 MB file-size guard pre-`json.load()` | `ingest.py:19,25,203` |
 | SEC-40c | Resolved external paths must be within target (covers symlink-escape) | `ingest.py:170,368` (via `_resolve_external_finding_path`) |
 
 ### CVE / HIGH / MED series
@@ -129,7 +129,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | ID | Summary | Primary site(s) |
 |----|---------|-----------------|
 | CVE-01 | Function-call detection: full value `identifier(...)` treated as runtime ref | `scanner.py:135` |
-| CVE-02 | Unclosed PEM block — stop suppressing lines after 500-line cap | `scanner.py:34,409` |
+| CVE-02 | Unclosed PEM block: stop suppressing lines after 500-line cap | `scanner.py:34,409` |
 | HIGH-02 | Path-like heuristic requires ≥3 slashes AND >20% slash density | `scanner.py:160` |
 | HIGH-05 | 50 MB per-file scan cap to prevent OOM | `scanner.py:39` |
 | HIGH-06 | Config file search depth cap (5 levels) to prevent shared-parent capture | `config.py:96` |
@@ -146,6 +146,6 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 
 ### Review methodology (completed)
 
-Each row above was reviewed and marked **K** (keep inline) where the source comment explains a non-obvious invariant *while reading that code* — for example "Append separator AFTER normpath to prevent prefix collision", which would otherwise look redundant. Rows were marked **P** (purge) where the inline comment was motivation/history now captured by this ledger and the source comment added nothing beyond the ticket prefix (e.g. "SEC-04: Resolve path before passing to subprocess", immediately followed by code that resolves the path). An automated sweep then removed the `SEC-XX:` / `CVE-XX:` / etc. prefixes from P-marked sites, preserving any substantive trailing comment text and deleting lines that had none.
+Each row above was reviewed and marked **K** (keep inline) where the source comment explains a non-obvious invariant *while reading that code*, for example "Append separator AFTER normpath to prevent prefix collision", which would otherwise look redundant. Rows were marked **P** (purge) where the inline comment was motivation/history now captured by this ledger and the source comment added nothing beyond the ticket prefix (e.g. "SEC-04: Resolve path before passing to subprocess", immediately followed by code that resolves the path). An automated sweep then removed the `SEC-XX:` / `CVE-XX:` / etc. prefixes from P-marked sites, preserving any substantive trailing comment text and deleting lines that had none.
 
 **Stage B/C complete 2026-05-24**: 15 invariants retained inline (K); remaining tags purged from source (P). The test suite passed (425 tests at the time of the sweep; it has since grown substantially, all green).

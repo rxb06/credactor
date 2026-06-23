@@ -20,3 +20,7 @@ charset-normalizer>=3.0
 pytest>=8.0
 ruff>=0.5
 mypy>=1.10
+# Coverage reporting in CI (print-only, no gate yet). The [toml] extra reads
+# config from pyproject and pulls no extra deps on Python >=3.11 (tomllib is
+# stdlib), so the lockfile gains only coverage itself.
+coverage[toml]>=7.0

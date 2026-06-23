@@ -12,8 +12,7 @@ class TestParseGitignoreFile:
     loader was test-only and is gone)."""
 
     def _parse(self, tmp_dir):
-        return parse_gitignore_file(
-            os.path.join(tmp_dir, '.gitignore'), Path(tmp_dir).resolve())
+        return parse_gitignore_file(os.path.join(tmp_dir, '.gitignore'), Path(tmp_dir).resolve())
 
     def test_missing_file_returns_empty(self, tmp_dir):
         assert self._parse(tmp_dir) == []
@@ -50,6 +49,7 @@ class TestParseGitignoreFile:
         # from a NESTED .gitignore must suppress files in its subtree.
         from credactor.config import Config
         from credactor.walker import walk_and_scan
+
         sub = os.path.join(tmp_dir, 'sub')
         os.makedirs(sub)
         with open(os.path.join(sub, '.gitignore'), 'w') as f:
@@ -58,8 +58,7 @@ class TestParseGitignoreFile:
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(os.path.join(sub, 'prod.env'), 'w') as f:
             f.write(f'AWS_KEY="{key}"\n')
-        findings, skipped, _json, _err = walk_and_scan(
-            tmp_dir, config=Config(no_color=True))
+        findings, skipped, _json, _err = walk_and_scan(tmp_dir, config=Config(no_color=True))
         assert findings == []
         assert any(s.endswith('prod.env') for s in skipped)
 
@@ -68,6 +67,7 @@ class TestParseGitignoreFile:
         # suppress matching files anywhere in the tree via the same walk.
         from credactor.config import Config
         from credactor.walker import walk_and_scan
+
         with open(os.path.join(tmp_dir, '.gitignore'), 'w') as f:
             f.write('*.env\n')
         sub = os.path.join(tmp_dir, 'deploy')
@@ -76,8 +76,7 @@ class TestParseGitignoreFile:
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
         with open(os.path.join(sub, 'prod.env'), 'w') as f:
             f.write(f'AWS_KEY="{key}"\n')
-        findings, skipped, _json, _err = walk_and_scan(
-            tmp_dir, config=Config(no_color=True))
+        findings, skipped, _json, _err = walk_and_scan(tmp_dir, config=Config(no_color=True))
         assert findings == []
         assert any(s.endswith('prod.env') for s in skipped)
 

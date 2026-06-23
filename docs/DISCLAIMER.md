@@ -7,10 +7,10 @@ Credactor is a static analysis tool that uses regex patterns and entropy heurist
 ## What Credactor Is NOT
 
 - Not a replacement for secret management (use Vault, AWS Secrets Manager, 1Password, etc.)
-- Not a runtime security tool — it scans files at rest, not live applications
+- Not a runtime security tool: it scans files at rest, not live applications
 - Not a compliance certification tool
 - Not guaranteed to catch every credential format or encoding
-- Not a verifier — it does not check whether a detected value is a live, active credential (a finding may be expired, rotated, revoked, or a non-secret look-alike)
+- Not a verifier: it does not check whether a detected value is a live, active credential (a finding may be expired, rotated, revoked, or a non-secret look-alike)
 
 ## Limitations
 
@@ -28,8 +28,8 @@ Credactor is a static analysis tool that uses regex patterns and entropy heurist
 - **Destructive operation.** `--fix-all` modifies files in place. Whilst backups are created by default (`.bak` files), a crash or disc failure during replacement could still cause data loss.
 - **Backup files contain secrets.** `.bak` files are unencrypted copies of the original file with the credential intact. Delete them securely after verifying replacements.
 - **No undo.** Once a replacement is made, the only recovery is from `.bak` files or version control. There is no built-in rollback.
-- **Replacement may break code.** Sentinel values (`REDACTED_BY_CREDACTOR`) will cause runtime failures. This is intentional — a loud failure is safer than a silent wrong credential — but verify before deploying.
-- **A false positive under `--fix-all` rewrites a legitimate value.** Redaction acts on *every* finding, including false positives — so a non-secret that happens to match a pattern (a git commit SHA, an example key, a format-valid placeholder) is replaced with the sentinel, silently corrupting otherwise-correct code or data. This is why `--dry-run` review matters more before `--fix-all` than the detection-only false-positive rate suggests. Always preview and suppress known false positives first.
+- **Replacement may break code.** Sentinel values (`REDACTED_BY_CREDACTOR`) will cause runtime failures. This is intentional, since a loud failure is safer than a silent wrong credential, but verify before deploying.
+- **A false positive under `--fix-all` rewrites a legitimate value.** Redaction acts on *every* finding, including false positives, so a non-secret that happens to match a pattern (a git commit SHA, an example key, a format-valid placeholder) is replaced with the sentinel, silently corrupting otherwise-correct code or data. This is why `--dry-run` review matters more before `--fix-all` than the detection-only false-positive rate suggests. Always preview and suppress known false positives first.
 
 ### False Positives
 
@@ -44,7 +44,7 @@ Always run `--dry-run` first and review findings before redacting. Use `.credact
 
 ### False Negatives
 
-**A run with no findings is not proof the code is secret-free.** It means only that nothing matched Credactor's patterns and heuristics — not that no secrets exist. Do not treat a clean scan as a security sign-off. Secrets are missed in cases such as:
+**A run with no findings is not proof the code is secret-free.** It means only that nothing matched Credactor's patterns and heuristics, not that no secrets exist. Do not treat a clean scan as a security sign-off. Secrets are missed in cases such as:
 
 - Credentials in formats not covered by built-in patterns.
 - Credentials below the entropy threshold.

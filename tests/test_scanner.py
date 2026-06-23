@@ -30,8 +30,11 @@ class TestMinValueLengthCriticalExemption:
     def test_provider_token_found_at_min_value_length_200(self):
         cfg = Config(no_color=True, min_value_length=200)
         findings = scan_line(1, f'gh = "{self._GHP}"', 'a.py', config=cfg)
-        assert [f for f in findings if f['type'] == 'pattern:GitHub token'
-                and f['severity'] == 'critical']
+        assert [
+            f
+            for f in findings
+            if f['type'] == 'pattern:GitHub token' and f['severity'] == 'critical'
+        ]
 
     def test_provider_token_in_triple_quoted_block_found_at_200(self):
         # The multiline pass shares the exemption — both call sites move
@@ -45,8 +48,7 @@ class TestMinValueLengthCriticalExemption:
         # The knob keeps doing its documented job for non-deterministic
         # values: a generic password assignment is suppressed at 200.
         cfg = Config(no_color=True, min_value_length=200)
-        findings = scan_line(1, 'password = "vN8kQz2wXr5LmP9jT4bYc6Fd"',
-                             'a.py', config=cfg)
+        findings = scan_line(1, 'password = "vN8kQz2wXr5LmP9jT4bYc6Fd"', 'a.py', config=cfg)
         assert findings == []
 
 
@@ -57,11 +59,9 @@ class TestPrefixedApiKeyVariable:
 
     _VALUE = 'ZP35TmHVWyvc3d9Bf8tFbqRIzRogAqwJENsp4cm2'
 
-    @pytest.mark.parametrize('var', ['test_api_key', 'my_api_key',
-                                     'aws_api_key', 'stripe_api_key'])
+    @pytest.mark.parametrize('var', ['test_api_key', 'my_api_key', 'aws_api_key', 'stripe_api_key'])
     def test_prefixed_name_with_real_value_flags_high(self, var):
-        findings = scan_line(1, f'{var} = "{self._VALUE}"', 'conf.py',
-                             config=Config(no_color=True))
+        findings = scan_line(1, f'{var} = "{self._VALUE}"', 'conf.py', config=Config(no_color=True))
         assert len(findings) == 1
         assert findings[0]['severity'] == 'high'
         assert findings[0]['type'] == f'variable:{var}'
@@ -69,8 +69,9 @@ class TestPrefixedApiKeyVariable:
     def test_safe_placeholder_value_stays_clean(self):
         # The value-side safe list keeps suppressing fixture literals.
         for value in ('test_api_key', 'your_api_key'):
-            findings = scan_line(1, f'test_api_key = "{value}"', 'conf.py',
-                                 config=Config(no_color=True))
+            findings = scan_line(
+                1, f'test_api_key = "{value}"', 'conf.py', config=Config(no_color=True)
+            )
             assert findings == []
 
 
@@ -79,27 +80,26 @@ class TestBareTokenVariable:
     the variable regex had every prefixed form but not `token` itself."""
 
     def test_bare_token_high_entropy_flags_high(self):
-        findings = scan_line(1, 'token = "x9Kp2mQv8rT4wYbN7jHs3fLd6gZc1aEu"',
-                             'a.py', config=Config(no_color=True))
+        findings = scan_line(
+            1, 'token = "x9Kp2mQv8rT4wYbN7jHs3fLd6gZc1aEu"', 'a.py', config=Config(no_color=True)
+        )
         assert len(findings) == 1
         assert findings[0]['type'] == 'variable:token'
         assert findings[0]['severity'] == 'high'
 
     def test_bare_token_placeholder_stays_clean(self):
-        findings = scan_line(1, 'token = "xxxxxxxx"', 'a.py',
-                             config=Config(no_color=True))
+        findings = scan_line(1, 'token = "xxxxxxxx"', 'a.py', config=Config(no_color=True))
         assert findings == []
 
     def test_unquoted_vault_token_env_ref_clean(self):
         # Dependency guard on the ${VAR} capture fix: without it, this line
         # would have become a fresh HIGH FP the moment bare `token` landed.
-        findings = scan_line(1, 'token: ${VAULT_TOKEN}', 'config.yml',
-                             config=Config(no_color=True))
+        findings = scan_line(1, 'token: ${VAULT_TOKEN}', 'config.yml', config=Config(no_color=True))
         assert findings == []
 
 
 class TestTxtScanning:
-    """.txt is scanned by default as of 2.4.1. The viability of default-on
+    """.txt is scanned by default as of 2.5.0. The viability of default-on
     rests on the hash-pin/quote-prefix guards keeping requirements.txt-style
     content clean — that property is load-bearing and pinned here."""
 
@@ -109,9 +109,9 @@ class TestTxtScanning:
         # Through the walker, not scan_file — a directly-named file always
         # bypasses the extension list; the walk is what changes here.
         from credactor.walker import walk_and_scan
+
         path = make_file('deploy-notes.txt', f'aws_key = "{self._KEY}"\n')
-        findings, _, _, _ = walk_and_scan(os.path.dirname(path),
-                                          config=Config(no_color=True))
+        findings, _, _, _ = walk_and_scan(os.path.dirname(path), config=Config(no_color=True))
         assert [f for f in findings if f['type'] == 'pattern:AWS access key']
 
     def test_hash_pinned_requirements_txt_stays_clean(self, make_file):
@@ -138,19 +138,22 @@ class TestEnvInterpolationUnquoted:
     fallback-bearing forms must keep flagging."""
 
     def test_unquoted_yaml_env_ref_clean(self):
-        findings = scan_line(1, 'password: ${DB_PASSWORD}', 'compose.yml',
-                             config=Config(no_color=True))
+        findings = scan_line(
+            1, 'password: ${DB_PASSWORD}', 'compose.yml', config=Config(no_color=True)
+        )
         assert findings == []
 
     def test_unclosed_brace_still_flags(self):
-        findings = scan_line(1, 'password: ${DB_PASSWORD', 'compose.yml',
-                             config=Config(no_color=True))
+        findings = scan_line(
+            1, 'password: ${DB_PASSWORD', 'compose.yml', config=Config(no_color=True)
+        )
         assert findings
 
     def test_shell_default_fallback_still_flags(self):
         # The fallback after :- can be a real secret.
-        findings = scan_line(1, 'password: ${PW:-hunter2secret99}',
-                             'compose.yml', config=Config(no_color=True))
+        findings = scan_line(
+            1, 'password: ${PW:-hunter2secret99}', 'compose.yml', config=Config(no_color=True)
+        )
         assert findings
 
     def test_interpolation_with_suffix_is_clean_known_limit(self):
@@ -158,8 +161,12 @@ class TestEnvInterpolationUnquoted:
         # so a secret glued directly onto ${VAR} is not seen. Accepted —
         # provider-prefixed values in that position are still caught by the
         # value-pattern pass, and the idiom is vanishingly rare.
-        findings = scan_line(1, 'password: ${DB_PASSWORD}realSecretSuffix99x',
-                             'compose.yml', config=Config(no_color=True))
+        findings = scan_line(
+            1,
+            'password: ${DB_PASSWORD}realSecretSuffix99x',
+            'compose.yml',
+            config=Config(no_color=True),
+        )
         assert findings == []
 
 
@@ -175,23 +182,29 @@ class TestLongLineTruncationWarning:
         # The cap itself is deliberate (hot-path cost is superlinear in line
         # length) — the miss stays, but it is no longer silent.
         assert findings == []
-        warns = [r for r in credactor_caplog.records
-                 if r.levelname == 'WARNING' and 'big.py' in r.getMessage()]
+        warns = [
+            r
+            for r in credactor_caplog.records
+            if r.levelname == 'WARNING' and 'big.py' in r.getMessage()
+        ]
         assert len(warns) == 1
         assert str(_MAX_LINE_LENGTH) in warns[0].getMessage()
 
     def test_secret_before_cap_found_without_warning(self, credactor_caplog):
-        findings = scan_lines('ok.py', [f'aws = "{self._KEY}"\n', 'x = 1\n'],
-                              config=Config(no_color=True))
+        findings = scan_lines(
+            'ok.py', [f'aws = "{self._KEY}"\n', 'x = 1\n'], config=Config(no_color=True)
+        )
         assert [f for f in findings if f['full_value'] == self._KEY]
-        assert not [r for r in credactor_caplog.records
-                    if r.levelname == 'WARNING']
+        assert not [r for r in credactor_caplog.records if r.levelname == 'WARNING']
 
     def test_multiple_long_lines_one_warning_with_count(self, credactor_caplog):
         lines = ['# ' + 'x' * 5000 + '\n', '# ' + 'y' * 5000 + '\n', 'z = 1\n']
         scan_lines('big2.py', lines, config=Config(no_color=True))
-        warns = [r for r in credactor_caplog.records
-                 if r.levelname == 'WARNING' and 'big2.py' in r.getMessage()]
+        warns = [
+            r
+            for r in credactor_caplog.records
+            if r.levelname == 'WARNING' and 'big2.py' in r.getMessage()
+        ]
         assert len(warns) == 1
         assert '2 line(s)' in warns[0].getMessage()
 
@@ -209,19 +222,19 @@ class TestTruePositives:
     def test_scan_line_finding_shape(self, config):
         """Every Finding must carry the full canonical key set."""
         # credactor:ignore
-        findings = scan_line(1, 'aws_key = "AKIA' + 'IOSFODNN7EXAMPLE"',
-                             'test.py', config=config)
-        required = {'file', 'line', 'type', 'severity',
-                    'full_value', 'value_preview', 'raw'}
+        findings = scan_line(1, 'aws_key = "AKIA' + 'IOSFODNN7EXAMPLE"', 'test.py', config=config)
+        required = {'file', 'line', 'type', 'severity', 'full_value', 'value_preview', 'raw'}
         for f in findings:
             missing = required - set(f.keys())
             assert not missing, f'Finding missing keys: {missing}'
 
     def test_jwt_token(self, config):
         # credactor:ignore
-        jwt = ('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
-               '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
-               '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+        jwt = (
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
+            '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+            '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+        )
         findings = scan_line(1, f'token = "{jwt}"', 'test.py', config=config)
         assert len(findings) >= 1
         assert any('JWT token' in f['type'] for f in findings)
@@ -312,7 +325,10 @@ class TestTrueNegatives:
 
     def test_url_without_creds(self, config):
         findings = scan_line(
-            1, 'api_url = "https://api.example.com/v1/key"', 'test.py', config=config,
+            1,
+            'api_url = "https://api.example.com/v1/key"',
+            'test.py',
+            config=config,
         )
         assert len(findings) == 0
 
@@ -320,8 +336,10 @@ class TestTrueNegatives:
         # credactor:ignore
         pwd = 'xK9#mL2' + '$vQ7@nR5'
         findings = scan_line(
-            1, f'api_key = "{pwd}"  # credactor:ignore',
-            'test.py', config=config,
+            1,
+            f'api_key = "{pwd}"  # credactor:ignore',
+            'test.py',
+            config=config,
         )
         assert len(findings) == 0
 
@@ -331,8 +349,10 @@ class TestTrueNegatives:
 
     def test_def_line_skipped(self, config):
         findings = scan_line(
-            1, 'def get_password(self, password="default_value"):',
-            'test.py', config=config,
+            1,
+            'def get_password(self, password="default_value"):',
+            'test.py',
+            config=config,
         )
         assert len(findings) == 0
 
@@ -350,7 +370,10 @@ class TestTrueNegatives:
 
     def test_sops_encrypted(self, config):
         findings = scan_line(
-            1, 'secret = "ENC[AES256_GCM,data:abc123xyz]"', 'test.py', config=config,
+            1,
+            'secret = "ENC[AES256_GCM,data:abc123xyz]"',
+            'test.py',
+            config=config,
         )
         assert len(findings) == 0
 
@@ -420,13 +443,20 @@ class TestRecallCoverage:
     _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
     def test_key_and_config_files_scanned(self):
-        for name in ('server.pem', 'cert.key', 'public.crt', 'web.config',
-                     'app.config', 'id_rsa', 'id_ed25519'):
+        for name in (
+            'server.pem',
+            'cert.key',
+            'public.crt',
+            'web.config',
+            'app.config',
+            'id_rsa',
+            'id_ed25519',
+        ):
             assert should_scan_file(name), name
 
     def test_public_key_and_unrelated_files_not_scanned(self):
         assert not should_scan_file('id_rsa.pub')
-        # .txt is scanned by default as of 2.4.1 (measured clean on prose
+        # .txt is scanned by default as of 2.5.0 (measured clean on prose
         # and hash-pinned requirements; notes files are a real leak vector).
         assert should_scan_file('notes.txt')
         # .md stays out: example-credential-dense by convention — this pin
@@ -434,9 +464,11 @@ class TestRecallCoverage:
         assert not should_scan_file('notes.md')
 
     def test_extensionless_private_key_file_detected(self, make_file, config):
-        content = ('-----BEGIN RSA PRIVATE KEY-----\n'
-                   'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB\n'
-                   '-----END RSA PRIVATE KEY-----\n')
+        content = (
+            '-----BEGIN RSA PRIVATE KEY-----\n'
+            'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB\n'
+            '-----END RSA PRIVATE KEY-----\n'
+        )
         path = make_file('id_rsa', content)
         findings = scan_file(path, config=config)
         assert any('private key' in f['type'].lower() for f in findings)
@@ -444,8 +476,7 @@ class TestRecallCoverage:
     def test_web_config_xml_attribute_detected(self, make_file, config):
         # high-entropy generic value (>= 3.5) so this isolates the .config
         # extension gap from the entropy floor
-        path = make_file('web.config',
-                         '<add key="Password" value="Xy9KmL2vQ7nR5tW8pA3bC6dE" />\n')
+        path = make_file('web.config', '<add key="Password" value="Xy9KmL2vQ7nR5tW8pA3bC6dE" />\n')
         findings = scan_file(path, config=config)
         assert any('xml-attr' in f['type'] for f in findings)
 
@@ -485,11 +516,7 @@ class TestScanFile:
         assert len(findings) == 0
 
     def test_clean_file_no_findings(self, make_file, config):
-        content = (
-            'import os\n'
-            'api_key = os.getenv("API_KEY")\n'
-            'print("hello world")\n'
-        )
+        content = 'import os\napi_key = os.getenv("API_KEY")\nprint("hello world")\n'
         path = make_file('clean.py', content)
         findings = scan_file(path, config=config)
         assert len(findings) == 0
@@ -504,7 +531,9 @@ class TestScanFile:
         assert len(findings) >= 1
 
     def test_unclosed_pem_does_not_suppress_rest(
-        self, make_file, config,
+        self,
+        make_file,
+        config,
     ):
         """CVE-02: unclosed PEM block must not suppress subsequent lines."""
         # credactor:ignore
@@ -527,20 +556,42 @@ class TestScanFile:
 # should_scan_file (#15)
 # ---------------------------------------------------------------------------
 class TestShouldScanFile:
-    @pytest.mark.parametrize('name', [
-        'app.py', 'config.js', 'main.ts', 'run.sh',
-        '.env', '.env.local', '.env.production', '.env.staging',
-        'settings.yaml', 'config.toml',
-        'App.java', 'main.go', 'config.rb', 'main.php',
-        'app.cs', 'main.kt', 'infra.tf',
-    ])
+    @pytest.mark.parametrize(
+        'name',
+        [
+            'app.py',
+            'config.js',
+            'main.ts',
+            'run.sh',
+            '.env',
+            '.env.local',
+            '.env.production',
+            '.env.staging',
+            'settings.yaml',
+            'config.toml',
+            'App.java',
+            'main.go',
+            'config.rb',
+            'main.php',
+            'app.cs',
+            'main.kt',
+            'infra.tf',
+        ],
+    )
     def test_scannable(self, name):
         assert should_scan_file(name)
 
-    @pytest.mark.parametrize('name', [
-        'image.png', 'data.csv', 'binary.exe', 'archive.zip',
-        'readme.md', 'document.pdf',
-    ])
+    @pytest.mark.parametrize(
+        'name',
+        [
+            'image.png',
+            'data.csv',
+            'binary.exe',
+            'archive.zip',
+            'readme.md',
+            'document.pdf',
+        ],
+    )
     def test_not_scannable(self, name):
         assert not should_scan_file(name)
 
@@ -581,9 +632,11 @@ class TestCommentProviderScan:
     def test_structural_pattern_in_comment_stays_code_only(self, config):
         # a bare JWT is detected in code (structural, high) but NOT inside a
         # comment — M3 runs only critical provider prefixes on comment lines
-        jwt = ('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
-               '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
-               '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+        jwt = (
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
+            '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+            '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+        )
         assert len(scan_line(1, jwt, 'a.py', config=config)) == 1
         assert len(scan_line(1, f'# {jwt}', 'a.py', config=config)) == 0
 
@@ -603,9 +656,11 @@ class TestCompactJwt:
             assert scan_line(1, f'x = {v}', 'a.py', config=config) == [], v
 
     def test_realistic_long_jwt_still_detected(self, config):
-        jwt = ('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
-               '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
-               '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+        jwt = (
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
+            '.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+            '.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+        )
         findings = scan_line(1, f'token = "{jwt}"', 'a.py', config=config)
         assert any('JWT token' in f['type'] for f in findings)
 
@@ -626,7 +681,7 @@ class TestMultipleSecretsPerLine:
 
     def test_single_hex_not_double_reported(self, config):
         # a 64-char hex matches BOTH the hex and base64 patterns -> ONE finding
-        h = '0123456789abcdef' * 4   # 64 chars, entropy 4.0 (clears both floors)
+        h = '0123456789abcdef' * 4  # 64 chars, entropy 4.0 (clears both floors)
         findings = scan_line(1, f'token = "{h}"', 'a.py', config=config)
         assert len(findings) == 1, findings
 
@@ -648,10 +703,33 @@ class TestMultipleSecretsPerLine:
         # the dedup priority branch: a higher-severity candidate with a LATER
         # discovery index must still win over an overlapping lower-severity one
         from credactor.scanner import _dedup_findings
-        low = (0, 10, {'type': 'low', 'severity': 'low', 'file': 'f', 'line': 1,
-                       'full_value': 'x', 'value_preview': 'x', 'raw': ''})
-        crit = (0, 10, {'type': 'crit', 'severity': 'critical', 'file': 'f', 'line': 1,
-                        'full_value': 'x', 'value_preview': 'x', 'raw': ''})
+
+        low = (
+            0,
+            10,
+            {
+                'type': 'low',
+                'severity': 'low',
+                'file': 'f',
+                'line': 1,
+                'full_value': 'x',
+                'value_preview': 'x',
+                'raw': '',
+            },
+        )
+        crit = (
+            0,
+            10,
+            {
+                'type': 'crit',
+                'severity': 'critical',
+                'file': 'f',
+                'line': 1,
+                'full_value': 'x',
+                'value_preview': 'x',
+                'raw': '',
+            },
+        )
         result = _dedup_findings([low, crit])
         assert len(result) == 1
         assert result[0]['severity'] == 'critical'
@@ -663,7 +741,7 @@ class TestProviderEntropyFloor:
     _AWS = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
     def test_low_entropy_aws_token_detected(self, config):
-        tok = 'AKIA' + 'A' * 16   # format-valid, near-zero entropy
+        tok = 'AKIA' + 'A' * 16  # format-valid, near-zero entropy
         findings = scan_line(1, f'key = "{tok}"', 'a.py', config=config)
         assert any('AWS access key' in f['type'] for f in findings), findings
 
@@ -676,16 +754,19 @@ class TestProviderEntropyFloor:
         findings = scan_line(1, f'key = "{self._AWS}"', 'a.py', config=config)
         assert any('AWS access key' in f['type'] for f in findings)
 
-    @pytest.mark.parametrize('tok', [
-        'AKIA' + 'A' * 16,            # AWS
-        'ghp_' + 'a' * 36,            # GitHub
-        'glpat-' + 'a' * 20,          # GitLab
-        'AIza' + 'A' * 35,            # GCP
-        'npm_' + 'a' * 36,            # npm
-        'xoxb-' + '1' * 20,           # Slack
-        'sk_live_' + '0' * 24,        # Stripe live
-        'pypi-' + 'a' * 16,           # PyPI
-    ])
+    @pytest.mark.parametrize(
+        'tok',
+        [
+            'AKIA' + 'A' * 16,  # AWS
+            'ghp_' + 'a' * 36,  # GitHub
+            'glpat-' + 'a' * 20,  # GitLab
+            'AIza' + 'A' * 35,  # GCP
+            'npm_' + 'a' * 36,  # npm
+            'xoxb-' + '1' * 20,  # Slack
+            'sk_live_' + '0' * 24,  # Stripe live
+            'pypi-' + 'a' * 16,  # PyPI
+        ],
+    )
     def test_low_entropy_provider_tokens_detected(self, config, tok):
         # all 8 deterministic provider rows must fire at 0.0 entropy
         findings = scan_line(1, f'k = "{tok}"', 'a.py', config=config)
@@ -698,25 +779,46 @@ class TestEvaluateCandidate:
 
     def test_zero_floor_keeps_low_entropy_value(self):
         from credactor.scanner import _evaluate_candidate
+
         val = 'AKIA' + 'A' * 16  # format-valid, near-zero entropy
-        assert _evaluate_candidate(
-            val, min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None) == val
+        assert (
+            _evaluate_candidate(
+                val, min_len=8, floor=0.0, filepath='f.py', lineno=1, allowlist=None
+            )
+            == val
+        )
 
     def test_positive_floor_drops_low_entropy_value(self):
         from credactor.scanner import _evaluate_candidate
-        assert _evaluate_candidate(
-            'a' * 16, min_len=8, floor=3.5, filepath='f.py', lineno=1,
-            allowlist=None) is None
+
+        assert (
+            _evaluate_candidate(
+                'a' * 16, min_len=8, floor=3.5, filepath='f.py', lineno=1, allowlist=None
+            )
+            is None
+        )
 
     def test_short_value_dropped_unless_allow_short(self):
         from credactor.scanner import _evaluate_candidate
-        assert _evaluate_candidate(
-            'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None) is None
-        assert _evaluate_candidate(
-            'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1,
-            allowlist=None, allow_short=True) == 'abcd'
+
+        assert (
+            _evaluate_candidate(
+                'abcd', min_len=8, floor=0.0, filepath='f.py', lineno=1, allowlist=None
+            )
+            is None
+        )
+        assert (
+            _evaluate_candidate(
+                'abcd',
+                min_len=8,
+                floor=0.0,
+                filepath='f.py',
+                lineno=1,
+                allowlist=None,
+                allow_short=True,
+            )
+            == 'abcd'
+        )
 
 
 class TestDynamicLookupAuditTrail:
@@ -728,5 +830,90 @@ class TestDynamicLookupAuditTrail:
         # password = config.get("db_pass", "summer2024") — only the assignment
         # pass would catch the weak default, and it is (correctly) suppressed.
         scan_line(1, 'password = config.get("db_pass", "summer2024")', 'f.py')
-        assert any('runtime/dynamic lookup' in r.message
-                   for r in credactor_caplog.records)
+        assert any('runtime/dynamic lookup' in r.message for r in credactor_caplog.records)
+
+
+class TestHashContextWidened:
+    """S3: quoted hex/base64 on a line keyed like a commit/checksum/integrity/
+    digest field is treated as a hash, not a credential — so --fix-all does not
+    corrupt it. A generic-named quoted hash-shaped value still flags."""
+
+    _HEX40 = 'a1b2c3d4' + 'e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'  # 40-char hex
+
+    def test_hash_keyed_lines_not_flagged(self):
+        cfg = Config(no_color=True)
+        for line in (
+            f'commit = "{self._HEX40}"',
+            f'git_commit = "{self._HEX40}"',
+            f'GIT_REV = "{self._HEX40}"',
+            f'checksum = "{self._HEX40}"',
+            f'digest = "{self._HEX40}"',
+            f'integrity = "{self._HEX40}"',
+        ):
+            findings = scan_line(1, line, 'f.py', config=cfg)
+            assert findings == [], line
+
+    def test_generic_named_quoted_hash_still_flagged(self):
+        # over-suppression guard: a generic var still flags (entropy cannot
+        # distinguish a hash-shaped value from a real secret).
+        cfg = Config(no_color=True)
+        findings = scan_line(1, f'data = "{self._HEX40}"', 'f.py', config=cfg)
+        assert any(f['type'] == 'pattern:hex credential' for f in findings)
+
+
+class TestHashContextCredentialKeyVeto:
+    """SCAN-1 regression: the widened hash-context terms (commit/rev/sri/...) must
+    NOT silently suppress the hex/base64 detector for credential-keyed names that
+    merely end in a hash-ish suffix (api_key_rev, token_rev, ...) — a credential
+    keyword in the key takes precedence, so those still flag as on origin/main.
+    And the suppression is scoped to the matched value's own key, so a hash key on
+    one part of a multi-assignment line cannot suppress an unrelated secret."""
+
+    _HEX32 = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'  # 32-char hex
+
+    def test_credential_keyed_hash_suffix_still_flags(self):
+        # These were silently MISSED on develop (the FN regression) but flag on
+        # origin/main: a credential keyword in the key must veto the hash-context
+        # suppression so a real hex secret is not dropped.
+        cfg = Config(no_color=True)
+        for var in (
+            'api_key_rev',
+            'token_rev',
+            'private_key_rev',
+            'oauth_token_sri',
+            'password_rev',
+            'apikey_sri',
+            'api_key_commit',
+            'token_integrity',
+            'auth_token_rev',
+        ):
+            line = f'{var} = "{self._HEX32}"'
+            findings = scan_line(1, line, 'f.py', config=cfg)
+            assert any(f['type'] == 'pattern:hex credential' for f in findings), line
+
+    def test_genuine_hash_keys_still_suppressed(self):
+        # The documented happy-path hash keys must keep suppressing (these names
+        # carry no credential keyword, so the hash-context guard still applies).
+        cfg = Config(no_color=True)
+        for var in (
+            'commit',
+            'git_commit',
+            'GIT_REV',
+            'checksum',
+            'digest',
+            'integrity',
+            'md5',
+            'sha256',
+            'config_hash',
+        ):
+            line = f'{var} = "{self._HEX32}"'
+            assert scan_line(1, line, 'f.py', config=cfg) == [], line
+
+    def test_hash_key_does_not_suppress_unrelated_secret_on_same_line(self):
+        # Collateral suppression: a hash-context key (commit=...) elsewhere on a
+        # multi-assignment line must NOT suppress an unrelated real secret. The
+        # apisecret hex value must still flag.
+        cfg = Config(no_color=True)
+        line = f'commit = "deadbeef"; apisecret = "{self._HEX32}"'
+        findings = scan_line(1, line, 'f.py', config=cfg)
+        assert any(f['type'] == 'pattern:hex credential' for f in findings), line

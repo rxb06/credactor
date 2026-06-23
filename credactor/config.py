@@ -4,6 +4,7 @@ Configuration loading from ``.credactor.toml`` files.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,20 @@ ENTROPY_DEFAULT: float = 3.5
 MIN_LEN_BOUNDS: tuple[int, int] = (1, 200)
 MIN_LEN_DEFAULT: int = 8
 
+# The fixed, always-syntactically-safe sentinel: the default custom_replacement,
+# and the fallback the redactor falls back to when an env/custom replacement
+# would break the surrounding code. Single source so the sites cannot drift.
+DEFAULT_REPLACEMENT = 'REDACTED_BY_CREDACTOR'
+
 # Parsed-TOML config shape.
 TomlData = dict[str, Any]
+
+# M5/S5: a custom replacement must be alphanumeric/underscore/hyphen and
+# NON-EMPTY. The '+' (not '*') rejects an empty --replacement, which would
+# excise the secret with no marker. fullmatch (not search) is required: `$`
+# matches before a trailing newline, so a search-based guard would let an
+# injected "X\n" line through. Single source — cli and Config both use this.
+_SAFE_REPLACEMENT_RE = re.compile(r'[A-Za-z0-9_-]+')
 
 
 class ConfigError(Exception):
@@ -61,7 +74,7 @@ class Config:
     fail_on_error: bool = False
     verbose: bool = False
     replace_mode: str = 'sentinel'  # 'sentinel' | 'env' | 'custom'
-    custom_replacement: str = 'REDACTED_BY_CREDACTOR'
+    custom_replacement: str = DEFAULT_REPLACEMENT
     output_format: str = 'text'  # 'text' | 'json' | 'sarif'
     target: str = '.'
     config_path: str | None = None
@@ -73,21 +86,35 @@ class Config:
         lo_e, hi_e = ENTROPY_BOUNDS
         if not lo_e <= self.entropy_threshold <= hi_e:
             raise ValueError(
-                f'entropy_threshold must be in [{lo_e}, {hi_e}], '
-                f'got {self.entropy_threshold}')
+                f'entropy_threshold must be in [{lo_e}, {hi_e}], got {self.entropy_threshold}'
+            )
         lo_m, hi_m = MIN_LEN_BOUNDS
         if not lo_m <= self.min_value_length <= hi_m:
             raise ValueError(
-                f'min_value_length must be in [{lo_m}, {hi_m}], '
-                f'got {self.min_value_length}')
+                f'min_value_length must be in [{lo_m}, {hi_m}], got {self.min_value_length}'
+            )
         if self.replace_mode not in ('sentinel', 'env', 'custom'):
-            raise ValueError(
-                f'replace_mode must be sentinel|env|custom, '
-                f'got {self.replace_mode!r}')
+            raise ValueError(f'replace_mode must be sentinel|env|custom, got {self.replace_mode!r}')
         if self.output_format not in ('text', 'json', 'sarif'):
+            raise ValueError(f'output_format must be text|json|sarif, got {self.output_format!r}')
+
+    def validate_replacement(self) -> None:
+        """Raise ValueError if the custom replacement is outside the allowlist.
+
+        S6: enforced at the data layer (and called from the redactor sink) so a
+        library caller that builds a Config directly — bypassing the CLI's
+        _validate_replacement front door — cannot get an un-validated string
+        written into files. Only relevant when the mode actually consumes
+        custom_replacement (sentinel/custom); env mode derives names separately.
+        """
+        if self.replace_mode in ('sentinel', 'custom') and not _SAFE_REPLACEMENT_RE.fullmatch(
+            self.custom_replacement
+        ):
             raise ValueError(
-                f'output_format must be text|json|sarif, '
-                f'got {self.output_format!r}')
+                'custom_replacement must be non-empty and match [A-Za-z0-9_-]+ '
+                f'(alphanumeric, underscore, hyphen), got '
+                f'{self.custom_replacement!r}'
+            )
 
 
 def _find_project_root(start: Path) -> Path | None:
@@ -155,13 +182,18 @@ def load_config_file(
                     # detection or inject a replacement (couples with H5).
                     logger.warning(
                         'Loading config from outside project root via --config: '
-                        '%s (project root: %s)', candidate, ref,
+                        '%s (project root: %s)',
+                        candidate,
+                        ref,
                     )
                 else:
                     hint = '' if ci_mode else ' Pass --config to load it explicitly.'
                     logger.error(
                         'Refusing to load config from outside project root: '
-                        '%s (project root: %s).%s', candidate, ref, hint,
+                        '%s (project root: %s).%s',
+                        candidate,
+                        ref,
+                        hint,
                     )
                     return {}
             # An explicit --config that won't parse is fatal (ConfigError);
@@ -185,6 +217,7 @@ def _parse_toml(path: Path, *, fatal: bool = False) -> TomlData:
     ``open()`` forever); both entry points do.
     """
     import tomllib
+
     try:
         with open(path, 'rb') as fh:
             return tomllib.load(fh)
@@ -210,8 +243,11 @@ _SCALAR_VALIDATORS = (
 
 
 def _coerce_scalar(
-    key: str, raw: object, coerce: Callable[[Any], Any],
-    bounds: tuple[float, float], default: Any,
+    key: str,
+    raw: object,
+    coerce: Callable[[Any], Any],
+    bounds: tuple[float, float],
+    default: Any,
 ) -> Any:
     """Coerce *raw* via *coerce* and range-check it against *bounds*; warn and
     return *default* on a type error or out-of-range value."""
@@ -223,7 +259,8 @@ def _coerce_scalar(
         return default
     if not lo <= val <= hi:
         logger.warning(
-            '%s=%s out of valid range (%s-%s), using default %s', key, val, lo, hi, default)
+            '%s=%s out of valid range (%s-%s), using default %s', key, val, lo, hi, default
+        )
         return default
     return val
 
@@ -281,10 +318,18 @@ def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
 # MALFORMED known key already warns, so a silently dropped typo (e.g.
 # 'entropy_treshold') was the one config mistake with no signal — for a
 # security tool that can mean scanning at the wrong sensitivity unnoticed.
-_KNOWN_KEYS = frozenset({
-    'entropy_threshold', 'min_value_length', 'skip_dirs', 'skip_files',
-    'extra_extensions', 'extra_safe_values', 'replacement', 'ingest',
-})
+_KNOWN_KEYS = frozenset(
+    {
+        'entropy_threshold',
+        'min_value_length',
+        'skip_dirs',
+        'skip_files',
+        'extra_extensions',
+        'extra_safe_values',
+        'replacement',
+        'ingest',
+    }
+)
 
 
 def apply_config_file(config: Config, file_data: TomlData) -> None:
@@ -307,13 +352,16 @@ def apply_config_file(config: Config, file_data: TomlData) -> None:
             # (auto-prepending '.' would break the legitimate Dockerfile match).
             if ext and not ext.startswith('.'):
                 logger.warning(
-                    "extra_extensions entry %r has no leading dot; it will only "
-                    "match files named exactly %r, not files with that extension",
-                    ext, ext)
+                    'extra_extensions entry %r has no leading dot; it will only '
+                    'match files named exactly %r, not files with that extension',
+                    ext,
+                    ext,
+                )
         config.extra_extensions.update(exts)
     if 'extra_safe_values' in file_data:
         config.extra_safe_values.update(
-            _coerce_str_list('extra_safe_values', file_data['extra_safe_values'], lower=True))
+            _coerce_str_list('extra_safe_values', file_data['extra_safe_values'], lower=True)
+        )
     if 'replacement' in file_data:
         val = file_data['replacement']
         if not isinstance(val, str):

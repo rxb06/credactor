@@ -1,4 +1,4 @@
-"""Allow running as ``python -m credactor``."""
+"""Allow running as python -m credactor ."""
 
 from .cli import main
 

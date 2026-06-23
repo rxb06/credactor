@@ -4,6 +4,7 @@ Directory walking, git-staged scanning, and git-history scanning.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ from .config import Config
 from .gitignore import matches_gitignore, parse_gitignore_file
 from .patterns import SKIP_DIRS, SKIP_FILES
 from .scanner import (
+    _MAX_FILE_SIZE,
     _MAX_LINE_LENGTH,
     scan_file,
     scan_line,
@@ -24,7 +26,7 @@ from .scanner import (
 )
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, utf16_variant
+from .utils import is_within_root, sanitize_for_terminal, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -46,6 +48,7 @@ class GitUnavailableError(RuntimeError):
 
 def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], None]:
     """Return a callback that prints a progress line to stderr."""
+
     def _progress(done: int) -> None:
         if sys.stderr.isatty() and not no_color:
             sys.stderr.write(f'\r  Scanning... {done}/{total} files')
@@ -53,6 +56,7 @@ def _progress_callback_factory(total: int, no_color: bool) -> Callable[[int], No
             if done == total:
                 sys.stderr.write('\r' + ' ' * 40 + '\r')
                 sys.stderr.flush()
+
     return _progress
 
 
@@ -86,15 +90,18 @@ def walk_and_scan(
     root_str = str(root_path) + os.sep
     for dirpath, dirnames, filenames in os.walk(root_path):
         dirnames[:] = [
-            d for d in dirnames
+            d
+            for d in dirnames
             if d not in extra_skip_dirs
             and is_within_root(str(Path(os.path.join(dirpath, d)).resolve()), root_str)
         ]
         if '.gitignore' in filenames:
-            gi_patterns.extend(parse_gitignore_file(
-                os.path.join(dirpath, '.gitignore'),
-                Path(dirpath).resolve(),
-            ))
+            gi_patterns.extend(
+                parse_gitignore_file(
+                    os.path.join(dirpath, '.gitignore'),
+                    Path(dirpath).resolve(),
+                )
+            )
         for filename in filenames:
             if filename in extra_skip_files:
                 continue
@@ -184,14 +191,18 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
         # the ANSI code page on Windows and mojibake non-ASCII paths.
         probe = subprocess.run(
             ['git', 'rev-parse', sub],
-            capture_output=True, text=True, encoding='utf-8',
-            cwd=root, timeout=_GIT_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            cwd=root,
+            timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
     if probe.returncode != 0:
         raise GitUnavailableError(
-            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}')
+            f'not a git repository (git rev-parse failed): {probe.stderr.strip()}'
+        )
     return probe.stdout.strip()
 
 
@@ -219,8 +230,11 @@ def scan_staged_files(
         # instead of being scanned.
         result = subprocess.run(
             ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-            capture_output=True, text=True, encoding='utf-8',
-            cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            cwd=str(root_path),
+            timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         # rev-parse already proved git is usable; a diff failure here is a
@@ -248,6 +262,7 @@ def scan_staged_files(
 
     findings: list[Finding] = []
     errored: list[str] = []
+    extra_skip_files = SKIP_FILES | config.skip_files
     for line in raw_staged:
         # Reject paths with '..' components (traversal guard, consistent with the
         # git-history scanner).
@@ -260,20 +275,25 @@ def scan_staged_files(
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):
             continue
+        name_lower = Path(line).name.lower()
+        # Lockfiles and user skip_files are excluded on every path, exactly as
+        # the directory walk does (SKIP_FILES | config.skip_files at :80) —
+        # checked BEFORE extension classification so a scanned-extension
+        # lockfile (pnpm-lock.yaml has suffix .yaml) or a config.skip_files
+        # entry can't slip through the .json branch or should_scan_file below.
+        if name_lower in extra_skip_files:
+            continue
         # .json gets the same opt-in the directory walk gives it: scanned only
         # under --scan-json, otherwise skipped WITH a signal (a staged
         # credentials.json silently passing the pre-commit gate is a false
-        # all-clear). Lockfiles (SKIP_FILES) stay excluded either way — checked
-        # here so an extra_extensions '.json' entry can't re-admit them through
-        # the should_scan_file fallback below.
-        name_lower = Path(line).name.lower()
-        if name_lower.endswith('.json'):
-            if name_lower in SKIP_FILES:
-                continue
+        # all-clear). Classify via the suffix (matching the directory walk's
+        # Path(...).suffix check) so a file literally named '.json' is treated
+        # the same on both paths, not as JSON only here.
+        if Path(line).suffix.lower() == '.json':
             if not config.scan_json:
                 logger.warning(
-                    'Staged .json file skipped — pass --scan-json to include '
-                    'it: %s', line,
+                    'Staged .json file skipped — pass --scan-json to include it: %s',
+                    line,
                 )
                 continue
         elif not should_scan_file(line, config.extra_extensions):
@@ -284,41 +304,74 @@ def scan_staged_files(
         try:
             blob = subprocess.run(
                 ['git', 'show', f':{line}'],
-                capture_output=True, cwd=str(root_path), timeout=_GIT_TIMEOUT_S,
+                capture_output=True,
+                cwd=str(root_path),
+                timeout=_GIT_TIMEOUT_S,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning('Cannot read staged %s: %s', line, exc)
             errored.append(full_path)
             continue
         if blob.returncode != 0:
-            logger.warning('Cannot read staged %s: %s', line,
-                           blob.stderr.decode('utf-8', 'replace').strip())
+            logger.warning(
+                'Cannot read staged %s: %s', line, blob.stderr.decode('utf-8', 'replace').strip()
+            )
             errored.append(full_path)
+            continue
+
+        # Size guard, mirroring scan_file's working-tree ceiling: the staged
+        # path buffers the whole index blob into memory, so without this the
+        # 50 MB _MAX_FILE_SIZE cap is bypassed in the pre-commit path and a
+        # huge staged file can OOM the hook. Skip-with-WARN (same signal shape
+        # as scan_file) so the gate degrades loudly, not silently.
+        raw = blob.stdout
+        if len(raw) > _MAX_FILE_SIZE:
+            logger.warning(
+                'Skipping staged %s: file too large (%.1f MB > %.0f MB limit)',
+                line,
+                len(raw) / 1024 / 1024,
+                _MAX_FILE_SIZE / 1024 / 1024,
+            )
             continue
 
         # scan_lines runs the same full pass as scan_file (PEM blocks, per-line,
         # multi-line strings), so staged content gets identical coverage to a
-        # working-tree scan. keepends=True: the multi-line pass joins the lines
-        # back and needs the terminators for correct line numbering.
-        # Universal-newline normalization mirrors how open() reads the file
-        # path: without it, CRLF blobs leak literal \r into multiline raw
-        # previews and lone-\r endings break the multiline pass's \n-based
+        # working-tree scan. The line split MUST match the working-tree path
+        # (utils.read_lines -> open().readlines()): io.StringIO(newline=None)
+        # uses the SAME universal-newline machinery, translating \r\n/\r/\n to
+        # \n and splitting on nothing else, so the staged line list is
+        # byte-identical to the tree scan. str.splitlines() would additionally
+        # break on \x0c/\x0b/\x85/U+2028/U+2029/\x1c-\x1e, splitting a secret
+        # value that embeds one across two lines and slipping it past the gate.
+        # readlines() keeps each \n terminator the multi-line pass needs for
         # line numbering.
         # UTF-16 parity: the working-tree path detects NUL-interleaved blobs
         # via detect_encoding; the staged blob must match or a UTF-16 secret
         # passes the pre-commit gate that the tree scan flags.
-        raw = blob.stdout
+        variant = utf16_variant(raw)
+        if variant is None and b'\x00' in raw:
+            # NUL-bearing but NOT clean UTF-16 (odd/truncated UTF-16, UTF-32,
+            # stray NULs): the working-tree path's detect_encoding falls back to
+            # latin-1 AND warns. utf-8/surrogateescape leaves the NULs
+            # interleaved so patterns can't match, so emit the same WARN the
+            # tree scan does — the pre-commit gate must signal the ambiguous
+            # miss instead of a quiet pass.
+            logger.warning(
+                'could not confirm encoding of staged %s; secrets may be missed — '
+                'if it is UTF-16 or another multibyte encoding the staged scan '
+                'cannot read it reliably. For detection install the encoding '
+                'extra: pip install "credactor[encoding]"',
+                sanitize_for_terminal(line),
+            )
         try:
-            content = raw.decode(utf16_variant(raw) or 'utf-8',
-                                 errors='surrogateescape')
+            content = raw.decode(variant or 'utf-8', errors='surrogateescape')
         except UnicodeDecodeError:
             # Truncated UTF-16 blob: never crash a pre-commit hook — keep the
             # historical utf-8 reading (lossy for this blob, but loud is the
             # working-tree scan's job; the hook must stay usable).
             content = raw.decode('utf-8', errors='surrogateescape')
-        content = content.replace('\r\n', '\n').replace('\r', '\n')
-        findings.extend(scan_lines(full_path, content.splitlines(keepends=True),
-                                   config=config, allowlist=allowlist))
+        lines = io.StringIO(content, newline=None).readlines()
+        findings.extend(scan_lines(full_path, lines, config=config, allowlist=allowlist))
 
     return findings, errored
 
@@ -345,10 +398,21 @@ def scan_git_history(
         # ANSI code page can't mojibake paths, and a stray non-UTF-8 byte in
         # historical diff content degrades to U+FFFD instead of crashing.
         result = subprocess.run(
-            ['git', 'log', f'-{max_commits}', '-p', '--diff-filter=ACMR',
-             '--no-color', '--format=commit %H'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            [
+                'git',
+                'log',
+                f'-{max_commits}',
+                '-p',
+                '--diff-filter=ACMR',
+                '--no-color',
+                '--format=commit %H',
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=str(root_path),
+            timeout=_GIT_LOG_TIMEOUT_S,
         )
         if result.returncode != 0:
             # e.g. a valid repo with no commits yet — nothing to scan, not fatal.
@@ -365,8 +429,12 @@ def scan_git_history(
     try:
         depth = subprocess.run(
             ['git', 'rev-list', '--count', f'--max-count={max_commits + 1}', 'HEAD'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            cwd=str(root_path), timeout=_GIT_LOG_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=str(root_path),
+            timeout=_GIT_LOG_TIMEOUT_S,
         )
         if depth.returncode == 0 and depth.stdout.strip() == str(max_commits + 1):
             logger.warning(
@@ -405,9 +473,13 @@ def scan_git_history(
             added_line = line[1:]  # strip the leading '+'
             if len(added_line) > _MAX_LINE_LENGTH:
                 long_added += 1
-            line_findings = scan_line(diff_lineno, added_line,
-                                      f'{current_file} (commit {current_commit})',
-                                      config=config, allowlist=allowlist)
+            line_findings = scan_line(
+                diff_lineno,
+                added_line,
+                f'{current_file} (commit {current_commit})',
+                config=config,
+                allowlist=allowlist,
+            )
             for f in line_findings:
                 f['commit'] = current_commit
             findings.extend(line_findings)
@@ -420,9 +492,8 @@ def scan_git_history(
         logger.warning(
             'history scan: %d added line(s) exceeded %d chars — content past '
             'that limit was not scanned by per-line matching',
-            long_added, _MAX_LINE_LENGTH,
+            long_added,
+            _MAX_LINE_LENGTH,
         )
 
     return findings
-
-

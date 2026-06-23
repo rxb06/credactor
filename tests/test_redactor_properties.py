@@ -12,6 +12,7 @@ live regression gate.
 Secrets are constructed at runtime (no literals) so this module stays clean
 under credactor's own self-scan.
 """
+
 from __future__ import annotations
 
 import os
@@ -33,8 +34,14 @@ def _secret() -> str:
     return 'ghp_' + ''.join(_r.choice(string.ascii_letters + string.digits) for _ in range(36))
 
 
-def _redact(tmp_path, name: str, content: str, *, mode: str = 'sentinel',
-            custom: str = 'REDACTED_BY_CREDACTOR'):
+def _redact(
+    tmp_path,
+    name: str,
+    content: str,
+    *,
+    mode: str = 'sentinel',
+    custom: str = 'REDACTED_BY_CREDACTOR',
+):
     p = tmp_path / name
     # newline='': write the content bytes EXACTLY as given. Text mode would
     # translate \n -> \r\n on Windows, and the byte-level invariants here
@@ -50,13 +57,13 @@ def _redact(tmp_path, name: str, content: str, *, mode: str = 'sentinel',
 
 # language -> a single-line assignment template with one quoted secret
 _LANGS = {
-    'app.py':   'api_key = "{s}"\n',
-    'app.js':   'const apiKey = "{s}";\n',
-    'app.go':   'var apiKey = "{s}"\n',
+    'app.py': 'api_key = "{s}"\n',
+    'app.js': 'const apiKey = "{s}";\n',
+    'app.go': 'var apiKey = "{s}"\n',
     'App.java': 'String apiKey = "{s}";\n',
-    'app.rb':   'api_key = "{s}"\n',
-    'app.php':  '$api_key = "{s}";\n',
-    'app.sh':   'API_KEY="{s}"\n',
+    'app.rb': 'api_key = "{s}"\n',
+    'app.php': '$api_key = "{s}";\n',
+    'app.sh': 'API_KEY="{s}"\n',
     'app.yaml': 'api_key: "{s}"\n',
 }
 
@@ -89,8 +96,9 @@ def test_no_temp_leak(tmp_path, name, tmpl):
     assert leaks == []
 
 
-@pytest.mark.skipif(sys.platform == 'win32',
-                    reason='POSIX permission bits are not honoured on Windows')
+@pytest.mark.skipif(
+    sys.platform == 'win32', reason='POSIX permission bits are not honoured on Windows'
+)
 def test_permissions_preserved(tmp_path):
     """#5b — original file mode is restored after redaction."""
     p = tmp_path / 'perm.py'
@@ -126,7 +134,7 @@ def test_preserves_crlf_line_endings(tmp_path):
     cfg = Config(no_color=True)
     batch_replace_in_file(str(p), scan_file(str(p), config=cfg), cfg)
     raw = p.read_bytes()
-    assert b'# header\r\nbefore = 1\r\n' in raw   # CRLF preserved on untouched lines
+    assert b'# header\r\nbefore = 1\r\n' in raw  # CRLF preserved on untouched lines
     assert b'\r\nafter = 2\r\n' in raw
     assert raw.count(b'\n') == raw.count(b'\r\n')  # every LF is part of a CRLF (not normalized)
     assert s.encode() not in raw
@@ -158,7 +166,8 @@ def test_env_mode_output_is_valid_python(tmp_path):
     replaces the quoted literal instead of nesting inside the source quotes."""
     s = _secret()
     p, findings, replaced, failed, bak = _redact(
-        tmp_path, 'app.py', f'api_key = "{s}"\n', mode='env')
+        tmp_path, 'app.py', f'api_key = "{s}"\n', mode='env'
+    )
     assert replaced == 1
     compile(p.read_text(encoding='utf-8'), 'app.py', 'exec')  # H2: valid syntax
 
@@ -180,6 +189,5 @@ def test_latin1_bytes_roundtrip(tmp_path):
     # Full-file equality: deterministic under ANY single-byte codec the
     # detector reports, since unchanged bytes round-trip identically and the
     # replaced line is pure ASCII.
-    expected = ('# café résumé\n'.encode('latin-1')
-                + b'api_key = "REDACTED_BY_CREDACTOR"\n')
+    expected = '# café résumé\n'.encode('latin-1') + b'api_key = "REDACTED_BY_CREDACTOR"\n'
     assert p.read_bytes() == expected

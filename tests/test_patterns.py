@@ -152,7 +152,7 @@ class TestXmlAttr:
         key, val, span = results[0]
         assert key == 'Password'
         assert val == 's3cretP@ssw0rd123!!'
-        assert line[span[0]:span[1]] == val
+        assert line[span[0] : span[1]] == val
 
     def test_xml_value_first(self):
         line = '<add value="s3cretP@ssw0rd123!!" key="Password" />'
@@ -162,7 +162,7 @@ class TestXmlAttr:
         assert key == 'Password'
         assert val == 's3cretP@ssw0rd123!!'
         # L2: the span must locate the value within the line for dedup
-        assert line[span[0]:span[1]] == val
+        assert line[span[0] : span[1]] == val
 
     def test_xml_name_variant(self):
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -175,56 +175,96 @@ class TestXmlAttr:
 class TestValuePattern:
     def test_named_fields_and_positional_unpacking(self):
         from credactor.patterns import VALUE_PATTERNS, ValuePattern
+
         vp = VALUE_PATTERNS[0]
         assert isinstance(vp, ValuePattern)
         assert vp.severity == 'critical'
         # The scanner unpacks positionally — that must keep working.
         pattern, label, min_ent, severity = vp
         assert (pattern, label, min_ent, severity) == (
-            vp.pattern, vp.label, vp.min_entropy, vp.severity)
+            vp.pattern,
+            vp.label,
+            vp.min_entropy,
+            vp.severity,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Variable name patterns
 # ---------------------------------------------------------------------------
 class TestCredVarPatterns:
-    @pytest.mark.parametrize('name', [
-        'api_key', 'API_KEY', 'apikey', 'api-key',
-        'password', 'PASSWD', 'db_password',
-        'access_token', 'auth_token', 'bearer_token',
-        'client_secret', 'secret_key', 'private_key',
-        'webhook_secret', 'bot_token',
-        'database_url', 'db_conn_string',
-        # bare `token` is in the manual's verified high-tier examples
-        'token', 'TOKEN',
-        # hyphen-delimited keys are word-boundary-visible (k8s/YAML
-        # manifests): vault/session/id tokens are genuine secrets —
-        # fail-closed. Kebab pagination cursors ride along as an ACCEPTED
-        # false-positive tradeoff (suppressible); pinned here so the
-        # behaviour is deliberate, not accidental.
-        'vault-token', 'session-token', 'next-page-token',
-        # prefixed api_key forms: \b cannot match after '_', so these need
-        # the explicit prefix alternative (manual: "a real secret in a
-        # variable merely named test_api_key is still flagged")
-        'test_api_key', 'my_api_key', 'aws_api_key', 'stripe_api_key',
-        'sendgrid_apikey',
-    ])
+    @pytest.mark.parametrize(
+        'name',
+        [
+            'api_key',
+            'API_KEY',
+            'apikey',
+            'api-key',
+            'password',
+            'PASSWD',
+            'db_password',
+            'access_token',
+            'auth_token',
+            'bearer_token',
+            'client_secret',
+            'secret_key',
+            'private_key',
+            'webhook_secret',
+            'bot_token',
+            'database_url',
+            'db_conn_string',
+            # bare `token` is in the manual's verified high-tier examples
+            'token',
+            'TOKEN',
+            # hyphen-delimited keys are word-boundary-visible (k8s/YAML
+            # manifests): vault/session/id tokens are genuine secrets —
+            # fail-closed. Kebab pagination cursors ride along as an ACCEPTED
+            # false-positive tradeoff (suppressible); pinned here so the
+            # behaviour is deliberate, not accidental.
+            'vault-token',
+            'session-token',
+            'next-page-token',
+            # prefixed api_key forms: \b cannot match after '_', so these need
+            # the explicit prefix alternative (manual: "a real secret in a
+            # variable merely named test_api_key is still flagged")
+            'test_api_key',
+            'my_api_key',
+            'aws_api_key',
+            'stripe_api_key',
+            'sendgrid_apikey',
+        ],
+    )
     def test_matches(self, name):
         assert CRED_VAR_PATTERNS.search(name)
 
-    @pytest.mark.parametrize('name', [
-        'username', 'email', 'name', 'description',
-        'is_active', 'count', 'filepath',
-        # the api_key prefix demands an explicit _/- separator: substrings
-        # and lookalikes stay unmatched
-        'okapi_key', 'monkey', 'keyword', 'api_key_id',
-        # \b cannot match after '_' or inside camelCase: the bare `token`
-        # alternative must NOT drag in compound names — especially
-        # pagination cursors, whose opaque high-entropy values would
-        # otherwise become a standing FP source.
-        'csrf_token', 'next_page_token', 'pageToken', 'max_tokens',
-        'token_count', 'tokenizer',
-    ])
+    @pytest.mark.parametrize(
+        'name',
+        [
+            'username',
+            'email',
+            'name',
+            'description',
+            'is_active',
+            'count',
+            'filepath',
+            # the api_key prefix demands an explicit _/- separator: substrings
+            # and lookalikes stay unmatched
+            'okapi_key',
+            'monkey',
+            'keyword',
+            'api_key_id',
+            # \b cannot match after '_' or inside camelCase: the bare `token`
+            # alternative must NOT drag in compound names — especially
+            # pagination cursors, whose opaque high-entropy values would
+            # otherwise become a standing FP source.
+            'csrf_token',
+            'next_page_token',
+            'pageToken',
+            'max_tokens',
+            'token_count',
+            'tokenizer',
+        ],
+    )
     def test_no_match(self, name):
         assert not CRED_VAR_PATTERNS.search(name)
 
@@ -233,26 +273,32 @@ class TestCredVarPatterns:
 # Dynamic lookup patterns (#20)
 # ---------------------------------------------------------------------------
 class TestDynamicLookup:
-    @pytest.mark.parametrize('line', [
-        'os.getenv("API_KEY")',
-        'os.environ["API_KEY"]',
-        'os.environ.get("API_KEY")',
-        'Variable.get("my_key")',
-        'config.get("key")',
-        'keyring.get_password("service", "user")',
-        'vault:secret/data/myapp#key',
-        'ENC[AES256_GCM,data:abc123]',
-        'hvac.Client(url="https://vault")',
-    ])
+    @pytest.mark.parametrize(
+        'line',
+        [
+            'os.getenv("API_KEY")',
+            'os.environ["API_KEY"]',
+            'os.environ.get("API_KEY")',
+            'Variable.get("my_key")',
+            'config.get("key")',
+            'keyring.get_password("service", "user")',
+            'vault:secret/data/myapp#key',
+            'ENC[AES256_GCM,data:abc123]',
+            'hvac.Client(url="https://vault")',
+        ],
+    )
     def test_matches(self, line):
         assert DYNAMIC_LOOKUP_RE.search(line)
 
-    @pytest.mark.parametrize('line', [
-        'api_key = "hardcoded_secret_value"',
-        'secret = "AKIAIOSFODNN7EXAMPLE"',
-        'password = "p4$$w0rd!"',
-        'just_a_string',
-    ])
+    @pytest.mark.parametrize(
+        'line',
+        [
+            'api_key = "hardcoded_secret_value"',
+            'secret = "AKIAIOSFODNN7EXAMPLE"',
+            'password = "p4$$w0rd!"',
+            'just_a_string',
+        ],
+    )
     def test_no_match(self, line):
         assert not DYNAMIC_LOOKUP_RE.search(line)
 
@@ -269,3 +315,25 @@ class TestSuppressPattern:
 
     def test_no_match(self):
         assert not SUPPRESS_RE.search('api_key = "secret"  # this is fine')
+
+
+class TestConnStringReDoS:
+    """S4: the connection-string regex must be linear, not O(n^2)."""
+
+    def test_real_connection_strings_still_match(self):
+        for conn in (
+            'postgresql://admin:s3cretP' + '@ss@db.host.com:5432/mydb',
+            'mongodb+srv://user:p4ssw0rd' + '@cluster.mongodb.net/db',
+            'redis://default:mypassword' + '@redis.host.io:6379',
+        ):
+            assert _CONN_STRING_RE.search(conn)
+
+    def test_adversarial_input_is_bounded(self):
+        import time
+
+        # long no-@ runs separated by ':' -> O(n^2) on an unbounded regex.
+        line = 'http://' + 'a' * 16000 + ':' + 'b' * 16000
+        t = time.perf_counter()
+        _CONN_STRING_RE.search(line)
+        elapsed = time.perf_counter() - t
+        assert elapsed < 0.1, f'{elapsed * 1000:.0f}ms - regex is not bounded'

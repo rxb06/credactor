@@ -17,45 +17,114 @@ from .types import Severity
 # File types to scan
 # ---------------------------------------------------------------------------
 SCAN_EXTENSIONS = {
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.sh', '.bash',
-    '.env', '.cfg', '.ini', '.toml',
-    '.yaml', '.yml',
-    '.rb', '.go', '.java', '.php', '.cs', '.kt',
-    '.tf', '.hcl', '.conf', '.config', '.properties',
+    '.py',
+    '.js',
+    '.ts',
+    '.jsx',
+    '.tsx',
+    '.sh',
+    '.bash',
+    '.env',
+    '.cfg',
+    '.ini',
+    '.toml',
+    '.yaml',
+    '.yml',
+    '.rb',
+    '.go',
+    '.java',
+    '.php',
+    '.cs',
+    '.kt',
+    '.tf',
+    '.hcl',
+    '.conf',
+    '.config',
+    '.properties',
     '.xml',
-    '.pem', '.key', '.crt',           # M1: standalone PEM / key / cert files
+    '.pem',
+    '.key',
+    '.crt',  # M1: standalone PEM / key / cert files
     '.txt',  # notes/scratch files — measured clean on prose and
-             # sha256-pinned requirements; a real leak vector (2.4.1)
+    # sha256-pinned requirements; a real leak vector (2.5.0)
 }
 
 # M1: extensionless private-key files, matched by name in should_scan_file.
 KEY_FILENAMES = {'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'}
 
 # Directories / files to skip entirely
-SKIP_DIRS = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.tox',
-             '.mypy_cache', '.pytest_cache', 'dist', 'build', '.eggs',
-             '.idea', '.vscode', '.vs'}
+SKIP_DIRS = {
+    '.git',
+    '__pycache__',
+    'node_modules',
+    '.venv',
+    'venv',
+    '.tox',
+    '.mypy_cache',
+    '.pytest_cache',
+    'dist',
+    'build',
+    '.eggs',
+    '.idea',
+    '.vscode',
+    '.vs',
+}
 SKIP_FILES = {'package-lock.json', 'yarn.lock', 'poetry.lock', 'pnpm-lock.yaml'}
 
 # ---------------------------------------------------------------------------
 # Placeholder / safe values – findings with these values are suppressed
 # ---------------------------------------------------------------------------
 SAFE_VALUES = {
-    '', 'xxxxx', 'your_key_here', 'your_api_key', 'replace_me',
-    'changeme', 'placeholder', 'none', 'null', 'true', 'false',
-    'todo', '<your_key>', '<api_key>', 'example', 'test', 'dummy',
-    'your_secret', 'your_token', 'your_password', 'enter_here',
-    'your_client_id', 'your_client_secret', 'your_tenant_id',
-    'xxxx', 'xxxxxx', 'xxxxxxx', 'xxxxxxxx',
+    '',
+    'xxxxx',
+    'your_key_here',
+    'your_api_key',
+    'replace_me',
+    'changeme',
+    'placeholder',
+    'none',
+    'null',
+    'true',
+    'false',
+    'todo',
+    '<your_key>',
+    '<api_key>',
+    'example',
+    'test',
+    'dummy',
+    'your_secret',
+    'your_token',
+    'your_password',
+    'enter_here',
+    'your_client_id',
+    'your_client_secret',
+    'your_tenant_id',
+    'xxxx',
+    'xxxxxx',
+    'xxxxxxx',
+    'xxxxxxxx',
     'redacted_by_credactor',
     # Test/mock/fake prefixed values
-    'test_password', 'mock_password', 'fake_password',
-    'test_api_key', 'mock_api_key', 'fake_api_key',
-    'test_secret', 'mock_secret', 'fake_secret',
-    'test_token', 'mock_token', 'fake_token',
+    'test_password',
+    'mock_password',
+    'fake_password',
+    'test_api_key',
+    'mock_api_key',
+    'fake_api_key',
+    'test_secret',
+    'mock_secret',
+    'fake_secret',
+    'test_token',
+    'mock_token',
+    'fake_token',
     # Common .env.example placeholders
-    'change_this', 'replace_this', 'update_me', 'set_me',
-    'fill_in', 'add_your_key', 'put_your_key_here',
+    'change_this',
+    'replace_this',
+    'update_me',
+    'set_me',
+    'fill_in',
+    'add_your_key',
+    'put_your_key_here',
 }
 
 # ---------------------------------------------------------------------------
@@ -65,37 +134,37 @@ SAFE_VALUES = {
 # ---------------------------------------------------------------------------
 DYNAMIC_LOOKUP_RE = re.compile(
     r'(?:'
-    r'Variable\.get'                     # Apache Airflow Variable store
-    r'|os\.getenv'                       # os.getenv('KEY')
+    r'Variable\.get'  # Apache Airflow Variable store
+    r'|os\.getenv'  # os.getenv('KEY')
     r'|os\.environ(?:\.get)?\s*[\[({]'  # os.environ['KEY'] / os.environ.get(
-    r'|environ\.get\s*\('               # environ.get(
-    r'|getenv\s*\('                      # standalone getenv(
-    r'|config\.get\s*\('                # config.get(
-    r'|settings\.get\s*\('              # settings.get(
-    r'|SecretClient.*\.get_secret'       # Azure Key Vault
-    r'|boto3.*\.get_secret'             # AWS Secrets Manager
-    r'|keyring\.get_password'           # system keyring
+    r'|environ\.get\s*\('  # environ.get(
+    r'|getenv\s*\('  # standalone getenv(
+    r'|config\.get\s*\('  # config.get(
+    r'|settings\.get\s*\('  # settings.get(
+    r'|SecretClient.*\.get_secret'  # Azure Key Vault
+    r'|boto3.*\.get_secret'  # AWS Secrets Manager
+    r'|keyring\.get_password'  # system keyring
     # #20 – Hashicorp Vault / SOPS
-    r'|vault:secret/'                   # Vault secret reference
-    r'|ENC\[AES256_GCM,'               # SOPS-encrypted value
-    r'|hvac\.Client'                    # Hashicorp Vault Python client
-    r'|Vault\.read\s*\('               # Vault read call
+    r'|vault:secret/'  # Vault secret reference
+    r'|ENC\[AES256_GCM,'  # SOPS-encrypted value
+    r'|hvac\.Client'  # Hashicorp Vault Python client
+    r'|Vault\.read\s*\('  # Vault read call
     # Runtime env lookups across languages
-    r'|process\.env\.'                  # JS/Node: process.env.VAR
-    r'|Rails\.application\.credentials' # Ruby on Rails encrypted credentials
+    r'|process\.env\.'  # JS/Node: process.env.VAR
+    r'|Rails\.application\.credentials'  # Ruby on Rails encrypted credentials
     # Terraform / HCL references
-    r'|data\.\w+'                       # Terraform: any data.* source
-    r'|var\.\w+'                        # Terraform: var.name references
-    r'|local\.\w+'                      # Terraform: local.* values
-    r'|module\.\w+'                     # Terraform: module.* outputs
-    r'|random_password\.\w+'            # Terraform: random_password resource
+    r'|data\.\w+'  # Terraform: any data.* source
+    r'|var\.\w+'  # Terraform: var.name references
+    r'|local\.\w+'  # Terraform: local.* values
+    r'|module\.\w+'  # Terraform: module.* outputs
+    r'|random_password\.\w+'  # Terraform: random_password resource
     # Platform-specific runtime lookups
-    r'|BuildConfig\.\w+'               # Android/Kotlin: compile-time constants
-    r'|op://[\w/]+'                     # 1Password CLI: op://vault/item/field
-    r'|doppler\.get\s*\('              # Doppler SDK
-    r'|infisical\.get\s*\('            # Infisical SDK
+    r'|BuildConfig\.\w+'  # Android/Kotlin: compile-time constants
+    r'|op://[\w/]+'  # 1Password CLI: op://vault/item/field
+    r'|doppler\.get\s*\('  # Doppler SDK
+    r'|infisical\.get\s*\('  # Infisical SDK
     r'|SecretManager.*\.access_secret'  # GCP Secret Manager
-    r'|config\.require_secret\s*\('    # Pulumi secret config
+    r'|config\.require_secret\s*\('  # Pulumi secret config
     r')',
     re.IGNORECASE,
 )
@@ -145,12 +214,8 @@ CRED_VAR_PATTERNS = re.compile(
 # #17: Added connection string pattern.
 # #18: Added PEM private key header.
 # ---------------------------------------------------------------------------
-_JWT_RE = re.compile(
-    r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
-)
-_AWS_RE = re.compile(
-    r'\b(AKIA|ASIA|AROA|AIDA|ANPA|ANVA|AIPA)[A-Z0-9]{16}\b'
-)
+_JWT_RE = re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}')
+_AWS_RE = re.compile(r'\b(AKIA|ASIA|AROA|AIDA|ANPA|ANVA|AIPA)[A-Z0-9]{16}\b')
 _HEX_RE = re.compile(r'\b[0-9a-fA-F]{32,64}\b')
 _B64_RE = re.compile(r'[A-Za-z0-9+/=_\-]{60,}')
 
@@ -159,20 +224,21 @@ _GCP_RE = re.compile(r'\bAIza[0-9A-Za-z_-]{35}\b')
 _STRIPE_LIVE_RE = re.compile(r'\b[sr]k_live_[0-9a-zA-Z]{24,}\b')
 _STRIPE_TEST_RE = re.compile(r'\b[sr]k_test_[0-9a-zA-Z]{24,}\b')
 _SLACK_RE = re.compile(r'\bxox[bpsa]-[0-9A-Za-z-]{10,}\b')
-_GITHUB_RE = re.compile(
-    r'\b(?:ghp_|gho_|ghs_|ghu_|github_pat_)[0-9A-Za-z_]{16,}\b'
-)
+_GITHUB_RE = re.compile(r'\b(?:ghp_|gho_|ghs_|ghu_|github_pat_)[0-9A-Za-z_]{16,}\b')
 _GITLAB_RE = re.compile(r'\bglpat-[0-9A-Za-z_-]{20,}\b')
 _NPM_RE = re.compile(r'\bnpm_[0-9a-zA-Z]{36}\b')
 _PYPI_RE = re.compile(r'\bpypi-[0-9a-zA-Z_-]{16,}\b')
 
 # #17 – Connection strings with embedded credentials (scheme://user:pass@host)
 _CONN_STRING_RE = re.compile(
-    r'[a-zA-Z][a-zA-Z0-9+.-]*://[^:@\s]+:[^@\s]+@[^\s"\']{3,}'
+    # S4: bounded runs (no unbounded '+') keep matching linear, not O(n^2), on
+    # adversarial input — the credential parts of a real URL are short.
+    r'[a-zA-Z][a-zA-Z0-9+.-]{0,30}://[^:@\s]{1,256}:[^@\s]{1,256}@[^\s"\']{3,256}'
 )
 
 # #18 – PEM private key header
 _PEM_KEY_RE = re.compile(r'-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+
 
 # severity: critical > high > medium > low
 class ValuePattern(NamedTuple):
@@ -191,22 +257,22 @@ VALUE_PATTERNS: list[ValuePattern] = [
     # placeholders (e.g. an AKIA + constant body in a .env.example) are also
     # flagged — a false positive is noise, a missed live key is a leak. Suppress
     # known placeholders via .credactorignore.
-    ValuePattern(_AWS_RE,          'AWS access key',       0.0, 'critical'),
-    ValuePattern(_GCP_RE,          'GCP API key',          0.0, 'critical'),
-    ValuePattern(_STRIPE_LIVE_RE,  'Stripe live key',      0.0, 'critical'),
-    ValuePattern(_GITHUB_RE,       'GitHub token',         0.0, 'critical'),
-    ValuePattern(_GITLAB_RE,       'GitLab token',         0.0, 'critical'),
-    ValuePattern(_SLACK_RE,        'Slack token',          0.0, 'critical'),
-    ValuePattern(_NPM_RE,          'npm token',            0.0, 'critical'),
-    ValuePattern(_PYPI_RE,         'PyPI token',           0.0, 'critical'),
-    ValuePattern(_PEM_KEY_RE,      'private key header',   0.0, 'critical'),
+    ValuePattern(_AWS_RE, 'AWS access key', 0.0, 'critical'),
+    ValuePattern(_GCP_RE, 'GCP API key', 0.0, 'critical'),
+    ValuePattern(_STRIPE_LIVE_RE, 'Stripe live key', 0.0, 'critical'),
+    ValuePattern(_GITHUB_RE, 'GitHub token', 0.0, 'critical'),
+    ValuePattern(_GITLAB_RE, 'GitLab token', 0.0, 'critical'),
+    ValuePattern(_SLACK_RE, 'Slack token', 0.0, 'critical'),
+    ValuePattern(_NPM_RE, 'npm token', 0.0, 'critical'),
+    ValuePattern(_PYPI_RE, 'PyPI token', 0.0, 'critical'),
+    ValuePattern(_PEM_KEY_RE, 'private key header', 0.0, 'critical'),
     # Structural patterns — high severity
-    ValuePattern(_JWT_RE,          'JWT token',            3.3, 'high'),
-    ValuePattern(_CONN_STRING_RE,  'connection string',    2.5, 'high'),
-    ValuePattern(_STRIPE_TEST_RE,  'Stripe test key',      3.0, 'medium'),
+    ValuePattern(_JWT_RE, 'JWT token', 3.3, 'high'),
+    ValuePattern(_CONN_STRING_RE, 'connection string', 2.5, 'high'),
+    ValuePattern(_STRIPE_TEST_RE, 'Stripe test key', 3.0, 'medium'),
     # Heuristic patterns — medium/low severity
-    ValuePattern(_HEX_RE,          'hex credential',       3.5, 'medium'),
-    ValuePattern(_B64_RE,          'high-entropy string',  3.8, 'low'),
+    ValuePattern(_HEX_RE, 'hex credential', 3.5, 'medium'),
+    ValuePattern(_B64_RE, 'high-entropy string', 3.8, 'low'),
 ]
 
 # ---------------------------------------------------------------------------
@@ -219,7 +285,7 @@ VALUE_PATTERNS: list[ValuePattern] = [
 # #13 fix: quoted values capture up to closing quote; unquoted values stop
 # at whitespace or comment characters.
 ASSIGNMENT_RE = re.compile(
-    r'''
+    r"""
         ["']?                          # optional quote around key name
         (?P<var>[\w.\-]{1,128})        # variable or key name — bounded: no real
                                        # name is longer, and an unbounded + here
@@ -243,7 +309,7 @@ ASSIGNMENT_RE = re.compile(
                 [^\s#;,\]}"']+         # unquoted: stop at whitespace/comment/delimiters/quotes
             )
         )
-    ''',
+    """,
     re.VERBOSE,
 )
 
@@ -276,6 +342,7 @@ def xml_attr_finditer(line: str) -> Iterator[tuple[str, str, tuple[int, int]]]:
             if (key, val) not in seen:
                 seen.add((key, val))
                 yield key, val, m.span('xml_val')
+
 
 # ---------------------------------------------------------------------------
 # Inline suppression comment pattern (#3)

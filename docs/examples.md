@@ -107,7 +107,7 @@ AWS_KEY = os.environ["AWS_ACCESS_KEY"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 ```
 
-Language-aware — `.js` gets `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, etc. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
+Language-aware: `.js` gets `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, etc. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
 
 ## 5. Pre-commit hook
 
@@ -166,7 +166,7 @@ Fail on findings:
   run: python -m credactor --ci .
 ```
 
-Strict mode — also fail if any files could not be scanned:
+Strict mode, which also fails if any files could not be scanned:
 
 ```yaml
 - name: Credential scan
@@ -217,7 +217,7 @@ python -m credactor --scan-history .
 
 Scans last 100 commits. Findings include the commit hash.
 
-If you find credentials in history, redacting the working tree isn't enough — use `git filter-repo` or BFG Repo Cleaner to rewrite history, and rotate the leaked credentials.
+If you find credentials in history, redacting the working tree isn't enough. Use `git filter-repo` or BFG Repo Cleaner to rewrite history, and rotate the leaked credentials.
 
 ## 8. Suppress false positives
 
@@ -249,12 +249,12 @@ a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
 value:eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123
 ```
 
-Value-literal and `file:line` suppressions are intentionally noisy — Credactor logs a warning at load time for each kind so they get reviewed for detection-bypass.
+Value-literal and `file:line` suppressions are intentionally noisy. Credactor logs a warning at load time for each kind so they get reviewed for detection-bypass.
 
 ## 9. Include JSON files
 
 JSON is excluded by default (API responses cause too many false positives).
-With `--scan-json`, every collected `.json` file is scanned — in CI, dry-run,
+With `--scan-json`, every collected `.json` file is scanned, in CI, dry-run,
 and interactive mode alike.
 
 ```bash

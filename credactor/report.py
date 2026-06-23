@@ -21,21 +21,21 @@ from .utils import group_by_file, mask_secret, relativize, sanitize_for_terminal
 # ANSI color helpers (#31)
 # ---------------------------------------------------------------------------
 _COLORS = {
-    'reset':    '\033[0m',
-    'bold':     '\033[1m',
-    'red':      '\033[91m',
-    'magenta':  '\033[95m',
-    'yellow':   '\033[93m',
-    'cyan':     '\033[96m',
-    'green':    '\033[92m',
-    'dim':      '\033[2m',
+    'reset': '\033[0m',
+    'bold': '\033[1m',
+    'red': '\033[91m',
+    'magenta': '\033[95m',
+    'yellow': '\033[93m',
+    'cyan': '\033[96m',
+    'green': '\033[92m',
+    'dim': '\033[2m',
 }
 
 _SEVERITY_COLOR = {
     'critical': 'magenta',  # distinct from high so the top two severities differ
-    'high':     'red',
-    'medium':   'yellow',
-    'low':      'cyan',
+    'high': 'red',
+    'medium': 'yellow',
+    'low': 'cyan',
 }
 
 
@@ -47,11 +47,11 @@ def _c(text: str, color: str, *, use_color: bool = True) -> str:
     return f'{code}{text}{_COLORS["reset"]}' if code else text
 
 
-def _should_use_color(no_color: bool) -> bool:
-    """Determine whether to use ANSI color output."""
+def _should_use_color(no_color: bool, stream: TextIO = sys.stdout) -> bool:
+    """Determine whether to use ANSI color output on *stream*."""
     if no_color:
         return False
-    return sys.stdout.isatty()
+    return stream.isatty()
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ def print_report(
     """
     if not findings:
         return
-    color = _should_use_color(no_color)
+    color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
 
@@ -131,14 +131,16 @@ def json_report(findings: list[Finding], root: str) -> str:
     output = []
     for f in findings:
         rel = relativize(f['file'], root_path)
-        output.append({
-            'file':     rel,
-            'line':     f['line'],
-            'type':     f['type'],
-            'severity': f['severity'],
-            'value':    mask_secret(f['full_value']),
-            'commit':   f.get('commit'),
-        })
+        output.append(
+            {
+                'file': rel,
+                'line': f['line'],
+                'type': f['type'],
+                'severity': f['severity'],
+                'value': mask_secret(f['full_value']),
+                'commit': f.get('commit'),
+            }
+        )
     return json.dumps({'findings': output, 'count': len(output)}, indent=2)
 
 
@@ -165,8 +167,10 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                     'text': f'Credactor detected a potential hardcoded credential ({safe_type})',
                 },
                 'help': {
-                    'text': ('Remove the hardcoded credential and use an'
-                             ' environment variable or secrets manager instead.'),
+                    'text': (
+                        'Remove the hardcoded credential and use an'
+                        ' environment variable or secrets manager instead.'
+                    ),
                 },
                 'defaultConfiguration': {
                     'level': _sarif_level(f['severity']),
@@ -189,47 +193,58 @@ def sarif_report(findings: list[Finding], root: str) -> str:
             region['startColumn'] = idx + 1
             region['endColumn'] = idx + 1 + len(full_val)
 
-        results.append({
-            'ruleId': rule_id,
-            'ruleIndex': rule_index[rule_id],
-            'level': _sarif_level(f['severity']),
-            'message': {
-                'text': (
-                    f'Potential credential detected: {html.escape(f["type"])}'
-                    f' ({html.escape(mask_secret(f["full_value"]))})'
-                ),
-            },
-            'locations': [{
-                'physicalLocation': {
-                    'artifactLocation': {'uri': rel},
-                    'region': region,
+        results.append(
+            {
+                'ruleId': rule_id,
+                'ruleIndex': rule_index[rule_id],
+                'level': _sarif_level(f['severity']),
+                'message': {
+                    'text': (
+                        f'Potential credential detected: {html.escape(f["type"])}'
+                        f' ({html.escape(mask_secret(f["full_value"]))})'
+                    ),
                 },
-            }],
-        })
+                'locations': [
+                    {
+                        'physicalLocation': {
+                            'artifactLocation': {'uri': rel},
+                            'region': region,
+                        },
+                    }
+                ],
+            }
+        )
 
     sarif = {
         '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
         'version': '2.1.0',
-        'runs': [{
-            'tool': {
-                'driver': {
-                    'name': 'Credactor',
-                    'version': __version__,
-                    'informationUri': 'https://github.com/rxb06/Credactor',
-                    'rules': list(rules.values()),
+        'runs': [
+            {
+                'tool': {
+                    'driver': {
+                        'name': 'Credactor',
+                        'version': __version__,
+                        'informationUri': 'https://github.com/rxb06/credactor',
+                        'rules': list(rules.values()),
+                    },
                 },
-            },
-            'results': results,
-        }],
+                # S13: startColumn/endColumn are computed with str.find/len, i.e.
+                # Unicode code points. SARIF 2.1.0 defaults to utf16CodeUnits when
+                # columnKind is absent, so GitHub would mis-highlight any line with
+                # astral-plane chars before the secret. Declare the actual unit.
+                'columnKind': 'unicodeCodePoints',
+                'results': results,
+            }
+        ],
     }
     return json.dumps(sarif, indent=2)
 
 
 _SARIF_LEVELS = {
     'critical': 'error',
-    'high':     'error',
-    'medium':   'warning',
-    'low':      'note',
+    'high': 'error',
+    'medium': 'warning',
+    'low': 'note',
 }
 
 
@@ -241,15 +256,22 @@ def _sarif_level(severity: str) -> str:
 # ---------------------------------------------------------------------------
 # Gitignore skip report
 # ---------------------------------------------------------------------------
-def print_gitignore_skipped(skipped: list[str], root: str, *, no_color: bool = False,
-                            stream: TextIO = sys.stdout) -> None:
+def print_gitignore_skipped(
+    skipped: list[str], root: str, *, no_color: bool = False, stream: TextIO = sys.stdout
+) -> None:
     """List the files a ``.gitignore`` pattern excluded from the scan."""
     if not skipped:
         return
     root_path = Path(root).resolve()
-    color = _should_use_color(no_color)
-    print(_c(f'\n  [{len(skipped)} file(s) not scanned -- covered by .gitignore]',
-             'dim', use_color=color), file=stream)
+    color = _should_use_color(no_color, stream)
+    print(
+        _c(
+            f'\n  [{len(skipped)} file(s) not scanned -- covered by .gitignore]',
+            'dim',
+            use_color=color,
+        ),
+        file=stream,
+    )
     for s in sorted(skipped):
         rel = relativize(s, root_path)
         print(f'    {sanitize_for_terminal(rel)}', file=stream)

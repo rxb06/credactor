@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.11+
-- No required dependencies. Optional: `charset-normalizer` or `chardet` for non-UTF-8 files.
+- No required dependencies. Optional: the `[encoding]` extra (`charset-normalizer`) for non-UTF-8 files.
 
 ## Installation
 
@@ -18,7 +18,7 @@ pip install credactor
 To install from source so `credactor` works globally from any directory:
 
 ```bash
-git clone https://github.com/rxb06/Credactor.git
+git clone https://github.com/rxb06/credactor.git
 cd Credactor
 pip install -e .
 ```
@@ -45,10 +45,10 @@ pip uninstall credactor
 
 ### Run Without Installing
 
-If you just want to run it from the cloned repo without a global install:
+If you want to run it from the cloned repo without a global install:
 
 ```bash
-git clone https://github.com/rxb06/Credactor.git
+git clone https://github.com/rxb06/credactor.git
 cd Credactor
 python -m credactor --help
 ```
@@ -59,8 +59,6 @@ Better encoding detection for legacy codebases:
 
 ```bash
 pip install charset-normalizer
-# or
-pip install chardet
 ```
 
 If you installed from PyPI, you can pull in the recommended encoding extra directly:
@@ -73,7 +71,7 @@ pip install 'credactor[encoding]'
 
 ### Config File
 
-`.credactor.toml` in your project root, or a parent directory up to the repository root (the tool walks upward from the scan target, at most 5 levels). A config discovered **above** the repository root is refused — skipped with an `[ERROR]` on stderr ("Refusing to load config from outside project root"), not silently, unless you point `--config` at it explicitly, and always refused in `--ci` mode.
+`.credactor.toml` in your project root, or a parent directory up to the repository root (the tool walks upward from the scan target, at most 5 levels). A config discovered **above** the repository root is refused. It is skipped with an `[ERROR]` on stderr ("Refusing to load config from outside project root"), not silently, unless you point `--config` at it explicitly, and it is always refused in `--ci` mode.
 
 ```toml
 # .credactor.toml
@@ -96,7 +94,8 @@ replacement = "REDACTED_BY_CREDACTOR"
 # External scanner ingestion (BETA) — merge Gitleaks/TruffleHog findings
 # into the redaction pipeline. Values are paths to the report files; the
 # scan target must be a DIRECTORY (the repo root) so report-relative file
-# paths resolve. Equivalent to --from-gitleaks / --from-trufflehog.
+# paths resolve. Used when --from-gitleaks / --from-trufflehog are not passed;
+# a same-kind CLI flag takes precedence over the entry below.
 [ingest]
 from_gitleaks = "gitleaks-report.json"
 from_trufflehog = "trufflehog-output.json"

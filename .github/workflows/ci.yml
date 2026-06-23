@@ -46,11 +46,16 @@ jobs:
       - name: Lint
         run: ruff check credactor/ tests/ scripts/
 
+      - name: Format check
+        run: ruff format --check credactor/ tests/ scripts/
+
       - name: Type check
         run: mypy credactor/ scripts/
 
-      - name: Test
-        run: pytest tests/ -v
+      - name: Test (with coverage)
+        run: |
+          coverage run -m pytest tests/ -v
+          coverage report
 
   self-scan:
     runs-on: ubuntu-latest

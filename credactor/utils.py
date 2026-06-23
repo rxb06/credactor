@@ -25,14 +25,6 @@ try:
     import charset_normalizer
 except ImportError:
     charset_normalizer = None  # type: ignore[assignment]
-try:
-    import chardet
-except ImportError:
-    # No ignore needed here: chardet is absent from the dev/CI environments,
-    # so mypy types it as Any via ignore_missing_imports (an ignore would trip
-    # warn_unused_ignores). charset_normalizer above IS installed and typed,
-    # hence its ignore is real.
-    chardet = None
 
 
 def entropy(s: str) -> float:
@@ -67,7 +59,8 @@ def utf16_variant(raw: bytes) -> str | None:
 def detect_encoding(filepath: str) -> str:
     """Detect the encoding of a file, falling back to utf-8.
 
-    Tries charset_normalizer first, then chardet, then falls back to utf-8.
+    Uses charset_normalizer when the optional ``[encoding]`` extra is installed,
+    then the UTF-16 signature check, then falls back to utf-8 / latin-1.
     """
     raw = b''
     try:
@@ -91,7 +84,7 @@ def detect_encoding(filepath: str) -> str:
     if raw.isascii() and b'\x00' not in raw:
         return 'utf-8'
 
-    # Genuine UTF-8/ASCII never contains NUL, but charset_normalizer/chardet
+    # Genuine UTF-8/ASCII never contains NUL, but charset_normalizer can
     # mis-report a truncated or odd-length UTF-16 file as utf-8 on its
     # NUL-interleaved bytes. Trusting that verdict short-circuits the UTF-16
     # signature / latin-1 checks below and silently dissolves the secret into
@@ -105,14 +98,6 @@ def detect_encoding(filepath: str) -> str:
         result = charset_normalizer.from_bytes(raw).best()
         if result and result.encoding:
             enc = str(result.encoding)
-            if not (nul and enc.replace('_', '-').lower() in ('utf-8', 'ascii')):
-                return enc
-
-    # Try chardet
-    if chardet is not None:
-        det = chardet.detect(raw)
-        if det and det.get('encoding') and det.get('confidence', 0) > 0.7:
-            enc = str(det['encoding'])
             if not (nul and enc.replace('_', '-').lower() in ('utf-8', 'ascii')):
                 return enc
 

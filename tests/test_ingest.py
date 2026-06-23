@@ -2,6 +2,7 @@
 Tests for credactor/ingest.py — Phase 1: Gitleaks parser.
 Target: ~23 tests for the Gitleaks ingestion path.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,6 +26,7 @@ from credactor.ingest import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_gitleaks_finding(**kwargs) -> dict:
     """Return a minimal valid Gitleaks finding, overriding with kwargs."""
@@ -66,6 +68,7 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
 # ---------------------------------------------------------------------------
 # 8.1 Gitleaks Parser Tests
 # ---------------------------------------------------------------------------
+
 
 class TestGitleaksBasicFinding:
     def test_gitleaks_basic_finding(self, tmp_path):
@@ -251,9 +254,7 @@ class TestGitleaksSymlinkAndPath:
         for r in results:
             assert isinstance(r['raw'], str)
 
-    @pytest.mark.skipif(
-        not hasattr(os, 'symlink'), reason='symlinks not supported'
-    )
+    @pytest.mark.skipif(not hasattr(os, 'symlink'), reason='symlinks not supported')
     def test_gitleaks_symlink_outside_root_blocked(self, tmp_path, capsys):
         """Symlink within target pointing outside root is blocked (SEC-40c)."""
         target, _ = _make_target(tmp_path)
@@ -412,11 +413,13 @@ class TestGitleaksCap:
 # _synthesise_raw unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestSynthesiseRaw:
     def test_reads_correct_line(self, tmp_path):
         f = tmp_path / 'myfile.py'
         f.write_text('line1\nline2\nline3\n', encoding='utf-8')
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         assert _synthesise_raw(str(f), 2) == 'line2'
 
@@ -424,11 +427,13 @@ class TestSynthesiseRaw:
         f = tmp_path / 'short.py'
         f.write_text('only_one_line\n', encoding='utf-8')
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         assert _synthesise_raw(str(f), 999) == ''
 
     def test_missing_file_returns_empty(self, tmp_path):
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         assert _synthesise_raw(str(tmp_path / 'nonexistent.py'), 1) == ''
 
@@ -436,6 +441,7 @@ class TestSynthesiseRaw:
 # ---------------------------------------------------------------------------
 # 8.2 TruffleHog Parser Tests
 # ---------------------------------------------------------------------------
+
 
 def _make_trufflehog_finding(**kwargs) -> dict:
     """Return a minimal valid TruffleHog finding dict, overriding with kwargs."""
@@ -541,8 +547,7 @@ class TestTrufflehogBasicFinding:
         # zero-findings success. (An empty / blank-only file stays a valid no-op.)
         target, _ = _make_th_target(tmp_path)
         report = tmp_path / 'bad.json'
-        report.write_text('this is not json\n<html>404</html>\n{ unclosed\n',
-                          encoding='utf-8')
+        report.write_text('this is not json\n<html>404</html>\n{ unclosed\n', encoding='utf-8')
         with pytest.raises(ValueError, match='NDJSON'):
             ingest_trufflehog(str(report), str(target))
 
@@ -659,6 +664,7 @@ class TestTrufflehogRawSynthesis:
         target, config_py = _make_th_target(tmp_path)
         config_py.write_text('aws_key = "AKIAIOSFODNN7EXAMPLE"\n', encoding='utf-8')
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         finding = _make_trufflehog_finding()
         report = _write_ndjson(tmp_path, [finding])
@@ -675,12 +681,12 @@ class TestTrufflehogRawSynthesis:
         finding['SourceMetadata']['Data']['Filesystem']['file'] = 'src/config.py'
         finding['SourceMetadata']['Data']['Filesystem']['line'] = 999
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
         assert len(results) == 1
         assert results[0]['raw'] == 'AKIAIOSFODNN7EXAMPLE'
-
 
 
 class TestTrufflehogSeverityAndType:
@@ -759,6 +765,7 @@ class TestTrufflehogCap:
 # actual file modification (no native scan involved).
 # ---------------------------------------------------------------------------
 
+
 class TestTrufflehogRedactionIntegration:
     """Verify that a TruffleHog finding with URL-encoded Raw can redact a file.
 
@@ -776,63 +783,63 @@ class TestTrufflehogRedactionIntegration:
         # File with a credential whose password contains a literal '@'.
         # This format intentionally does NOT match native credactor patterns
         # so only the TruffleHog-sourced finding drives redaction.
-        target = tmp_path / "repo"
+        target = tmp_path / 'repo'
         target.mkdir()
-        secret_file = target / "settings.py"
+        secret_file = target / 'settings.py'
         # Credential: password is  s3cr3t@p4ss  (literal @)
-        raw_credential = "xmpp://bot:s3cr3t@p4ss@chat.example.com/room"
+        raw_credential = 'xmpp://bot:s3cr3t@p4ss@chat.example.com/room'
         secret_file.write_text(f'CHAT_URI = "{raw_credential}"\n', encoding='utf-8')
 
         # TruffleHog URL-encodes the @ inside the password → %40
-        url_encoded_raw = "xmpp://bot:s3cr3t%40p4ss@chat.example.com/room"
+        url_encoded_raw = 'xmpp://bot:s3cr3t%40p4ss@chat.example.com/room'
         assert url_encoded_raw != raw_credential  # sanity: they differ
 
         # Craft TruffleHog NDJSON pointing at the real file on disk.
         # Use an absolute path as TruffleHog Filesystem source would emit.
         finding_obj = {
-            "DetectorName": "GenericCredential",
-            "Raw": url_encoded_raw,
-            "Verified": False,
-            "SourceMetadata": {
-                "Data": {
-                    "Filesystem": {
-                        "file": str(secret_file),
-                        "line": 1,
+            'DetectorName': 'GenericCredential',
+            'Raw': url_encoded_raw,
+            'Verified': False,
+            'SourceMetadata': {
+                'Data': {
+                    'Filesystem': {
+                        'file': str(secret_file),
+                        'line': 1,
                     },
                 },
             },
         }
-        report = tmp_path / "th_report.ndjson"
-        report.write_text(json.dumps(finding_obj) + "\n", encoding='utf-8')
+        report = tmp_path / 'th_report.ndjson'
+        report.write_text(json.dumps(finding_obj) + '\n', encoding='utf-8')
 
         _read_file_lines.cache_clear()
         findings = ingest_trufflehog(str(report), str(target))
-        assert len(findings) == 1, "expected exactly one finding from NDJSON"
+        assert len(findings) == 1, 'expected exactly one finding from NDJSON'
 
         fv = findings[0]['full_value']
-        assert '%40' not in fv, f"full_value still URL-encoded: {fv!r}"
-        assert fv == raw_credential, f"full_value mismatch: {fv!r}"
+        assert '%40' not in fv, f'full_value still URL-encoded: {fv!r}'
+        assert fv == raw_credential, f'full_value mismatch: {fv!r}'
 
         # Apply redaction via the same code path CLI uses.
         config = Config(no_backup=True)
         replaced, failed = batch_replace_in_file(str(secret_file), findings, config)
 
-        assert replaced == 1, f"expected 1 replacement, got replaced={replaced} failed={failed}"
-        assert failed == 0, f"unexpected failures: {failed}"
+        assert replaced == 1, f'expected 1 replacement, got replaced={replaced} failed={failed}'
+        assert failed == 0, f'unexpected failures: {failed}'
 
         content = secret_file.read_text(encoding='utf-8')
-        assert raw_credential not in content, "credential still present after redaction"
-        assert "REDACTED" in content, "sentinel not written to file"
+        assert raw_credential not in content, 'credential still present after redaction'
+        assert 'REDACTED' in content, 'sentinel not written to file'
 
     def test_without_urldecode_redaction_would_fail(self, tmp_path):
         """Control: if full_value were left URL-encoded, batch_replace_in_file skips it."""
         from credactor.config import Config
         from credactor.redactor import batch_replace_in_file
 
-        target = tmp_path / "repo"
+        target = tmp_path / 'repo'
         target.mkdir()
-        secret_file = target / "settings.py"
-        raw_credential = "xmpp://bot:s3cr3t@p4ss@chat.example.com/room"
+        secret_file = target / 'settings.py'
+        raw_credential = 'xmpp://bot:s3cr3t@p4ss@chat.example.com/room'
         secret_file.write_text(f'CHAT_URI = "{raw_credential}"\n', encoding='utf-8')
 
         # Simulate what ingest_trufflehog produced BEFORE the fix:
@@ -851,16 +858,17 @@ class TestTrufflehogRedactionIntegration:
         replaced, failed = batch_replace_in_file(str(secret_file), [synthetic_finding], config)
 
         # Without the decode fix the replacement would be skipped.
-        assert replaced == 0, "redaction should have failed without URL-decode"
+        assert replaced == 0, 'redaction should have failed without URL-decode'
         assert failed == 1
 
         content = secret_file.read_text(encoding='utf-8')
-        assert raw_credential in content, "file should be unchanged without URL-decode"
+        assert raw_credential in content, 'file should be unchanged without URL-decode'
 
 
 # ---------------------------------------------------------------------------
 # Helpers shared by dedup tests
 # ---------------------------------------------------------------------------
+
 
 def _make_finding(
     file: str = '/repo/src/app.py',
@@ -888,6 +896,7 @@ def _make_finding(
 # Phase 3: Deduplication tests
 # ---------------------------------------------------------------------------
 
+
 class TestIngestMissingAndInvalidPaths:
     """L5a/L5b: a finding pointing at a missing file is skipped; a NUL-byte path
     skips only that finding rather than aborting the whole batch."""
@@ -913,10 +922,12 @@ class TestIngestMissingAndInvalidPaths:
         good = _make_gitleaks_finding(File='src/config.py', StartLine=1)
         bad = _make_gitleaks_finding(File='a\x00b')
         report = _write_report(tmp_path, [good, bad])
-        results = ingest_gitleaks(str(report), str(target))   # must NOT raise
+        results = ingest_gitleaks(str(report), str(target))  # must NOT raise
         assert len(results) == 1
-        assert any('invalid' in r.message.lower() or 'nul' in r.message.lower()
-                   for r in credactor_caplog.records)
+        assert any(
+            'invalid' in r.message.lower() or 'nul' in r.message.lower()
+            for r in credactor_caplog.records
+        )
 
     def test_trufflehog_nul_path_skips_one_not_batch(self, tmp_path, credactor_caplog):
         target, _ = _make_th_target(tmp_path)
@@ -924,10 +935,12 @@ class TestIngestMissingAndInvalidPaths:
         bad = _make_trufflehog_finding()
         bad['SourceMetadata']['Data']['Filesystem']['file'] = 'a\x00b'
         report = _write_ndjson(tmp_path, [good, bad])
-        results = ingest_trufflehog(str(report), str(target))   # must NOT raise
+        results = ingest_trufflehog(str(report), str(target))  # must NOT raise
         assert len(results) == 1
-        assert any('invalid' in r.message.lower() or 'nul' in r.message.lower()
-                   for r in credactor_caplog.records)
+        assert any(
+            'invalid' in r.message.lower() or 'nul' in r.message.lower()
+            for r in credactor_caplog.records
+        )
 
 
 class TestDeduplication:
@@ -975,8 +988,8 @@ class TestDeduplication:
         external = _make_finding(ftype='external:trufflehog:AWS', severity='critical')
         result = deduplicate_findings([native, external])
         assert len(result) == 1
-        assert result[0]['type'] == 'variable:api_key'   # native identity kept
-        assert result[0]['severity'] == 'critical'        # severity merged up
+        assert result[0]['type'] == 'variable:api_key'  # native identity kept
+        assert result[0]['severity'] == 'critical'  # severity merged up
 
     def test_dedup_does_not_lower_survivor_severity(self):
         """L5c: a lower-severity dropped dup must not downgrade the survivor."""
@@ -997,6 +1010,7 @@ class TestDeduplication:
     def test_dedup_path_normalisation(self):
         """./src/f.py and src/f.py with the same absolute root collapse to one."""
         import os
+
         base = os.path.realpath('/tmp')
         f1 = _make_finding(file=os.path.join(base, 'src', 'f.py'))
         f2 = _make_finding(file=os.path.join(base, '.', 'src', 'f.py'))
@@ -1036,6 +1050,7 @@ class TestDeduplication:
 # Phase 3: Severity mapping completeness tests
 # ---------------------------------------------------------------------------
 
+
 class TestSeverityMappingCompleteness:
     """Verify the full severity tables and override logic."""
 
@@ -1052,8 +1067,7 @@ class TestSeverityMappingCompleteness:
         for detector, expected in _TRUFFLEHOG_SEVERITY.items():
             result = _trufflehog_severity(detector, verified=False)
             assert result == expected, (
-                f'_trufflehog_severity({detector!r}, False) = {result!r}, '
-                f'expected {expected!r}'
+                f'_trufflehog_severity({detector!r}, False) = {result!r}, expected {expected!r}'
             )
 
     def test_trufflehog_verified_overrides_all(self):
@@ -1068,6 +1082,7 @@ class TestSeverityMappingCompleteness:
 # ---------------------------------------------------------------------------
 # Security regression tests — A1, A2, A4, A12, A13
 # ---------------------------------------------------------------------------
+
 
 class TestA1TrufflehogFileSizeGuard:
     """A1: TruffleHog NDJSON must be rejected before open() if over _MAX_REPORT_BYTES."""
@@ -1173,9 +1188,7 @@ class TestA2UrlDecodeFormSelection:
         # Verify the full_value is a string that can be found in the source line.
         fv = results[0]['full_value']
         source_line = source.read_text(encoding='utf-8').rstrip()
-        assert fv in source_line, (
-            f"full_value {fv!r} not found in source line {source_line!r}"
-        )
+        assert fv in source_line, f'full_value {fv!r} not found in source line {source_line!r}'
 
     def test_no_encoding_no_change(self, tmp_path):
         """Raw value with no percent-encoding passes through unchanged."""
@@ -1198,6 +1211,7 @@ class TestA2UrlDecodeFormSelection:
             SourceMetadata={'Data': {'Filesystem': {'file': 'src/config.py', 'line': 999}}},
         )
         from credactor.ingest import _read_file_lines
+
         _read_file_lines.cache_clear()
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
@@ -1215,8 +1229,10 @@ class TestA4EncodingGuards:
         report = tmp_path / 'bad_encoding.json'
         # Write a JSON-like file with an embedded invalid UTF-8 byte sequence
         # Inject \xff inside the JSON string value
-        raw_bytes = b'[{"Secret": "ABC\xffDEF", "File": "src/config.py", ' \
-                    b'"StartLine": 1, "RuleID": "test", "Tags": [], "Commit": ""}]'
+        raw_bytes = (
+            b'[{"Secret": "ABC\xffDEF", "File": "src/config.py", '
+            b'"StartLine": 1, "RuleID": "test", "Tags": [], "Commit": ""}]'
+        )
         report.write_bytes(raw_bytes)
         with pytest.raises(ValueError, match='non-UTF-8 bytes'):
             ingest_gitleaks(str(report), str(target))
@@ -1360,10 +1376,14 @@ class TestA13SelfReferentialReport:
         report = target / 'trufflehog_output.json'
         finding = _make_trufflehog_finding(
             Raw='some-secret',
-            SourceMetadata={'Data': {'Filesystem': {
-                'file': 'trufflehog_output.json',
-                'line': 1,
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Filesystem': {
+                        'file': 'trufflehog_output.json',
+                        'line': 1,
+                    }
+                }
+            },
         )
         lines = json.dumps(finding) + '\n'
         report.write_text(lines, encoding='utf-8')
@@ -1377,10 +1397,14 @@ class TestA13SelfReferentialReport:
         report = target / 'trufflehog_output.json'
         finding = _make_trufflehog_finding(
             Raw='some-secret',
-            SourceMetadata={'Data': {'Filesystem': {
-                'file': 'trufflehog_output.json',
-                'line': 1,
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Filesystem': {
+                        'file': 'trufflehog_output.json',
+                        'line': 1,
+                    }
+                }
+            },
         )
         report.write_text(json.dumps(finding) + '\n', encoding='utf-8')
         ingest_trufflehog(str(report), str(target))
@@ -1431,10 +1455,14 @@ class TestA13SelfReferentialReport:
         report = target / 'trufflehog_output.json'
         finding = _make_trufflehog_finding(
             Raw='some-secret',
-            SourceMetadata={'Data': {'Filesystem': {
-                'file': 'trufflehog_output.json',
-                'line': 1,
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Filesystem': {
+                        'file': 'trufflehog_output.json',
+                        'line': 1,
+                    }
+                }
+            },
         )
         report.write_text(json.dumps(finding) + '\n', encoding='utf-8')
 
@@ -1448,6 +1476,7 @@ class TestA13SelfReferentialReport:
 # ---------------------------------------------------------------------------
 # P2 — Commit type guards (Gitleaks + TruffleHog)
 # ---------------------------------------------------------------------------
+
 
 class TestCommitTypeGuard:
     """P2: Commit fields must be type-checked before slicing.
@@ -1510,9 +1539,15 @@ class TestCommitTypeGuard:
         """TruffleHog Git.commit=123 (int) must not crash — commit omitted."""
         target, _ = _make_th_target(tmp_path)
         finding = _make_trufflehog_finding(
-            SourceMetadata={'Data': {'Git': {
-                'file': 'src/config.py', 'line': 1, 'commit': 123,
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Git': {
+                        'file': 'src/config.py',
+                        'line': 1,
+                        'commit': 123,
+                    }
+                }
+            },
         )
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
@@ -1523,9 +1558,15 @@ class TestCommitTypeGuard:
         """TruffleHog Git.commit=['abc'] (list) must not crash — commit omitted."""
         target, _ = _make_th_target(tmp_path)
         finding = _make_trufflehog_finding(
-            SourceMetadata={'Data': {'Git': {
-                'file': 'src/config.py', 'line': 1, 'commit': ['abc123def456'],
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Git': {
+                        'file': 'src/config.py',
+                        'line': 1,
+                        'commit': ['abc123def456'],
+                    }
+                }
+            },
         )
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
@@ -1536,9 +1577,15 @@ class TestCommitTypeGuard:
         """TruffleHog Git.commit='abc123def456789' (string) is truncated to 12 chars."""
         target, _ = _make_th_target(tmp_path)
         finding = _make_trufflehog_finding(
-            SourceMetadata={'Data': {'Git': {
-                'file': 'src/config.py', 'line': 1, 'commit': 'abc123def456789',
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Git': {
+                        'file': 'src/config.py',
+                        'line': 1,
+                        'commit': 'abc123def456789',
+                    }
+                }
+            },
         )
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
@@ -1549,9 +1596,15 @@ class TestCommitTypeGuard:
         """TruffleHog finding with Git.commit=123 must survive dedup (no unhashable crash)."""
         target, _ = _make_th_target(tmp_path)
         finding = _make_trufflehog_finding(
-            SourceMetadata={'Data': {'Git': {
-                'file': 'src/config.py', 'line': 1, 'commit': 123,
-            }}},
+            SourceMetadata={
+                'Data': {
+                    'Git': {
+                        'file': 'src/config.py',
+                        'line': 1,
+                        'commit': 123,
+                    }
+                }
+            },
         )
         report = _write_ndjson(tmp_path, [finding])
         results = ingest_trufflehog(str(report), str(target))
@@ -1574,7 +1627,7 @@ class TestDedupSurrogateHash:
     def test_surrogate_in_full_value_does_not_crash(self):
         """dedup must not raise UnicodeEncodeError on a lone surrogate in full_value."""
         findings = [self._surrogate_finding()]
-        result = deduplicate_findings(findings)   # must not raise
+        result = deduplicate_findings(findings)  # must not raise
         assert len(result) == 1
 
     def test_two_identical_surrogate_findings_deduplicated(self):
@@ -1597,3 +1650,22 @@ class TestDedupSurrogateHash:
         f_clean = _make_finding(full_value='clean_secret_value')
         result = deduplicate_findings([f_surrogate, f_clean])
         assert len(result) == 2
+
+
+class TestDeeplyNestedJsonIsFatal:
+    """S7: deeply-nested JSON must fail closed (fatal ValueError -> exit 2),
+    not escape as an uncaught RecursionError (traceback, exit 1)."""
+
+    def test_gitleaks_deeply_nested_is_fatal(self, tmp_path):
+        target, _ = _make_target(tmp_path)
+        report = tmp_path / 'nested.json'
+        report.write_text('[' * 200000, encoding='utf-8')
+        with pytest.raises(ValueError, match='nested'):
+            ingest_gitleaks(str(report), str(target))
+
+    def test_trufflehog_deeply_nested_is_fatal(self, tmp_path):
+        target, _ = _make_target(tmp_path)
+        report = tmp_path / 'nested.ndjson'
+        report.write_text('[' * 200000, encoding='utf-8')
+        with pytest.raises(ValueError, match='nested'):
+            ingest_trufflehog(str(report), str(target))
