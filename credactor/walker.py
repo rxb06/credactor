@@ -4,6 +4,7 @@ Directory walking, git-staged scanning, and git-history scanning.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import subprocess
@@ -261,6 +262,7 @@ def scan_staged_files(
 
     findings: list[Finding] = []
     errored: list[str] = []
+    extra_skip_files = SKIP_FILES | config.skip_files
     for line in raw_staged:
         # Reject paths with '..' components (traversal guard, consistent with the
         # git-history scanner).
@@ -273,19 +275,21 @@ def scan_staged_files(
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):
             continue
+        name_lower = Path(line).name.lower()
+        # Lockfiles and user skip_files are excluded on every path, exactly as
+        # the directory walk does (SKIP_FILES | config.skip_files at :80) —
+        # checked BEFORE extension classification so a scanned-extension
+        # lockfile (pnpm-lock.yaml has suffix .yaml) or a config.skip_files
+        # entry can't slip through the .json branch or should_scan_file below.
+        if name_lower in extra_skip_files:
+            continue
         # .json gets the same opt-in the directory walk gives it: scanned only
         # under --scan-json, otherwise skipped WITH a signal (a staged
         # credentials.json silently passing the pre-commit gate is a false
-        # all-clear). Lockfiles (SKIP_FILES) stay excluded either way — checked
-        # here so an extra_extensions '.json' entry can't re-admit them through
-        # the should_scan_file fallback below.
-        name_lower = Path(line).name.lower()
-        # Classify .json via the suffix (matching the directory walk's
+        # all-clear). Classify via the suffix (matching the directory walk's
         # Path(...).suffix check) so a file literally named '.json' is treated
         # the same on both paths, not as JSON only here.
         if Path(line).suffix.lower() == '.json':
-            if name_lower in SKIP_FILES:
-                continue
             if not config.scan_json:
                 logger.warning(
                     'Staged .json file skipped — pass --scan-json to include it: %s',
@@ -332,11 +336,14 @@ def scan_staged_files(
 
         # scan_lines runs the same full pass as scan_file (PEM blocks, per-line,
         # multi-line strings), so staged content gets identical coverage to a
-        # working-tree scan. keepends=True: the multi-line pass joins the lines
-        # back and needs the terminators for correct line numbering.
-        # Universal-newline normalization mirrors how open() reads the file
-        # path: without it, CRLF blobs leak literal \r into multiline raw
-        # previews and lone-\r endings break the multiline pass's \n-based
+        # working-tree scan. The line split MUST match the working-tree path
+        # (utils.read_lines -> open().readlines()): io.StringIO(newline=None)
+        # uses the SAME universal-newline machinery, translating \r\n/\r/\n to
+        # \n and splitting on nothing else, so the staged line list is
+        # byte-identical to the tree scan. str.splitlines() would additionally
+        # break on \x0c/\x0b/\x85/U+2028/U+2029/\x1c-\x1e, splitting a secret
+        # value that embeds one across two lines and slipping it past the gate.
+        # readlines() keeps each \n terminator the multi-line pass needs for
         # line numbering.
         # UTF-16 parity: the working-tree path detects NUL-interleaved blobs
         # via detect_encoding; the staged blob must match or a UTF-16 secret
@@ -363,12 +370,8 @@ def scan_staged_files(
             # historical utf-8 reading (lossy for this blob, but loud is the
             # working-tree scan's job; the hook must stay usable).
             content = raw.decode('utf-8', errors='surrogateescape')
-        content = content.replace('\r\n', '\n').replace('\r', '\n')
-        findings.extend(
-            scan_lines(
-                full_path, content.splitlines(keepends=True), config=config, allowlist=allowlist
-            )
-        )
+        lines = io.StringIO(content, newline=None).readlines()
+        findings.extend(scan_lines(full_path, lines, config=config, allowlist=allowlist))
 
     return findings, errored
 

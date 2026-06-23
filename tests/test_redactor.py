@@ -509,6 +509,51 @@ class TestSecureBackupDirUnwritable:
             os.chmod(ro_parent, 0o700)
 
 
+class TestInteractiveBackupOncePerFile:
+    """B2: interactive redaction of several findings in ONE file must back the
+    file up once per session — on the first approval — so the single .bak holds
+    the true original (every secret), not the already-redacted state after the
+    first approval (which would lose all-but-the-last original)."""
+
+    def test_two_approvals_bak_restores_all_originals(self, make_file, monkeypatch):
+        secret_a = 'AKIA' + 'IOSFODNN7AAAAAAA'
+        secret_b = 'AKIA' + 'IOSFODNN7BBBBBBB'
+        path = make_file('t.py', f'a = "{secret_a}"\nb = "{secret_b}"\n')
+        findings = [_mk_finding(path, secret_a, line=1), _mk_finding(path, secret_b, line=2)]
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=False))
+
+        with open(path) as fh:  # file fully redacted
+            redacted = fh.read()
+        assert secret_a not in redacted
+        assert secret_b not in redacted
+
+        bak = path + '.bak'
+        assert os.path.exists(bak)
+        with open(bak) as fh:  # the .bak restores BOTH originals, not just the last
+            restored = fh.read()
+        assert secret_a in restored
+        assert secret_b in restored
+
+    def test_two_approvals_secure_backup_dir_restores_all_originals(
+        self, make_file, tmp_dir, monkeypatch
+    ):
+        backup = os.path.join(tmp_dir, 'securebak')
+        secret_a = 'AKIA' + 'IOSFODNN7AAAAAAA'
+        secret_b = 'AKIA' + 'IOSFODNN7BBBBBBB'
+        path = make_file('proj/t.py', f'a = "{secret_a}"\nb = "{secret_b}"\n')
+        findings = [_mk_finding(path, secret_a, line=1), _mk_finding(path, secret_b, line=2)]
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review(findings, os.path.dirname(path), Config(secure_backup_dir=backup))
+
+        baks = os.listdir(backup)
+        assert len(baks) == 1  # one backup for the one file (not clobbered per approval)
+        with open(os.path.join(backup, baks[0])) as fh:
+            restored = fh.read()
+        assert secret_a in restored
+        assert secret_b in restored
+
+
 class TestSecureBackupDirCollision:
     """R1: two scanned files that share a basename in different directories must
     map to DISTINCT backups in one --secure-backup-dir, so the second redaction

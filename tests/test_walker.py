@@ -394,6 +394,52 @@ class TestStagedScanning:
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         # No exception is the contract; finding presence is not promised.
 
+    def test_staged_secret_with_unicode_separator_in_value_found(self, tmp_dir):
+        # B1: the staged line split must match the working-tree open().readlines()
+        # universal-newline behaviour. A secret value embedding a form-feed
+        # (\x0c, a legal source byte) is ONE line in the tree scan; str.splitlines()
+        # would break it across two lines and slip it past the pre-commit gate.
+        from credactor.scanner import scan_file
+        from credactor.suppressions import AllowList
+
+        repo = self._init_repo(tmp_dir)
+        token = 'x9Kp2mQv8rT4wYbN\x0c7jHs3fLd5aQ9'  # form-feed inside the value
+        path = os.path.join(repo, 'cfg.py')
+        with open(path, 'w', newline='') as f:
+            f.write(f'secret_key = "{token}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        staged, _ = scan_staged_files(repo, config=Config(no_color=True))
+        # Working-tree scan of the same bytes is the parity reference.
+        tree = scan_file(path, config=Config(no_color=True), allowlist=AllowList(repo))
+        assert tree, 'control: the working-tree scan must flag it'
+        assert len(staged) == len(tree)
+        assert any(f['type'] == 'variable:secret_key' for f in staged)
+
+    def test_staged_pnpm_lock_excluded(self, tmp_dir):
+        # S2: lockfiles are SKIP_FILES on every path. pnpm-lock.yaml has a scanned
+        # extension (.yaml), so the staged path was scanning it while the directory
+        # walk skips it — it must be excluded on the staged path too.
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'pnpm-lock.yaml'), 'w') as f:
+            f.write(f'integrity: "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        findings, _ = scan_staged_files(repo, config=Config(no_color=True))
+        assert findings == []  # lockfile skipped on the staged path
+
+    def test_staged_config_skip_files_honored(self, tmp_dir):
+        # S2 (second divergence): the staged path must honour config.skip_files
+        # for scanned-extension files, exactly as the directory walk does.
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'custom.yaml'), 'w') as f:
+            f.write(f'token = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        findings, _ = scan_staged_files(
+            repo, config=Config(no_color=True, skip_files={'custom.yaml'})
+        )
+        assert findings == []
+
     def test_staged_oversized_blob_skipped(self, tmp_dir, monkeypatch, credactor_caplog):
         # Parity with scan_file's 50 MB ceiling: the staged path buffers the
         # whole index blob, so a too-large file must be skip-with-WARN (not

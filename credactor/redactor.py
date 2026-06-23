@@ -416,6 +416,7 @@ def batch_replace_in_file(
     config: Config,
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
+    skip_backup: bool = False,
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
@@ -491,9 +492,15 @@ def batch_replace_in_file(
             logger.error('Cannot read %s: %s', filepath, exc)
             return 0, len(file_findings)
 
-        # #1 — backup before modifying (immediately after read)
+        # #1 — backup before modifying (immediately after read). skip_backup:
+        # interactive mode backs a file up once per session, on the FIRST
+        # approval; later approvals to the same file must NOT re-create the
+        # .bak (the per-file backup name is stable, so a second write would
+        # clobber it with the already-redacted file and lose the earlier
+        # secret's original). The first approval's .bak already holds every
+        # line's true original.
         bak: str | None = None
-        if not config.no_backup:
+        if not config.no_backup and not skip_backup:
             bak = _create_backup(filepath, config)
             if bak is None:
                 logger.error('Backup failed for %s — skipping replacements.', filepath)
@@ -567,13 +574,18 @@ def replace_single(
     config: Config,
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
+    skip_backup: bool = False,
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
     Returns True on success.
     """
     replaced, _ = batch_replace_in_file(
-        filepath, [finding], config, sweep_exclude_lines=sweep_exclude_lines
+        filepath,
+        [finding],
+        config,
+        sweep_exclude_lines=sweep_exclude_lines,
+        skip_backup=skip_backup,
     )
     return replaced > 0
 
@@ -621,6 +633,14 @@ def interactive_review(
     # static per-approval exclusion above and must be cleared once that
     # line's own adjudication has resolved.
     approved_by_file: dict[str, list[Finding]] = {}
+
+    # Back up each file at most once per interactive session: the first approval
+    # to a file creates the .bak (its true original); later approvals to the
+    # SAME file pass skip_backup=True so the per-file backup is not overwritten
+    # with the already-redacted file (which would lose the earlier secret's
+    # original). batch_replace_in_file backs up once per call, and interactive
+    # calls it once per approval — hence the per-session guard.
+    backed_up_files: set[str] = set()
 
     def _run_final_sweeps() -> None:
         for fp, approved in approved_by_file.items():
@@ -671,14 +691,20 @@ def interactive_review(
                 return total - replaced
 
             if answer in ('y', 'yes'):
-                others = lines_by_file[finding['file']] - {finding['line']}
+                fpath = finding['file']
+                others = lines_by_file[fpath] - {finding['line']}
                 ok = replace_single(
-                    finding['file'], finding, config, sweep_exclude_lines=frozenset(others)
+                    fpath,
+                    finding,
+                    config,
+                    sweep_exclude_lines=frozenset(others),
+                    skip_backup=fpath in backed_up_files,
                 )
                 if ok:
+                    backed_up_files.add(fpath)
                     print('  -> Replaced.\n')
                     replaced += 1
-                    approved_by_file.setdefault(finding['file'], []).append(finding)
+                    approved_by_file.setdefault(fpath, []).append(finding)
                 else:
                     print('  -> Replacement failed -- skipping.\n')
                     skipped += 1
