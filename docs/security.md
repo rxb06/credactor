@@ -13,7 +13,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 - **Obfuscated credentials:** Base64-encoded secrets, encrypted blobs (other than SOPS), or credentials split across multiple files.
 - **Runtime secrets:** Credentials injected via environment variables, secret managers, or APIs at runtime are intentionally ignored (these are the *correct* pattern).
-- **Binary files:** Only text-based source files are scanned; binary formats (`.exe`, `.zip`, `.png`, etc.) are skipped.
+- **Binary files:** During a directory scan, only files with recognised source and config extensions are read, so binary formats (`.exe`, `.zip`, `.png`, etc.) are skipped, by extension and not by binary-content detection. A binary file named directly on the command line bypasses that filter: it is still read (decoded as latin-1, with a warning) and scanned, so naming one is not a reliable way to exclude it. Credactor is not built to find secrets embedded in binaries.
 - **Determined adversaries:** An attacker with write access to your codebase could craft evasion patterns. Credactor is a safety net, not a security boundary.
 
 ## Trust Boundaries
@@ -94,8 +94,6 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-37**: Bare `$` prefix. Reject `$` followed by a non-identifier character (`$/path`, `$+foo`, `$123abc`) so those aren't treated as env refs. A `$` followed by a valid identifier (`$VARNAME`) is still treated as an env reference by design. It cannot be distinguished from a real env var, so this does not stop a secret deliberately written as `$IDENTIFIER` (consistent with "not a security boundary").
 - **SEC-38**: Config type confusion. Wrap `float()`/`int()` conversions in `apply_config_file()` with try/except. Prevents scan crash (DoS) from malformed `.credactor.toml` values.
 - **SEC-39**: Config trust boundary (non-git). When no `.git` directory exists, fall back to comparing config location against the scan root. Prevents silent config loading from parent directories on non-git repos.
-
-See `mydocs/vulnerability-chains.md` for the full chain analysis including attack narratives, scope, and false positives investigated.
 
 ### v2.4.0 (Phase 1–3 hardening + external ingestion)
 
