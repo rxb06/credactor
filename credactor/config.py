@@ -186,6 +186,17 @@ def load_config_file(
                         candidate,
                         ref,
                     )
+                elif explicit_path:
+                    # GA-H5: under --ci an explicit --config that cannot be
+                    # honoured must be fatal, like a missing or unparseable one —
+                    # a stderr-only refusal lets the gate pass with defaults
+                    # (false-clean) when the pipeline expected config-driven
+                    # settings or [ingest] sources.
+                    raise ConfigError(
+                        f'Refusing to load config from outside project root '
+                        f'under --ci: {candidate} (project root: {ref}). '
+                        f'CI honours only a config inside the project root.'
+                    )
                 else:
                     hint = '' if ci_mode else ' Pass --config to load it explicitly.'
                     logger.error(

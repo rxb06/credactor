@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from credactor.cli import main
-from credactor.config import Config, apply_config_file, load_config_file
+from credactor.config import Config, ConfigError, apply_config_file, load_config_file
 from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
 from credactor.scanner import _is_safe_value, scan_file
@@ -366,15 +366,18 @@ class TestConfigTrustBoundaryNonGit:
 
     def test_outside_config_refused_in_ci_even_with_explicit_path(self, tmp_dir):
         """M14 keeps SEC-29 intact: CI refuses an outside-root config even when
-        passed explicitly via --config."""
+        passed explicitly via --config. GA-H5: the refusal is FATAL (ConfigError
+        → exit 2), not a silent fallback to defaults — a stderr-only refusal
+        would let the gate pass with defaults (false-clean) when the pipeline
+        expected config-driven settings or [ingest] sources."""
         resolved = os.path.realpath(tmp_dir)
         child = os.path.join(resolved, 'subdir')
         os.makedirs(child)
         config_path = os.path.join(resolved, '.credactor.toml')
         with open(config_path, 'w') as f:
             f.write('entropy_threshold = 4.0\n')
-        result = load_config_file(child, explicit_path=config_path, ci_mode=True)
-        assert result == {}
+        with pytest.raises(ConfigError, match='outside project root under --ci'):
+            load_config_file(child, explicit_path=config_path, ci_mode=True)
 
     def test_config_above_git_project_root_refused(self, tmp_dir, credactor_caplog):
         """The .git-anchored refuse branch: a config ABOVE the project root is
