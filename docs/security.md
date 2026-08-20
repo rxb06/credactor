@@ -7,7 +7,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - Accidentally committing hardcoded API keys, tokens, passwords, and private keys.
 - Credentials in assignment statements, XML attributes, connection strings, PEM blocks, and multi-line strings.
 - Re-flagging already-redacted values (the sentinel `REDACTED_BY_CREDACTOR` is in the safe-values list).
-- **(BETA) Ingesting external scanner output:** findings from Gitleaks (`--from-gitleaks FILE`) or TruffleHog (`--from-trufflehog FILE`) are merged into the redaction pipeline, deduplicated against native findings (severity merged to the higher value on a duplicate), and still pass through `.credactorignore` suppression. Ingestion requires a **directory** target so report-relative file paths resolve correctly.
+- **Ingesting external scanner output:** findings from Gitleaks (`--from-gitleaks FILE`) or TruffleHog (`--from-trufflehog FILE`) are merged into the redaction pipeline, deduplicated against native findings (severity merged to the higher value on a duplicate), and still pass through `.credactorignore` suppression. Ingestion requires a **directory** target so report-relative file paths resolve correctly.
 
 ## What Credactor Does NOT Protect Against
 
@@ -97,7 +97,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 ### v2.4.0 (Phase 1–3 hardening + external ingestion)
 
-**External-scanner ingestion (BETA), `credactor/ingest.py`:**
+**External-scanner ingestion, `credactor/ingest.py`:**
 
 - **SEC-40a/b/c**: Ingested Gitleaks/TruffleHog reports are treated as untrusted. Each report file path is `normpath`+`resolve`d against the target and rejected if it escapes the target directory; a path equal to the report file itself is skipped (self-corruption guard); a missing-on-disk file is dropped; an embedded NUL or otherwise invalid path is skipped per-finding rather than aborting the batch. Reports are size-capped before parsing (bounding peak parse memory) and finding-count-capped after parsing, and non-UTF-8 (`U+FFFD`) secret fields are skipped.
 - **Dedup severity merge**: native and external findings are deduplicated; on a duplicate at the same location, value, and commit context, the higher severity is kept, so a working-tree TruffleHog `Verified` (critical) duplicate does not downgrade the survivor. (Findings that differ only by commit are resolved by the working-tree-beats-committed rule, without a severity merge.) Ingested findings still pass through `.credactorignore` suppression.

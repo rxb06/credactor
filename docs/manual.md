@@ -48,8 +48,8 @@ credactor path/to/file.py   # scan one file
 | `--scan-json` | config | Also scan `.json` files |
 | `--fail-on-error` | config | Exit 2 if any file could not be scanned |
 | `--verbose`, `-v` | config | Log scan/suppression activity on stderr |
-| `--from-gitleaks FILE` | ingest (BETA) | Ingest a Gitleaks JSON report |
-| `--from-trufflehog FILE` | ingest (BETA) | Ingest a TruffleHog NDJSON report |
+| `--from-gitleaks FILE` | ingest | Ingest a Gitleaks JSON report |
+| `--from-trufflehog FILE` | ingest | Ingest a TruffleHog NDJSON report |
 
 ---
 
@@ -280,6 +280,11 @@ it. Verified behaviour:
 - `.bak` files contain the secret in **plaintext** — general scanners will flag
   them. Use `--secure-delete` or `--secure-backup-dir` (outside the repo) for a
   clean tree.
+- **A `.bak` is created even when every replacement fails.** The backup is
+  written before the replacement pass, so a `--fix-all` run in which no value
+  matches (typically a stale ingested report) still leaves a byte-identical
+  plaintext `.bak` beside each touched file. Backups also inherit the original
+  file's full mode, including a setuid bit. Delete strays before committing.
 
 ```bash
 credactor --fix-all --secure-delete .                 # redact, wipe backups
@@ -406,8 +411,11 @@ credactor --ci -f sarif . > results.sarif
 
 Searched in the target directory and up to **5 parent directories** (stopping at
 the project root). A config discovered **outside** the project root is refused
-unless passed explicitly with `--config` (and always refused under `--ci`).
-Verified keys:
+unless passed explicitly with `--config`. Under `--ci` an outside-root config
+is always refused — and when it was named explicitly via `--config`, the
+refusal is **fatal, exit 2** (like a missing or unparseable `--config`): a CI
+gate must never silently fall back to defaults when the pipeline expected
+config-driven settings or `[ingest]` sources. Verified keys:
 
 | Key | Effect |
 |-----|--------|
@@ -474,6 +482,10 @@ breadcrumbs name the kind: `inline`, `allowlist
 (file-level|glob|file:line|value-literal)`, `safe value heuristic`, or
 `hash context`. A whole-file allowlist match in a directory walk logs
 `file-level`; the same entry matching on the per-line path logs `glob`.
+Ingested findings filtered by the allowlist log the same
+`suppressed by allowlist (<kind>)` breadcrumb (allowlist entries are the only
+suppression layer that applies to them — see
+[Suppression layers and ingested findings](#suppression-layers-and-ingested-findings)).
 
 ---
 
@@ -566,7 +578,7 @@ locations. Verified — each of the following yields 0 findings:
 
 ---
 
-## External scanner ingestion (BETA)
+## External scanner ingestion
 
 Ingest another scanner's report and run its findings through Credactor's redaction
 pipeline. Verified end-to-end (gitleaks/trufflehog → ingest → redact → clean
@@ -582,44 +594,153 @@ credactor --from-trufflehog th.json --ci .
 
 > **`--no-verification` keeps trufflehog offline.** It still detects secrets but
 > skips the live API calls that would otherwise validate each one, so nothing is
-> sent to a third party (verified against trufflehog 3.95.x: findings report
-> `Verified: false` and zero verification time). Drop it only if you want
-> trufflehog to confirm secrets online. `gitleaks dir` likewise scans the
-> working tree without reading git history (use `gitleaks git` for history).
+> sent to a third party (verified across trufflehog 3.88.1–3.97.0: findings
+> report `Verified: false` and zero verification time). Drop it only if you
+> want trufflehog to confirm secrets online. `gitleaks dir` likewise scans the
+> working tree without reading git history (use `gitleaks git` for history;
+> below gitleaks 8.19 there is no `dir` subcommand — use
+> `gitleaks detect --no-git -s . -f json`, whose report is identical on every
+> field Credactor consumes).
 
 Verified behaviour and **requirements**:
 
-- Ingested findings are **merged** with native findings and **deduplicated**; on
-  a same-location/value/commit duplicate the **higher severity is kept**.
-- The target **must be a directory** (a *relative* report path resolves against the current working directory, not the target) —
-  a **file target exits 2** (verified).
+- Ingested findings are **merged** with native findings and **deduplicated**.
+  On a same-location/value/commit duplicate the surviving finding's `type`
+  follows a fixed priority — **native `pattern:*` > `external:gitleaks:*` >
+  `external:trufflehog:*`** (processing order, not flag order) — and the
+  **higher severity of the two is kept** (a TruffleHog `Verified: true`
+  duplicate escalates a native medium to critical).
+- Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**
+  and **`external:trufflehog:<DetectorName>`** in every output format (in
+  SARIF rule ids the `:` is sanitised to `-`) — filter on these in `-f json`
+  pipelines. Severity maps from a per-rule table for Gitleaks (with a
+  `Tags` override); for TruffleHog, `Verified: true` is always **critical**.
+- The target **must be a directory** — a **file target exits 2** (verified).
+- **Path bases differ, deliberately:** the *report path* (flag or `[ingest]`
+  entry) resolves against the **current working directory**, never the target
+  or the config file's directory; the *finding paths inside the report*
+  resolve against the **target**. A missing relative report path names the
+  CWD-resolved location in its error.
+- **The target must equal the directory the scanner ran against** (the
+  monorepo rule). Pointing Credactor at a subdirectory while the report was
+  generated at the repo root makes root-relative findings silently miss
+  (warn + skip, and the run can exit 0) — or, worse, resolve to an
+  equally-named nested file which is then redacted while the real secret
+  survives. Run both tools from the same root.
 - Ingestion **cannot be combined with `--scan-history`** — **exits 2** (verified).
+- `--staged` **can** be combined with ingestion: staged-file findings and
+  ingested working-tree findings merge into one report under the usual
+  forced-read-only rules (`--fix-all` is ignored with a warning). See
+  [Flag combinations](#flag-combinations--precedence).
 - Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
   same-kind CLI `--from-*` flag takes **precedence over** an `[ingest]` entry
   (**CLI > config**, consistent with every other setting): when the flag is
   given, that `[ingest]` entry is ignored entirely (not merged, not even
   validated). An `[ingest]` entry applies only when no same-kind flag is
   passed — keep one source per kind.
+- **One report per kind.** Repeating `--from-gitleaks` (or `--from-trufflehog`)
+  keeps only the **last** occurrence — earlier ones are dropped by standard
+  flag parsing. Merge multiple reports upstream before ingesting.
 - The report is **untrusted input**, with two distinct contracts:
   - *The report file itself* is read from the path you supply — **not** confined
     to the target. A **missing or unreadable** report path is a **fatal error,
-    exit 2** (never silently ignored), for either scanner. For **Gitleaks** (one
-    JSON document) invalid JSON or a wrong top-level type is **also fatal, exit
-    2**. For **TruffleHog** (line-delimited NDJSON) each line is parsed
-    independently and a malformed line is skipped (a mixed report still ingests
-    its valid findings), but a **wholly-unparseable** report — content with no
-    JSON object on any line (an HTML error page, a typo'd file, or a Gitleaks
-    JSON array fed to `--from-trufflehog`) — is likewise **fatal, exit 2**,
-    never a silent zero-findings all-clear; an empty report is a legitimate "no
-    findings". Report size and finding count are capped.
+    exit 2** (never silently ignored), for either scanner; a report path that
+    exists but is not a regular file (a directory, a FIFO) is likewise fatal.
+    For **Gitleaks** (one JSON document) invalid JSON or a wrong top-level type
+    is **also fatal, exit 2**. For **TruffleHog** (line-delimited NDJSON) each
+    line is parsed independently and a malformed line is skipped (a mixed
+    report still ingests its valid findings), but a **wholly-unparseable**
+    report — content with no JSON object on any line (an HTML error page, a
+    typo'd file, or a Gitleaks JSON array fed to `--from-trufflehog`) — is
+    likewise **fatal, exit 2**, never a silent zero-findings all-clear; the
+    cross-feed errors hint at the mix-up. An empty report is a legitimate "no
+    findings". **Caps:** a report **over 20,000,000 bytes is refused** (fatal,
+    exit 2; a report of exactly 20,000,000 bytes parses — the boundary is
+    inclusive), and findings beyond **10,000** are truncated with a warning.
   - *Each finding inside the report* has its secret-location path **confined to
     the target**: a finding whose path resolves outside is rejected as possible
     traversal (warned and skipped). A malformed individual finding entry is
     likewise skipped, and the run continues.
+- **Only `filesystem` and `git` TruffleHog sources are ingested.** Records
+  from any other source (`github`, `docker`, `s3`, …) are skipped, and a
+  run-level `[WARN] N TruffleHog finding(s) skipped: unsupported source
+  type(s) […]` is emitted so an all-unsupported report is never a silent
+  all-clear.
+
+### Stale reports
+
+A report is a snapshot; ingest it against the same tree it was generated
+from, and **regenerate it after redacting or after any tree change**:
+
+- A finding whose value is no longer on its recorded line (a line was
+  inserted, the secret rotated, or a prior run already redacted it) fails
+  safely: warned, counted unresolved, **exit 1** — never a wrong-line
+  replacement. Re-running with a consumed report therefore exits 1, not 0.
+- A finding whose file was **deleted or renamed** since the scan is skipped at
+  ingest with a missing-file warning and does not count as a finding — such a
+  run can **exit 0 while the secret still exists at the renamed path**. A
+  run-level `[WARN] N ingested finding(s) reference files that no longer
+  exist…` summarises the drops so the gate's green is auditable.
+- Reports are OS-specific: ingest them on the OS/checkout that produced them
+  (Windows backslash paths are literal filename characters on Linux and miss
+  gracefully).
+
+### Suppression layers and ingested findings
+
+Only **`.credactorignore`** entries (glob, `file:line`, value-literal,
+`value:`) apply to ingested findings; suppressed ones are dropped before the
+merge, with a `-v` breadcrumb naming the kind. Every other layer gates the
+**native scan only** — an external scanner's verdict is otherwise trusted
+verbatim:
+
+| Layer | Applies to ingested findings? |
+|---|---|
+| `.credactorignore` (all entry kinds) | **yes** |
+| Inline `# credactor:ignore` | no — the marked line is still reported and redacted |
+| Built-in safe values (`changeme`, …) | no — a report naming a placeholder value drives a real redaction |
+| `extra_safe_values` | no |
+| `entropy_threshold` / `min_value_length` | no |
+| `.gitignore` / skipped dirs (`node_modules`, …) | no — an explicit report beats walk-time exclusions; redaction then leaves `.bak` files inside those trees |
+
+### Symlinks and `SymlinkFile`
+
+An ingested finding whose path is a symlink **dereferences and redacts the
+real file** (containment is checked after resolution) — unlike the native
+scan, which refuses symlinked files. In Gitleaks reports a non-empty
+`SymlinkFile` field takes precedence over `File` unconditionally.
+
+### Multi-line findings
+
+External findings whose secret spans multiple lines (PEM private keys) are
+**reported but never redacted** — replacement is line-based, so every line
+fails the value match (warned, exit 1). Use Credactor's native PEM detection
+to redact key blocks.
+
+### Supported scanner versions
+
+Tested ranges (report schemas verified identical on every consumed field):
+
+| Scanner | Tested range | Fields consumed |
+|---|---|---|
+| Gitleaks | **8.18.4 – 8.27.2** | top-level array; `RuleID`, `File` (+`SymlinkFile` override), `StartLine`, `Secret`, `Match`, `Tags`, `Commit` |
+| TruffleHog | **3.88.1 – 3.97.0** | per-line object; `Raw`, `DetectorName`, `Verified`, `SourceMetadata.Data.Filesystem.{file,line}`, `.Git.{file,line,commit}` |
+
+Newer versions with additional JSON fields are ingested with the unknown
+fields ignored. ⚠ TruffleHog **self-updates by default** — pass
+`--no-update` in CI or anywhere a version is pinned.
+
+Ingestion end-to-end behaviour is verified on **Linux** with **CPython 3.11,
+3.12, 3.13, and 3.14** (3.11.16 / 3.12.14 / 3.13.15 / 3.14.x tested —
+identical outcomes and exit codes in every cell). Windows and macOS ingestion
+behaviour is untested.
 
 > Marginal value: Credactor redacts the **union** of (its native findings + the
 > ingested ones). A secret only a *third* tool detects is not redacted — pair
-> ingestion with the broadest detector.
+> ingestion with the broadest detector. Note also the overlap-tail class of
+> limitation: any scanner that reports a *truncated or shorter substring* of the
+> on-disk secret (e.g. a connection string cut at the port) leaves a live-looking
+> tail after redaction, disclosed by a warning — pair connection-string
+> ingestion with native coverage (`--scan-json` where relevant).
 
 ---
 
@@ -631,7 +752,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML; dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable ingestion report file; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` value; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
 
 ---
 
@@ -651,6 +772,7 @@ Verified rules:
 | `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry is ignored |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
+| `--staged` + `--from-gitleaks`/`--from-trufflehog` | allowed: staged-native and ingested working-tree findings merge into one read-only report (`--fix-all` still ignored with a warning) |
 | `--from-*` with a **file** target | **rejected, exit 2** (needs a directory) |
 | `--secure-backup-dir` + `--secure-delete` | backup moved to DIR, then wiped |
 | `--no-backup` + `--fix-all` | redacts with no recovery copy (extra confirmation shown) |
@@ -667,7 +789,12 @@ detail; these are the behaviours most likely to surprise.)
 - **Recognised file types only.** Credactor scans a fixed extension allowlist
   (code/config types, plus `.txt` as of 2.5.0); secrets in unrecognised text
   types (`.md`, custom) are skipped unless added via `extra_extensions`.
-  General-purpose scanners read every file.
+  General-purpose scanners read every file. **Ingestion is the exception in
+  both directions:** an ingested finding is redacted regardless of extension
+  (`.md`, `Dockerfile`, extensionless — the report extends coverage past the
+  allowlist), and an explicit report also beats `.gitignore` and skip-dir
+  exclusions — redaction then leaves plaintext `.bak` files inside those
+  trees (see Backup & safety).
 - **False positives are rewritten under `--fix-all`.** Redaction acts on every
   finding, so a non-secret that matches a pattern (a git commit SHA, an example
   key, a format-valid placeholder) is replaced with the sentinel — silently
@@ -678,7 +805,13 @@ detail; these are the behaviours most likely to surprise.)
 - **`.bak` backups hold plaintext** (use `--secure-delete`/`--secure-backup-dir`).
 - **Narrower provider rule set** than dedicated detectors — some provider formats
   (e.g. SendGrid, Twilio, Slack webhooks) are not natively detected. Pair with
-  another scanner via ingestion (Gitleaks or TruffleHog today, more incoming) for breadth.
+  another scanner via ingestion (Gitleaks or TruffleHog) for breadth.
+- **Overlap-tail artifacts.** When any scanner (native or ingested) reports a
+  shorter substring of a longer on-disk secret — overlapping rules, or a
+  connection string truncated at the port — redacting the substring leaves a
+  short live-looking tail on the line. The leftover is disclosed with a
+  warning and the credential itself is dead once rotated; pair
+  connection-string ingestion with native coverage (`--scan-json` for JSON).
 - **No cross-file or semantic analysis**; obfuscated/runtime-assembled secrets
   are missed.
 - **`--scan-history` covers the most recent 100 commits.** Secrets introduced

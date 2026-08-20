@@ -10,6 +10,63 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [Unreleased]
+
+External-scanner ingestion (`--from-gitleaks`, `--from-trufflehog`, and the
+`[ingest]` config table) is **out of beta**. The GA contract — finding type
+strings, exit codes, the inclusive 20,000,000-byte / 10,000-finding caps,
+dedup priority (native > gitleaks > trufflehog), severity mapping, supported
+scanner versions (Gitleaks 8.18.4–8.27.2, TruffleHog 3.88.1–3.97.0), and the
+suppression-layer table — is documented in the manual, backed by a five-part
+black-box test campaign (~150 cases, zero data-loss-class defects).
+
+### Changed (behaviour)
+
+- A TruffleHog report whose records come from unsupported sources (`github`,
+  `docker`, …) now emits a default-visible `[WARN] N finding(s) skipped:
+  unsupported source type(s) […]` summary; previously the skips were
+  INFO-only and an all-unsupported report was indistinguishable from a clean
+  run (a silent false all-clear in CI).
+- An explicit `--config` pointing outside the project root is now a **fatal
+  error (exit 2)** under `--ci`, matching a missing or unparseable
+  `--config`; previously it was refused on stderr while the run continued
+  with defaults and could exit 0.
+- Runs that ingest a report now emit a run-level stale-report summary: one
+  `[WARN]` when ingested findings were dropped because their files no longer
+  exist (renamed/deleted since the scan), and one after a `--fix-all` in
+  which replacements failed — both point at regenerating the report.
+
+### Added
+
+- Ingestion suppressions now log a `-v` breadcrumb (`suppressed by allowlist
+  (<kind>)`), matching the native scan's audit trail.
+- Cross-feed hints on report-parse failures: NDJSON fed to `--from-gitleaks`
+  suggests `--from-trufflehog`, and a JSON array fed to `--from-trufflehog`
+  suggests `--from-gitleaks`.
+- `--help` for the ingestion flags now states the directory-target
+  requirement, the CWD-relative report path, and the regenerate-after-redact
+  rule; the exit-code epilog covers ingestion fatals.
+
+### Fixed
+
+- Error-message accuracy: a directory or FIFO passed as a report path is now
+  reported as “not a regular file” instead of “file not found”; a missing
+  *relative* report path names the CWD-resolved location it was looked up at;
+  the oversized-report error no longer calls the built-in 20 MB cap
+  “configured” (and its grammar is fixed). For an ingested finding, the
+  stale-value warning now names the likely causes (stale report, multi-line
+  value, already redacted) instead of the misleading `(already replaced?)`.
+
+### Documentation
+
+- Manual: the External scanner ingestion section now records the full GA
+  contract — dedup priority and type strings, cap numbers and their inclusive
+  boundary, the monorepo target rule, path-resolution bases, stale-report
+  semantics, the suppression-layer table for ingested findings,
+  symlink/`SymlinkFile` semantics, the multi-line limitation, and the
+  supported scanner/interpreter version statement. BETA labels removed from
+  the manual, README, CI guide, and `--help`.
+
 ## [2.5.0] - 2026-06-24
 
 ### Changed (behaviour)
