@@ -1748,3 +1748,66 @@ class TestReportPathRegularFileGuard:
             ingest_trufflehog(str(fifo), str(target))
         with pytest.raises(ValueError, match='not a regular file'):
             ingest_gitleaks(str(fifo), str(target))
+
+
+class TestInvalidRecordSummary:
+    """Invalid-record run-level summaries: per-record skips are INFO-only, so a
+    wholly-invalid report was byte-indistinguishable from a clean run (exit 0)
+    — the same silent-false-all-clear class the A08 unsupported-source summary
+    closes."""
+
+    def test_gitleaks_all_invalid_report_warns(self, tmp_path, credactor_caplog):
+        from credactor.ingest import new_ingest_stats
+
+        target = tmp_path / 'repo'
+        target.mkdir()
+        report = tmp_path / 'gl.json'
+        report.write_text(
+            json.dumps(
+                [
+                    42,  # non-object entry
+                    {'RuleID': 'aws', 'File': 'x.py', 'StartLine': 1},  # no Secret
+                    {'RuleID': 'aws', 'Secret': 'AKIAIOSFODNN7EXAMPLE'},  # no File
+                ]
+            ),
+            encoding='utf-8',
+        )
+        stats = new_ingest_stats()
+        results = ingest_gitleaks(str(report), str(target), stats=stats)
+        assert results == []
+        assert stats['invalid_record'] == 3
+        summary = [
+            r.getMessage()
+            for r in credactor_caplog.records
+            if 'skipped as invalid' in r.getMessage()
+        ]
+        assert len(summary) == 1 and summary[0].startswith('3 Gitleaks record(s)')
+
+    def test_gitleaks_valid_records_do_not_warn(self, tmp_path, credactor_caplog):
+        target, _ = _make_target(tmp_path)
+        report = _write_report(tmp_path, [_make_gitleaks_finding()])
+        results = ingest_gitleaks(str(report), str(target))
+        assert len(results) == 1
+        assert not any('skipped as invalid' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_trufflehog_invalid_records_warn_with_count(self, tmp_path, credactor_caplog):
+        from credactor.ingest import new_ingest_stats
+
+        target, _ = _make_th_target(tmp_path)
+        empty_raw = _make_trufflehog_finding(Raw='')
+        binary_raw = _make_trufflehog_finding(Raw='sec�ret')
+        no_path = _make_trufflehog_finding(
+            SourceMetadata={'Data': {'Filesystem': {'file': '', 'line': 1}}}
+        )
+        valid = _make_trufflehog_finding()
+        report = _write_ndjson(tmp_path, [empty_raw, binary_raw, no_path, valid])
+        stats = new_ingest_stats()
+        results = ingest_trufflehog(str(report), str(target), stats=stats)
+        assert len(results) == 1  # the valid record still ingests
+        assert stats['invalid_record'] == 3
+        summary = [
+            r.getMessage()
+            for r in credactor_caplog.records
+            if 'skipped as invalid' in r.getMessage()
+        ]
+        assert len(summary) == 1 and summary[0].startswith('3 TruffleHog record(s)')

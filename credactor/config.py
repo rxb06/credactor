@@ -315,12 +315,22 @@ def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
         val = ingest['from_gitleaks']
         if not isinstance(val, str):
             logger.warning('ingest.from_gitleaks must be a string path, ignoring')
+        elif not val:
+            # Parity with the CLI flag: --from-gitleaks '' is fatal, and for
+            # the same reason — an empty value must not silently disable a
+            # configured ingest gate into a false-clean exit 0. The config
+            # spelling of the identical mistake must not be quieter.
+            raise ConfigError('ingest.from_gitleaks is empty — set a report path or remove the key')
         else:
             config.from_gitleaks = val
     if 'from_trufflehog' in ingest:
         val = ingest['from_trufflehog']
         if not isinstance(val, str):
             logger.warning('ingest.from_trufflehog must be a string path, ignoring')
+        elif not val:
+            raise ConfigError(
+                'ingest.from_trufflehog is empty — set a report path or remove the key'
+            )
         else:
             config.from_trufflehog = val
 

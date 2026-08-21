@@ -1116,3 +1116,17 @@ class TestReportPathErrorAccuracy:
         assert exc_info.value.code == 2
         assert 'broken symlink' in credactor_caplog.text
         assert 'file not found' not in credactor_caplog.text
+
+
+class TestIngestConfigEmptyPathExitsTwo:
+    """The config spelling of an empty ingest path is as fatal as the flag
+    spelling — previously it silently disabled ingestion and could exit 0."""
+
+    def test_empty_ingest_path_in_config_exits_2(self, tmp_dir, credactor_caplog):
+        cfg = os.path.join(tmp_dir, 'cred.toml')
+        with open(cfg, 'w', encoding='utf-8') as f:
+            f.write('[ingest]\nfrom_gitleaks = ""\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', cfg, '--ci', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'ingest.from_gitleaks is empty' in credactor_caplog.text

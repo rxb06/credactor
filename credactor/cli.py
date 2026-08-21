@@ -735,13 +735,15 @@ def _main_inner(argv: list[str] | None = None) -> None:
         _fatal('Config file not found: %s', config.config_path)
     try:
         file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+        if file_data:
+            apply_config_file(config, file_data)
     except ConfigError as exc:
         # An explicit --config that exists but won't parse (invalid TOML /
         # unreadable) is fatal for the same reason a missing one is: degrading
-        # to defaults silently drops every intended setting.
+        # to defaults silently drops every intended setting. apply_config_file
+        # raises the same for an empty [ingest] path (parity with the fatal
+        # empty --from-* flag).
         _fatal('%s', exc)
-    if file_data:
-        apply_config_file(config, file_data)
 
     # S9: an explicit CLI --from-* overrides a same-kind .credactor.toml
     # [ingest] entry (precedence CLI > config > default, consistent with

@@ -124,6 +124,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'unsupported_source': 0,
         'unsupported_types': set(),
         'unsupported_types_truncated': False,
+        'invalid_record': 0,
     }
 
 
@@ -324,16 +325,23 @@ def ingest_gitleaks(
         data = data[:_MAX_FINDINGS]
 
     findings: list[Finding] = []
+    invalid = 0
 
     for obj in data:
         if not isinstance(obj, dict):
             logger.info('Skipping non-object entry in Gitleaks report.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         # --- Secret ---
         secret = obj.get('Secret', '')
         if not isinstance(secret, str) or not secret:
             logger.info('Skipping Gitleaks finding with empty Secret.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         # --- File path ---
@@ -341,6 +349,9 @@ def ingest_gitleaks(
         raw_file = obj.get('SymlinkFile') or obj.get('File', '')
         if not isinstance(raw_file, str) or not raw_file:
             logger.info('Skipping Gitleaks finding with non-string or empty File.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         resolved = _resolve_external_finding_path(
@@ -393,6 +404,19 @@ def ingest_gitleaks(
             finding['commit'] = commit[:12]
 
         findings.append(finding)
+
+    if invalid:
+        # Same class as the A08 unsupported-source summary: the per-record
+        # skips are INFO-only, so a wholly-invalid report (schema drift, or a
+        # post-processor that strips Secret fields) would otherwise be
+        # byte-indistinguishable from a clean run and exit 0.
+        logger.warning(
+            '%d Gitleaks record(s) skipped as invalid (non-object entry, or '
+            'empty/missing Secret or File) — check the report and scanner '
+            'version; an all-invalid report is otherwise indistinguishable '
+            'from a clean scan.',
+            invalid,
+        )
 
     return findings
 
@@ -460,6 +484,8 @@ def _parse_trufflehog_record(
             'TruffleHog line %d: skipping finding with empty Raw.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
     if '\ufffd' in raw_secret:
         logger.info(
@@ -467,6 +493,8 @@ def _parse_trufflehog_record(
             '(replacement character U+FFFD); skipping to avoid corrupted redaction.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
     # TruffleHog URL-encodes special characters in URI-based credentials
     # (e.g. '@' → '%40').  Save both forms; the right one is selected
@@ -530,6 +558,8 @@ def _parse_trufflehog_record(
             'TruffleHog line %d: skipping finding with non-string or empty file path.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
 
     resolved = _resolve_external_finding_path(
@@ -614,6 +644,9 @@ def ingest_trufflehog(
     )
     if stats is None:
         stats = new_ingest_stats()
+    # The CLI shares one stats dict across both ingest calls, so the summary
+    # below must count only THIS parser's skips.
+    invalid_start = stats['invalid_record']
 
     try:
         # Closed via `with fh:` below; opened inside try only to convert OSError
@@ -710,6 +743,21 @@ def ingest_trufflehog(
             'only filesystem and git sources can be ingested.',
             stats['unsupported_source'],
             types if types else '(unknown)',
+        )
+
+    invalid_here = stats['invalid_record'] - invalid_start
+    if invalid_here:
+        # Same class as the unsupported-source summary above: these skips are
+        # INFO-only per record, and a report whose records all carry empty or
+        # binary secrets (TruffleHog emits U+FFFD for binary matches) would
+        # otherwise be a silent exit-0 all-clear — dropping even Verified
+        # findings invisibly.
+        logger.warning(
+            '%d TruffleHog record(s) skipped as invalid (empty or binary '
+            'non-UTF-8 Raw secret, or missing file path) — these findings, '
+            'Verified ones included, are not ingested and cannot be redacted; '
+            'handle them with the scanner directly.',
+            invalid_here,
         )
 
     return findings
