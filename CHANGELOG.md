@@ -10,7 +10,7 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [Unreleased]
+## [2.6.0] - 2026-08-21
 
 External-scanner ingestion (`--from-gitleaks`, `--from-trufflehog`, and the
 `[ingest]` config table) is **out of beta**. The GA contract — finding type
@@ -367,6 +367,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rxb06/credactor/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/rxb06/credactor/compare/v2.3.2...v2.3.3
