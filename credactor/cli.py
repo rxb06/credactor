@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             'Exit codes: 0 = no findings (clean), '
             '1 = unresolved findings detected, '
-            '2 = error (path not found, permission denied, --fail-on-error, '
+            '2 = error (path not found, unreadable files under --fail-on-error, '
             'missing/invalid/oversized ingestion report)\n\n'
             'Examples:\n'
             '  credactor .                          Scan current directory interactively\n'
@@ -349,6 +349,25 @@ def _config_from_args(args: argparse.Namespace) -> Config:
 
 def _validate_invocation(config: Config) -> None:
     """Reject incompatible flag combinations and warn on hazardous configs."""
+    if config.staged_only and config.scan_history:
+        # Dispatch order would run --staged and silently never reach the
+        # history scan — a repo whose only secret lives in history would gate
+        # green. Conflicting modes fail loudly (parity with the
+        # --scan-history + ingestion rejection below).
+        _fatal(
+            '--staged and --scan-history cannot be combined. Run them as two separate invocations.',
+        )
+
+    if (config.staged_only or config.scan_history) and Path(config.target).is_file():
+        # Both modes resolve the git repo from the target and walk it; a file
+        # target used to escape as a NotADirectoryError traceback with exit 1,
+        # which a gate reads as 'findings detected'. Same contract as the
+        # ingestion directory-target requirement.
+        _fatal(
+            '--staged/--scan-history require a directory target, not a file. '
+            'Pass the repository root (or a subdirectory) to scan.',
+        )
+
     if config.scan_history and (config.from_gitleaks or config.from_trufflehog):
         _fatal(
             '--scan-history cannot be combined with --from-gitleaks or --from-trufflehog. '

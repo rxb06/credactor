@@ -67,8 +67,8 @@ with `-f json` and read the `severity` field):
 
 In text output, severities are colour-coded — critical **bright magenta**
 (distinct from high so the top two severities differ at a glance), high
-**red**, medium **yellow**, low **cyan** (`--no-color`, or a non-terminal
-stdout, disables this).
+**red**, medium **yellow**, low **cyan** (`--no-color`, the `NO_COLOR`
+environment variable, or a non-terminal stdout disables this).
 
 ### Entropy model
 
@@ -81,11 +81,14 @@ stdout, disables this).
   config threshold:** JWT 3.3, connection string 2.5, hex 3.5, Base64 3.8,
   Stripe-test 3.0 (bits/char). Verified: a JWT and a connection string are still
   found with `entropy_threshold = 6.0`. Unlike the deterministic matches, these
-  are **not** scanned inside comments.
+  are **not** scanned inside comments — where "comment" means a **full line
+  starting with `#` or `//`**: a value in a `/* … */` block, on a ` * `
+  continuation line, or in a trailing comment after code still flags.
 - **`entropy_threshold` (default 3.5) gates only variable-assignment and
   XML-attribute findings** — those caught by the *variable name* rather than a
-  value pattern. Password-family variables (`password`, `passwd`, `passphrase`,
-  `private_key`, `secret_key`) use a lower floor of `min(entropy_threshold, 3.0)`:
+  value pattern. Password-family **variable assignments** (`password`,
+  `passwd`, `passphrase`, `private_key`, `secret_key` — the clamp does *not*
+  apply to XML attributes) use a lower floor of `min(entropy_threshold, 3.0)`:
   verified, `password = "Summer2024!"` (entropy ≈ 3.1) is flagged **high** even at
   `entropy_threshold = 6.0` (the floor clamps at 3.0) — a memorable password
   below the default 3.5 is still caught.
@@ -106,7 +109,8 @@ Exactly one *behaviour* applies per run; the precedence/forcing rules are in
 
 `credactor <target>` with no mode flag walks each finding and prompts
 `Replace? [y/N]`. `y` redacts that finding (creating a `.bak`), `n`/Enter skips.
-Requires a TTY — piped stdin is rejected with exit 1 (use `--dry-run`/`--ci`
+Requires a TTY once there are findings to prompt for — piped stdin is then
+rejected with exit 1, while a clean tree still reports and exits 0 (use `--dry-run`/`--ci`
 to report, or `--fix-all --yes` to redact unattended). Git Bash/mintty on
 Windows is seen as a pipe by native Python; run `winpty credactor …` there.
 Exit code is **1** if any finding is left unresolved, and **0** if all are
@@ -123,8 +127,15 @@ Each finding is shown before its prompt (verified output):
   Replace? [y/N]:
 ```
 
-`y`/`yes` prints `-> Replaced.`; `n`/Enter prints `-- Skipped.`; Ctrl-C or EOF
-stops and reports how many replacements were already applied.
+`y`/`yes` prints `-> Replaced.`; `n`/Enter prints `-- Skipped.`; any other
+answer re-prompts (`Please enter 'y' or 'n'.`); Ctrl-C or EOF stops and
+reports how many replacements were already applied. The session opens with a
+banner naming the prompt count (deduplicated, so it can be lower than the
+report's finding count) and closes with a `Summary: X replaced | Y skipped |
+Z total` block plus a rotate-credentials reminder; the first approval also
+prints a `[WARN] Plaintext backup created…` pointer at
+`--secure-delete`/`--secure-backup-dir`. Answering `y` on a **private key
+block** finding is refused (see [Multi-line findings]) and counts as failed.
 
 ### `--dry-run`
 
@@ -156,6 +167,8 @@ confirmation (`Proceed? [y/N]`) before writing. Verified:
   `--yes` to proceed unattended.
 - ⚠ `--fix-all` acts on **every** finding, including false positives — see
   [Limitations](#limitations). Always `--dry-run` first.
+- **Private key blocks are refused** (warned, counted failed, exit 1) — see
+  [Multi-line findings](#multi-line-findings).
 
 ```bash
 credactor --fix-all .            # interactive confirm, then redact
@@ -169,6 +182,15 @@ blob**. **Read-only: it forces dry-run even with `--fix-all`** (a pre-commit hoo
 must never rewrite the tree mid-commit). Verified: `--staged --fix-all --yes` on a
 staged secret exits **1** and leaves the working file **unmodified**. In a
 non-git directory it exits **2** (see below).
+The staged set is repo-wide but the scan is **scoped to the target
+directory**: staged files outside it are skipped with a run-level `[WARN]`
+naming the count — run `--staged` from the **repository root** (as the
+shipped hooks do) to gate every staged change. A **file** target is rejected
+(exit 2), and combining `--staged` with `--scan-history` is likewise
+rejected (exit 2). Staging `.credactor.toml` or `.credactorignore` alongside
+code triggers a `[WARN] Suppression/config files staged alongside code
+changes … Review these for detection-bypass attempts.` — a deliberate
+anti-bypass signal.
 Staged content gets the identical full scan as a working-tree file — PEM
 blocks and secrets inside triple-quoted / template-literal strings included.
 Staged `.json` files follow the same opt-in as the directory walk: scanned only
@@ -180,9 +202,13 @@ credactor --staged --ci          # canonical pre-commit gate
 
 ### `--scan-history`
 
-Scans up to 100 commits of `git log -p`, reporting the commit hash where each
-secret was introduced. Verified: finds a secret that was committed then removed
-from the working tree. In a non-git directory it exits **2**.
+Scans up to the 100 most recent **file-changing** commits of `git log -p`,
+reporting the commit hash where each secret was introduced. Verified: finds a
+secret that was committed then removed from the working tree. In a non-git
+directory it exits **2**; a **file** target is rejected (exit 2). In `-f
+json`/`-f sarif` output a history finding's `file` field carries the
+synthetic `path (commit <hash>)` form — the hash is also in the separate
+`commit` field, so join pipelines on `commit`, not `file`.
 On a repository deeper than 100 commits a `[WARN]` states that only the most
 recent 100 were scanned — a truncated scan is never silently presented as a
 full-history all-clear. The exit code is unaffected by the notice.
@@ -317,11 +343,12 @@ With `--no-backup` or `--secure-delete` there is no `.bak` — recover from git:
 
 ### `.bak` files and git
 
-The shipped `.gitignore` lists `*.bak` and `*.credactor.tmp` (`.gitignore:39,42`),
-so backups and crash-residue temp files aren't staged by `git add .`. They still
-hold **plaintext**, so a `git add --force` or a general secret scanner will
-surface them — use `--secure-delete` or `--secure-backup-dir` (outside the repo)
-for a clean tree.
+`.bak` backups and `*.credactor.tmp` temp files hold **plaintext** secrets,
+and Credactor **never edits your repository's `.gitignore`** — in your own
+project a plain `git add .` **will stage them**. Add `*.bak` and
+`*.credactor.tmp` to your `.gitignore` (Credactor's own repo does exactly
+that at `.gitignore:39,42`), or use `--secure-delete` /
+`--secure-backup-dir` (outside the repo) for a clean tree.
 
 ### What `--secure-delete` does
 
@@ -392,7 +419,10 @@ credactor --ci -f json . > findings.json
 
 SARIF **2.1.0** for GitHub Code Scanning. Verified: valid document
 (`version` `2.1.0`, `runs[].tool.driver.name = Credactor`, `runs[].results`),
-with column-level regions (`startColumn`/`endColumn`).
+with column-level regions (`startColumn`/`endColumn`). Severity maps to
+SARIF `level` as critical/high → `error`, medium → `warning`, low → `note`;
+rule ids sanitise `:` to `-` (`pattern-AWS access key`,
+`external-gitleaks-<rule>`).
 
 ```bash
 credactor --ci -f sarif . > results.sarif
@@ -409,7 +439,9 @@ credactor --ci -f sarif . > results.sarif
 
 ### `.credactor.toml`
 
-Searched in the target directory and up to **5 parent directories** (stopping at
+Searched in the target directory and up to **5 parent directories** — the
+**nearest** file found wins and is the only one loaded (no merging with
+parent configs) — (stopping at
 the project root). A config discovered **outside** the project root is refused
 unless passed explicitly with `--config`. Under `--ci` an outside-root config
 is always refused — and when it was named explicitly via `--config`, the
@@ -470,9 +502,14 @@ even if its extension is not in this list.
 
 ### `--fail-on-error`
 
-Exit **2** if any file could not be scanned (permissions, encoding). Verified:
-a directory whose only file is unreadable exits **0** without the flag (a warning
-only) and **2** with it.
+Exit **2** if any file could not be scanned (permissions, encoding) —
+including a directory that could not be traversed (warned and counted).
+Verified: a directory whose only file is unreadable exits **0** without the
+flag (a warning only) and **2** with it. Two scope notes: size- and
+type-based skips (the 50 MB per-file cap, unscanned extensions, `.json`
+without `--scan-json`, `.gitignore`d files) are warned or noted but are
+**not** errors and do not trip the flag; and when the flag fires, the run
+exits **before** printing the findings report.
 
 ### `--verbose` / `-v`
 
@@ -549,20 +586,22 @@ locations. Verified — each of the following yields 0 findings:
   (2) Hash *values*
   (`$2b$…` bcrypt, `$argon2id$…`). (3) A quoted hex / high-entropy **value** on
   a line whose key names a hash/digest/checksum/commit/integrity/revision
-  field. The key may end in a `_hash`-family suffix, or contain `md5`,
-  `sha<digits>`, `commit`, `integrity`, `checksum`, `digest`, `rev`, or `sri`
-  before the `=`/`:` (`md5 = "<hex>"`, `git_commit = "<sha>"`,
-  `integrity: "sha384-…"`). The `sha`/`md5` forms need the keyword *immediately*
-  before the delimiter (`md5sum`, `shasum`, bare `sha`, `sha256_value` still
-  flag); the bare words match as substrings, so they also catch names merely
-  containing them (`my_rev`, `precommit`). Case 3 gates the **value** detector
+  field. The match is on the key's **ending** only: a key ending in a
+  `_hash`-family suffix, or in `md5`, `sha<digits>`, `sha`, `commit`,
+  `integrity`, `checksum`, `digest`, `rev`, `revision`, or `sri`
+  (`md5 = "<hex>"`, `git_commit = "<sha>"`, `commit_sha = "<sha>"`,
+  `revision = "<hex>"`, `integrity: "sha384-…"` — and, because only the
+  ending is checked, `my_rev`, `precommit`, and `deploy_sha` too). A key
+  merely *containing* a term elsewhere is untouched (`commit_id`,
+  `rev_number`, `md5sum`, `sha256_value` still flag). Case 3 gates the **value** detector
   only — it does **not** override a credential keyword (`secret_md5 = "…"` still
   flags) or a deterministic provider pattern (`rev = "AKIA…"` still flags).
   **Trade-off — false negative:** a *genuine* bare-hex / high-entropy secret in
   such a field (an HMAC in `integrity = "<hex>"`, a token in a `*_rev` variable)
-  is **not** caught by the entropy detectors — the deliberate cost of not
-  corrupting commit SHAs / SRI integrity hashes / lockfile checksums under
-  `--fix-all`. `--dry-run` and allowlist if you keep raw secrets in such fields.
+  is **not** caught by the entropy detectors — and that includes any variable
+  simply *ending* in one of the terms (`*_rev`, `*_sha`, `precommit`) — the
+  deliberate cost of not corrupting commit SHAs / revision pins / SRI
+  integrity hashes / lockfile checksums under `--fix-all`. `--dry-run` and allowlist if you keep raw secrets in such fields.
 - **Non-credential shapes** — file paths, credential-free URLs, values under 8
   characters, and low-entropy values.
 
@@ -571,6 +610,13 @@ locations. Verified — each of the following yields 0 findings:
 - Directories: `.git`, `__pycache__`, `node_modules`, `.venv`, `venv`, `.tox`,
   `dist`, `build` (plus IDE/cache dirs).
 - Lock files: `package-lock.json`, `yarn.lock`, `poetry.lock`, `pnpm-lock.yaml`.
+- Files matched by the repository's **`.gitignore`** (including nested ones
+  met during the walk). Text output prints a `[N file(s) not scanned --
+  covered by .gitignore]` block; **`-f json` / `-f sarif` emit no signal for
+  these** — a gitignored `.env` full of secrets scans clean in machine
+  formats, so audit with text output (or scan the file directly).
+- Files over the **50 MB per-file cap** (warned; the cap also applies to
+  staged blobs). The skip does not trip `--fail-on-error`.
 
 > Point Credactor **directly** at a skipped file or directory and it is scanned
 > anyway (verified) — the same rule that lets a named single file bypass the
@@ -696,7 +742,10 @@ from, and **regenerate it after redacting or after any tree change**:
   ingest with a missing-file warning and does not count as a finding — such a
   run can **exit 0 while the secret still exists at the renamed path**. A
   run-level `[WARN] N ingested finding(s) reference files that no longer
-  exist…` summarises the drops so the gate's green is auditable.
+  exist…` summarises the drops so the gate's green is auditable. After a
+  `--fix-all` in which replacements failed in files containing ingested
+  findings, a second run-level `[WARN] N finding(s) in file(s) with ingested
+  findings could not be applied…` points at regenerating the report.
 - Reports are OS-specific: ingest them on the OS/checkout that produced them
   (Windows backslash paths are literal filename characters on Linux and miss
   gracefully).
@@ -777,7 +826,12 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories |
+
+Two adjacent notes: **Ctrl-C during a scan exits 130**; at an interactive
+`Replace?` or `--fix-all` `Proceed?` prompt it is caught (the run reports and
+exits by resolution, normally 1). **argparse usage errors** (unknown flag,
+invalid choice, missing value) also exit **2** with usage text.
 
 ---
 
@@ -800,7 +854,10 @@ Verified rules:
 | `--staged` + `--from-gitleaks`/`--from-trufflehog` | allowed: staged-native and ingested working-tree findings merge into one read-only report (`--fix-all` still ignored with a warning) |
 | `--from-*` with a **file** target | **rejected, exit 2** (needs a directory) |
 | `--secure-backup-dir` + `--secure-delete` | backup moved to DIR, then wiped |
-| `--no-backup` + `--fix-all` | redacts with no recovery copy (extra confirmation shown) |
+| `--no-backup` + `--fix-all` | redacts with no recovery copy (a DANGER banner is shown; still a single confirmation, and `--yes` skips it) |
+| `--no-backup` + `--secure-backup-dir`/`--secure-delete` | **`--no-backup` wins** (warned; the secure-backup flags have no effect) |
+| `--staged` + `--scan-history` | **rejected, exit 2** |
+| `--staged`/`--scan-history` with a **file** target | **rejected, exit 2** (needs a directory) |
 | non-text `--format` in non-CI | reports and exits 1 (no interactive redaction) |
 | non-text `--format` + `--fix-all` | `--fix-all` wins and redacts; stdout carries **only** the JSON/SARIF report, confirmation/summary text goes to stderr; exit 0 when all replaced |
 

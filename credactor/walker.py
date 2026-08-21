@@ -88,7 +88,18 @@ def walk_and_scan(
     # os.walk is top-down by default, so a .gitignore at dir D is parsed
     # before any of D's subtree files are checked.
     root_str = str(root_path) + os.sep
-    for dirpath, dirnames, filenames in os.walk(root_path):
+
+    # os.walk swallows unreadable directories by default (no onerror), so a
+    # chmod-000 subtree silently vanished from the scan — a false all-clear
+    # that --fail-on-error is documented to prevent. Warn and count the
+    # directory as errored so the gate degrades loudly instead.
+    walk_errors: list[str] = []
+
+    def _on_walk_error(exc: OSError) -> None:
+        logger.warning('Cannot traverse %s: %s', exc.filename, exc)
+        walk_errors.append(str(exc.filename))
+
+    for dirpath, dirnames, filenames in os.walk(root_path, onerror=_on_walk_error):
         dirnames[:] = [
             d
             for d in dirnames
@@ -137,7 +148,7 @@ def walk_and_scan(
 
     findings, errored = _scan_files(scannable, config, allowlist)
 
-    return findings, gitignore_skipped, json_files, errored
+    return findings, gitignore_skipped, json_files, walk_errors + errored
 
 
 def _scan_files(
@@ -262,6 +273,7 @@ def scan_staged_files(
 
     findings: list[Finding] = []
     errored: list[str] = []
+    outside_target = 0
     extra_skip_files = SKIP_FILES | config.skip_files
     for line in raw_staged:
         # Reject paths with '..' components (traversal guard, consistent with the
@@ -274,6 +286,7 @@ def scan_staged_files(
         except OSError:
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):
+            outside_target += 1
             continue
         name_lower = Path(line).name.lower()
         # Lockfiles and user skip_files are excluded on every path, exactly as
@@ -372,6 +385,16 @@ def scan_staged_files(
             content = raw.decode('utf-8', errors='surrogateescape')
         lines = io.StringIO(content, newline=None).readlines()
         findings.extend(scan_lines(full_path, lines, config=config, allowlist=allowlist))
+
+    if outside_target:
+        # The staged set is repo-wide but the scan is scoped to the target:
+        # without a signal, a staged secret elsewhere in the repo gates green
+        # when run from a subdirectory (the monorepo silent-miss class).
+        logger.warning(
+            '%d staged file(s) outside the target directory were not scanned — '
+            'run --staged from the repository root to gate every staged change.',
+            outside_target,
+        )
 
     return findings, errored
 
