@@ -526,11 +526,24 @@ def batch_replace_in_file(
 
             original = lines[idx]
             if full_value not in original:
-                logger.warning(
-                    'Value no longer found on line %d in %s (already replaced?).',
-                    lineno,
-                    filepath,
-                )
+                if finding['type'].startswith('external:'):
+                    # K-5/K03: for an ingested finding this is almost always a
+                    # stale report (line drift, rotated value, .git/objects
+                    # noise) or a multi-line value — '(already replaced?)'
+                    # misdiagnoses those, so name the real causes.
+                    logger.warning(
+                        'Reported value not found on line %d in %s — stale report '
+                        '(file changed since the scan), multi-line value, or '
+                        'already redacted. Regenerate the scanner report and re-run.',
+                        lineno,
+                        filepath,
+                    )
+                else:
+                    logger.warning(
+                        'Value no longer found on line %d in %s (already replaced?).',
+                        lineno,
+                        filepath,
+                    )
                 failed += 1
                 failed_lines.add(lineno)
                 continue
@@ -735,13 +748,27 @@ def fix_all(
 
     total_replaced = 0
     total_failed = 0
+    failed_in_ingested_files = 0
 
     for filepath, file_findings in by_file.items():
         replaced, failed = batch_replace_in_file(filepath, file_findings, config)
         total_replaced += replaced
         total_failed += failed
+        if failed and any(f['type'].startswith('external:') for f in file_findings):
+            failed_in_ingested_files += failed
 
     _print_summary(total_replaced, total_failed, len(findings), config, label='failed')
+    if failed_in_ingested_files:
+        # K-5: per-finding warns scroll past — one run-level pointer at the
+        # most likely cause. Counted per file containing ingested findings, not
+        # run-wide: failures confined to purely-native files must not blame a
+        # report that applied cleanly (and send the user regenerating it).
+        logger.warning(
+            '%d finding(s) in file(s) with ingested findings could not be '
+            'applied — if the tree changed since the scan, the report is '
+            'stale: regenerate it and re-run.',
+            failed_in_ingested_files,
+        )
     return total_failed
 
 

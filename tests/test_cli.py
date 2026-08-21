@@ -202,10 +202,22 @@ class TestMainExitCodes:
         assert exc_info.value.code == 2
         assert 'Config file not found' in credactor_caplog.text
 
-    def test_directory_as_explicit_config_exits_2(self, tmp_dir):
+    def test_directory_as_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
         with pytest.raises(SystemExit) as exc_info:
             main(['--config', tmp_dir, '--dry-run', tmp_dir])
         assert exc_info.value.code == 2
+        # K-1 parity with report paths: the directory exists, so 'not found'
+        # would send the user chasing a phantom typo.
+        assert 'Config path is not a regular file' in credactor_caplog.text
+
+    @pytest.mark.skipif(os.name != 'posix', reason='symlinks are unreliable off POSIX')
+    def test_dangling_symlink_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
+        link = os.path.join(tmp_dir, 'cfg.toml')
+        os.symlink(os.path.join(tmp_dir, 'gone.toml'), link)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', link, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'broken symlink' in credactor_caplog.text
 
     def test_invalid_toml_explicit_config_exits_2(self, tmp_dir, credactor_caplog):
         # An explicit --config that exists but is unparseable is the same
@@ -1088,3 +1100,33 @@ class TestCredactorignoreFileTarget:
 
         assert exc.value.code == 0  # suppressed by the glob
         assert not any('single-file target' in r.getMessage() for r in credactor_caplog.records)
+
+
+class TestReportPathErrorAccuracy:
+    """K-1 completion: a dangling-symlink report path exists in the directory
+    listing, so 'file not found' (plus the CWD hint) is the phantom-typo chase
+    the accuracy fix was written to end."""
+
+    @pytest.mark.skipif(os.name != 'posix', reason='symlinks are unreliable off POSIX')
+    def test_dangling_symlink_report_path_exits_2_named(self, tmp_dir, credactor_caplog):
+        link = os.path.join(tmp_dir, 'gl.json')
+        os.symlink(os.path.join(tmp_dir, 'gone.json'), link)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--from-gitleaks', link, '--dry-run', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'broken symlink' in credactor_caplog.text
+        assert 'file not found' not in credactor_caplog.text
+
+
+class TestIngestConfigEmptyPathExitsTwo:
+    """The config spelling of an empty ingest path is as fatal as the flag
+    spelling — previously it silently disabled ingestion and could exit 0."""
+
+    def test_empty_ingest_path_in_config_exits_2(self, tmp_dir, credactor_caplog):
+        cfg = os.path.join(tmp_dir, 'cred.toml')
+        with open(cfg, 'w', encoding='utf-8') as f:
+            f.write('[ingest]\nfrom_gitleaks = ""\n')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--config', cfg, '--ci', tmp_dir])
+        assert exc_info.value.code == 2
+        assert 'ingest.from_gitleaks is empty' in credactor_caplog.text

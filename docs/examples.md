@@ -319,7 +319,7 @@ MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB...
 
 Lines inside the block aren't scanned separately.
 
-## 13. Ingest external scanner findings (BETA)
+## 13. Ingest external scanner findings
 
 Merge findings from Gitleaks or TruffleHog into Credactor's redaction pipeline, so one tool both detects (across scanners) and redacts. Ingested findings are deduplicated against Credactor's native findings, keeping the higher severity.
 

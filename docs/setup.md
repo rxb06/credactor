@@ -91,7 +91,7 @@ extra_safe_values = ["test_fixture_token_abc123"]
 
 replacement = "REDACTED_BY_CREDACTOR"
 
-# External scanner ingestion (BETA) — merge Gitleaks/TruffleHog findings
+# External scanner ingestion — merge Gitleaks/TruffleHog findings
 # into the redaction pipeline. Values are paths to the report files; the
 # scan target must be a DIRECTORY (the repo root) so report-relative file
 # paths resolve. Used when --from-gitleaks / --from-trufflehog are not passed;

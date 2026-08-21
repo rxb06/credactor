@@ -1078,3 +1078,33 @@ class TestWritePathSafety:
             batch_replace_in_file(path, [self._finding(path)], config)
         with open(path) as f:
             assert _AWS_KEY in f.read()  # untouched — raised pre-write
+
+
+class TestFixAllStaleReportWarning:
+    """K-5 attribution: the stale-report pointer counts failures in files
+    containing ingested findings — failures confined to purely-native files
+    must not blame a report that applied cleanly (the advice 'regenerate the
+    report and re-run' would be actively wrong there)."""
+
+    def test_native_only_failure_does_not_blame_report(self, make_file, credactor_caplog):
+        native_path = make_file('native.py', f'api_key = "{_AWS_KEY}"\n')
+        ext_path = make_file('ext.py', f'token = "{_PASSWORD}"\n')
+        failing_native = _mk_finding(native_path, 'VALUE_NOT_ON_THIS_LINE')
+        ok_external = _mk_finding(ext_path, _PASSWORD, ftype='external:gitleaks:generic')
+        unresolved = fix_all(
+            [failing_native, ok_external], os.path.dirname(native_path), Config(no_backup=True)
+        )
+        assert unresolved == 1
+        assert not any('stale' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_failure_in_file_with_ingested_finding_warns(self, make_file, credactor_caplog):
+        ext_path = make_file('ext.py', 'nothing_secret_here = 1\n')
+        failing_external = _mk_finding(
+            ext_path, 'VALUE_NOT_ON_THIS_LINE', ftype='external:trufflehog:AWS'
+        )
+        unresolved = fix_all([failing_external], os.path.dirname(ext_path), Config(no_backup=True))
+        assert unresolved == 1
+        assert any(
+            'in file(s) with ingested findings' in r.getMessage() and 'stale' in r.getMessage()
+            for r in credactor_caplog.records
+        )

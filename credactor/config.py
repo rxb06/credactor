@@ -186,6 +186,17 @@ def load_config_file(
                         candidate,
                         ref,
                     )
+                elif explicit_path:
+                    # GA-H5: under --ci an explicit --config that cannot be
+                    # honoured must be fatal, like a missing or unparseable one —
+                    # a stderr-only refusal lets the gate pass with defaults
+                    # (false-clean) when the pipeline expected config-driven
+                    # settings or [ingest] sources.
+                    raise ConfigError(
+                        f'Refusing to load config from outside project root '
+                        f'under --ci: {candidate} (project root: {ref}). '
+                        f'CI honours only a config inside the project root.'
+                    )
                 else:
                     hint = '' if ci_mode else ' Pass --config to load it explicitly.'
                     logger.error(
@@ -304,12 +315,22 @@ def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
         val = ingest['from_gitleaks']
         if not isinstance(val, str):
             logger.warning('ingest.from_gitleaks must be a string path, ignoring')
+        elif not val:
+            # Parity with the CLI flag: --from-gitleaks '' is fatal, and for
+            # the same reason — an empty value must not silently disable a
+            # configured ingest gate into a false-clean exit 0. The config
+            # spelling of the identical mistake must not be quieter.
+            raise ConfigError('ingest.from_gitleaks is empty — set a report path or remove the key')
         else:
             config.from_gitleaks = val
     if 'from_trufflehog' in ingest:
         val = ingest['from_trufflehog']
         if not isinstance(val, str):
             logger.warning('ingest.from_trufflehog must be a string path, ignoring')
+        elif not val:
+            raise ConfigError(
+                'ingest.from_trufflehog is empty — set a report path or remove the key'
+            )
         else:
             config.from_trufflehog = val
 

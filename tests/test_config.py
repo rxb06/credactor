@@ -440,3 +440,20 @@ def test_threshold_defaults_single_sourced():
     defaults = {key: default for key, _coerce, _bounds, default in _SCALAR_VALIDATORS}
     assert Config().entropy_threshold == ENTROPY_DEFAULT == defaults['entropy_threshold']
     assert Config().min_value_length == MIN_LEN_DEFAULT == defaults['min_value_length']
+
+
+class TestIngestEmptyPathFatal:
+    """Parity with the fatal empty --from-* flag: an empty [ingest] path must
+    not silently disable a configured ingest gate into a false-clean exit 0."""
+
+    def test_empty_from_gitleaks_raises(self):
+        c = Config()
+        with pytest.raises(ConfigError, match=r'ingest\.from_gitleaks is empty'):
+            apply_config_file(c, {'ingest': {'from_gitleaks': ''}})
+        assert c.from_gitleaks is None
+
+    def test_empty_from_trufflehog_raises(self):
+        c = Config()
+        with pytest.raises(ConfigError, match=r'ingest\.from_trufflehog is empty'):
+            apply_config_file(c, {'ingest': {'from_trufflehog': ''}})
+        assert c.from_trufflehog is None
