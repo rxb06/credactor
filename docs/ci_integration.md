@@ -160,7 +160,9 @@ TruffleHog emits newline-delimited JSON:
   run: credactor --ci --from-trufflehog trufflehog.json .
 ```
 
-Under `--ci` the run is report-only: ingested findings are scanned, merged, and reported, and the run exits 1 if anything remains. To configure ingestion in `.credactor.toml` instead, add an `[ingest]` table:
+These examples write the report inside the workspace, which is fine for an ephemeral CI checkout that is discarded after the run. Anywhere the tree persists (local use, a reused runner), write the report **outside** the target tree: the report file holds the found secrets in plaintext, `.json` files are not scanned natively without `--scan-json`, and a finding pointing at the report itself is skipped (see the manual's ingestion section).
+
+Under `--ci` the run is report-only: ingested findings are scanned, merged, and reported, and the run exits 1 if anything remains. To configure ingestion in `.credactor.toml` instead, add an `[ingest]` table (an empty path value is fatal, exit 2 — same as an empty flag):
 
 ```toml
 [ingest]

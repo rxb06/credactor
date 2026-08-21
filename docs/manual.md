@@ -636,9 +636,12 @@ Verified behaviour and **requirements**:
 - Report paths can instead be set in `.credactor.toml` under `[ingest]`. A
   same-kind CLI `--from-*` flag takes **precedence over** an `[ingest]` entry
   (**CLI > config**, consistent with every other setting): when the flag is
-  given, that `[ingest]` entry is ignored entirely (not merged, not even
-  validated). An `[ingest]` entry applies only when no same-kind flag is
-  passed — keep one source per kind.
+  given, that `[ingest]` entry's path is not used. The config must still be
+  *valid*, though: an **empty** path value (`from_gitleaks = ""`) is
+  **fatal, exit 2** — even when a same-kind flag is passed, since config
+  parsing precedes the flag override — matching the empty-flag error; it
+  must not silently disable a configured ingest gate. An `[ingest]` entry
+  applies only when no same-kind flag is passed — keep one source per kind.
 - **One report per kind.** Repeating `--from-gitleaks` (or `--from-trufflehog`)
   keeps only the **last** occurrence — earlier ones are dropped by standard
   flag parsing. Merge multiple reports upstream before ingesting.
@@ -664,7 +667,16 @@ Verified behaviour and **requirements**:
   - *Each finding inside the report* has its secret-location path **confined to
     the target**: a finding whose path resolves outside is rejected as possible
     traversal (warned and skipped). A malformed individual finding entry is
-    likewise skipped, and the run continues.
+    likewise skipped, and the run continues — with a run-level `[WARN] N …
+    record(s) skipped as invalid` summary (either scanner; for TruffleHog
+    this covers parsed records with unusable fields — an unparseable NDJSON
+    *line* follows the parse contract above), so an all-invalid report is
+    never byte-indistinguishable from a clean run. A finding whose
+    path resolves **to the report file itself** is skipped to avoid
+    self-corruption, with only a `-v` INFO note — **keep reports outside the
+    target tree**: `.json` files are not scanned natively without
+    `--scan-json`, so a report stored inside the target holds plaintext
+    secrets the gate cannot see.
 - **Only `filesystem` and `git` TruffleHog sources are ingested.** Records
   from any other source (`github`, `docker`, `s3`, …) are skipped, and a
   run-level `[WARN] N TruffleHog finding(s) skipped: unsupported source
@@ -761,7 +773,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` value; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
+| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo; `--fail-on-error` with unreadable files |
 
 ---
 
@@ -778,7 +790,7 @@ Verified rules:
 | `--staged --ci` | read-only gate over staged files |
 | `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |
 | `--replacement` (CLI) vs `.credactor.toml` `replacement` | **CLI wins** (CLI > config > default) |
-| `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry is ignored |
+| `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry's path is not used (an *empty* config value is still fatal, exit 2) |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
 | `--staged` + `--from-gitleaks`/`--from-trufflehog` | allowed: staged-native and ingested working-tree findings merge into one read-only report (`--fix-all` still ignored with a warning) |

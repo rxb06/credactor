@@ -31,6 +31,17 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   miscounting it as an unsupported source, and — since it repeats
   report-controlled strings — is bounded (20 entries of at most 60 chars,
   with an omission marker).
+- Records skipped as **invalid** now emit a run-level summary for both
+  scanners — Gitleaks entries with an empty/missing `Secret` or `File` (or a
+  non-object entry), and TruffleHog records with an empty or binary
+  (non-UTF-8) `Raw` secret or a missing file path, were previously INFO-only:
+  an all-invalid report (schema drift, a stripping post-processor, binary
+  secrets) was another silent false all-clear, invisibly discarding even
+  `Verified: true` findings.
+- An empty `from_gitleaks` / `from_trufflehog` value in the `[ingest]` config
+  table is now **fatal (exit 2)**, matching the identical mistake spelled as
+  a CLI flag; previously it silently disabled ingestion, so a configured CI
+  gate degraded to native-only scanning with no diagnostic.
 - An explicit `--config` pointing outside the project root is now a **fatal
   error (exit 2)** under `--ci`, matching a missing or unparseable
   `--config`; previously it was refused on stderr while the run continued
@@ -79,8 +90,10 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   boundary, the monorepo target rule, path-resolution bases, stale-report
   semantics, the suppression-layer table for ingested findings,
   symlink/`SymlinkFile` semantics, the multi-line limitation, and the
-  supported scanner/interpreter version statement. BETA labels removed from
-  the manual, README, CI guide, and `--help`.
+  supported scanner/interpreter version statement — including the
+  report-inside-the-target hazard (a finding pointing at the report file
+  itself is skipped with only a `-v` note; keep reports outside the tree).
+  BETA labels removed from the manual, README, CI guide, and `--help`.
 
 ## [2.5.0] - 2026-06-24
 

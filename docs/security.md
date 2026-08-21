@@ -140,7 +140,7 @@ This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 - A deeply-nested JSON report is a fatal error (exit 2) on both the Gitleaks and TruffleHog paths, instead of an uncaught `RecursionError`.
 - A wholly-unparseable TruffleHog report (no JSON object on any line) is fatal, matching the Gitleaks path; a mixed report still ingests its valid findings.
 - The report size cap is lowered from 100 MB to 20 MB, bounding `json.load` peak memory.
-- An explicit `--from-*` overrides a config `[ingest]` entry, and an empty `--from-*` value is fatal (exit 2) rather than a silent no-op that could disable a config-sourced scan.
+- An explicit `--from-*` overrides a config `[ingest]` entry, and an empty `--from-*` value is fatal (exit 2) rather than a silent no-op that could disable a config-sourced scan; an empty `[ingest]` path value in the config itself is fatal for the same reason.
 
 **Config trust:**
 
