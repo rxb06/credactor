@@ -1108,3 +1108,63 @@ class TestFixAllStaleReportWarning:
             'in file(s) with ingested findings' in r.getMessage() and 'stale' in r.getMessage()
             for r in credactor_caplog.records
         )
+
+
+class TestPrivateKeyBlockRefusal:
+    """A PEM finding's value is only its BEGIN header line: a line-based
+    replacement would rewrite the header, leave the key material in place, and
+    make the next scan report the file clean — a certified-clean file still
+    holding a complete private key. Fail closed instead."""
+
+    _PEM = (
+        '-----BEGIN RSA PRIVATE KEY-----\n'
+        'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qFCzXY1CVHwPGVJP2XBpX3XY1p\n'
+        'q8K1Gm2LPeZ4XhZi0hL6WD1Wq6Zx8mYQr0P7ncy3ZJ0Zj1P0YQ7c2S0Vt1p2b3cX\n'
+        '-----END RSA PRIVATE KEY-----\n'
+    )
+
+    def _pem_finding(self, path):
+        return {
+            'file': path,
+            'line': 1,
+            'type': 'pattern:private key block',
+            'severity': 'critical',
+            'full_value': '-----BEGIN RSA PRIVATE KEY-----',
+            'value_preview': '',
+            'raw': '-----BEGIN RSA PRIVATE KEY-----',
+        }
+
+    def test_pem_block_refused_file_untouched(self, make_file, credactor_caplog):
+        path = make_file('key.pem', self._PEM)
+        with open(path, 'rb') as f:
+            before = f.read()
+        replaced, failed = batch_replace_in_file(
+            path, [self._pem_finding(path)], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before  # byte-identical: header NOT rewritten
+        assert any(
+            'refusing to redact a multi-line private key block' in r.getMessage()
+            for r in credactor_caplog.records
+        )
+
+    def test_mixed_file_redacts_rest_and_counts_refusal(self, make_file):
+        path = make_file('mixed.py', f'api_key = "{_AWS_KEY}"\n{self._PEM}')
+        pem = self._pem_finding(path)
+        pem['line'] = 2
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY), pem], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (1, 1)
+        with open(path) as f:
+            content = f.read()
+        assert _AWS_KEY not in content
+        assert 'BEGIN RSA PRIVATE KEY' in content  # block intact, not half-eaten
+
+    def test_fix_all_exits_unresolved_not_false_success(self, make_file):
+        path = make_file('key.pem', self._PEM)
+        unresolved = fix_all(
+            [self._pem_finding(path)], os.path.dirname(path), Config(no_backup=True)
+        )
+        assert unresolved == 1

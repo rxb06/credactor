@@ -431,6 +431,34 @@ def batch_replace_in_file(
     if not file_findings:
         return 0, 0
 
+    # A private-key-block finding carries only its BEGIN header line as the
+    # match value: a line-based replacement would rewrite the header, leave the
+    # entire key material and END marker in the file, and — with the header
+    # gone — the next scan would report the file clean. Fail closed: refuse,
+    # warn, count unresolved; the key must be rotated and removed by hand.
+    key_blocks = [f for f in file_findings if f['type'].endswith('private key block')]
+    if key_blocks:
+        for f in key_blocks:
+            logger.warning(
+                '%s:%d: refusing to redact a multi-line private key block — '
+                'replacing its header line would leave the key material in the '
+                'file while the next scan reports it clean. Rotate the key and '
+                'remove the block manually.',
+                filepath,
+                f['line'],
+            )
+        # Re-enter with the key blocks stripped so every downstream outcome
+        # (success, symlink refusal, read/write errors) counts them unresolved.
+        rest = [f for f in file_findings if not f['type'].endswith('private key block')]
+        replaced, failed = batch_replace_in_file(
+            filepath,
+            rest,
+            config,
+            sweep_exclude_lines=sweep_exclude_lines,
+            skip_backup=skip_backup,
+        )
+        return replaced, failed + len(key_blocks)
+
     # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
     # the file it points at, so the live secret would remain in the target while
     # we report success. Fail closed: skip, warn, count all findings unresolved.
