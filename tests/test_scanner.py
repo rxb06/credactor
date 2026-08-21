@@ -849,6 +849,13 @@ class TestHashContextWidened:
             f'checksum = "{self._HEX40}"',
             f'digest = "{self._HEX40}"',
             f'integrity = "{self._HEX40}"',
+            # The documented claim names 'revision' fields and commit SHAs —
+            # these natural spellings need their own suffixes (rev$ does not
+            # match 'revision'; sha\d+$ does not match a bare '_sha').
+            f'revision = "{self._HEX40}"',
+            f'db_revision = "{self._HEX40}"',
+            f'commit_sha = "{self._HEX40}"',
+            f'git_sha = "{self._HEX40}"',
         ):
             findings = scan_line(1, line, 'f.py', config=cfg)
             assert findings == [], line
@@ -886,6 +893,8 @@ class TestHashContextCredentialKeyVeto:
             'api_key_commit',
             'token_integrity',
             'auth_token_rev',
+            'api_key_sha',
+            'token_revision',
         ):
             line = f'{var} = "{self._HEX32}"'
             findings = scan_line(1, line, 'f.py', config=cfg)

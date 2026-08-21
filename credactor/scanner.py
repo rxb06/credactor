@@ -130,8 +130,8 @@ _MAX_BLOCK_SIZE = 8192
 # api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit
 # still flag — the credential keyword takes precedence (matches the manual).
 _HASH_CONTEXT_RE = re.compile(
-    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|md5'
-    r'|commit|integrity|checksum|digest|rev|sri)$',
+    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|sha|md5'
+    r'|commit|integrity|checksum|digest|rev|revision|sri)$',
     re.IGNORECASE,
 )
 

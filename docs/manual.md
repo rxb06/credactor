@@ -326,7 +326,7 @@ for a clean tree.
 ### What `--secure-delete` does
 
 On a successful redaction the `.bak` is overwritten with `os.urandom()` bytes,
-`fsync`'d, then unlinked (`redactor.py:254`). Verified: no `.bak` remains
+`fsync`'d, then unlinked (`redactor.py:276`). Verified: no `.bak` remains
 afterwards. It is wiped only when at least one replacement actually landed, and a
 single-pass overwrite is **not** a forensic guarantee on copy-on-write / SSD /
 journaling filesystems.
@@ -335,7 +335,7 @@ journaling filesystems.
 
 - **Atomic writes** — both the backup and the rewrite go through a temp file then
   `os.replace`, cleaned up in a `finally`; a mid-write crash leaves the original
-  intact (`redactor.py:393`, backup at `:197`).
+  intact (`redactor.py:292`, backup at `:197`).
 - **Permissions preserved** — a `chmod 600` file stays `600` after redaction.
 - **Multiple secrets per file** — replaced bottom-to-top so line numbers stay
   valid.
@@ -731,10 +731,14 @@ takes precedence over `File` unconditionally.
 
 ### Multi-line findings
 
-External findings whose secret spans multiple lines (PEM private keys) are
-**reported but never redacted** — replacement is line-based, so every line
-fails the value match (warned, exit 1). Use Credactor's native PEM detection
-to redact key blocks.
+Findings whose secret spans multiple lines (PEM private keys) are **reported
+but never redacted** — for either origin. An *external* multi-line finding
+fails the line-based value match (warned, exit 1). A *native*
+`pattern:private key block` finding is **refused outright** (warned, counted
+unresolved, exit 1): its match value is only the `-----BEGIN` header line, so
+a line-based replacement would rewrite the header, leave the entire key
+material in the file, and make the next scan report it clean. Rotate the key
+and remove the block manually — redaction never half-eats a key block.
 
 ### Supported scanner versions
 

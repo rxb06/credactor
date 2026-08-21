@@ -178,6 +178,7 @@ tests/
     __init__.py
     conftest.py
     benchmark/                     # detection benchmark corpus
+    test_audit_wheel.py
     test_cli.py
     test_config.py
     test_detection_benchmark.py
