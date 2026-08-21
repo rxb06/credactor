@@ -1669,3 +1669,82 @@ class TestDeeplyNestedJsonIsFatal:
         report.write_text('[' * 200000, encoding='utf-8')
         with pytest.raises(ValueError, match='nested'):
             ingest_trufflehog(str(report), str(target))
+
+
+class TestUnsupportedSourceAccounting:
+    """A08 hardening: the run-level summary's count must always be explained by
+    its type list, and the list is bounded (it repeats report-controlled
+    strings)."""
+
+    def test_malformed_filesystem_labeled_not_miscounted(self, tmp_path):
+        from credactor.ingest import new_ingest_stats
+
+        target, _ = _make_th_target(tmp_path)
+        malformed = _make_trufflehog_finding(SourceMetadata={'Data': {'Filesystem': None}})
+        docker = _make_trufflehog_finding(SourceMetadata={'Data': {'Docker': {'image': 'x'}}})
+        report = _write_ndjson(tmp_path, [malformed, docker])
+        stats = new_ingest_stats()
+        results = ingest_trufflehog(str(report), str(target), stats=stats)
+        assert results == []
+        # Both records are counted, and BOTH are named: the null-Filesystem
+        # record is labeled malformed, not silently folded into a count its
+        # type list cannot explain (or mislabeled an unsupported source).
+        assert stats['unsupported_source'] == 2
+        assert stats['unsupported_types'] == {'Docker', 'Filesystem (malformed entry)'}
+
+    def test_unsupported_type_list_bounded(self, tmp_path, credactor_caplog):
+        from credactor.ingest import (
+            _MAX_UNSUPPORTED_TYPE_NAME_LEN,
+            _MAX_UNSUPPORTED_TYPE_NAMES,
+            new_ingest_stats,
+        )
+
+        target, _ = _make_th_target(tmp_path)
+        findings = [
+            # A single record can carry an arbitrarily long source key.
+            _make_trufflehog_finding(SourceMetadata={'Data': {'K' * 500: {}}})
+        ]
+        findings += [
+            _make_trufflehog_finding(SourceMetadata={'Data': {f'Source{i:02d}': {}}})
+            for i in range(25)
+        ]
+        report = _write_ndjson(tmp_path, findings)
+        stats = new_ingest_stats()
+        ingest_trufflehog(str(report), str(target), stats=stats)
+        assert stats['unsupported_source'] == 26
+        assert len(stats['unsupported_types']) == _MAX_UNSUPPORTED_TYPE_NAMES
+        assert stats['unsupported_types_truncated'] is True
+        assert all(len(t) <= _MAX_UNSUPPORTED_TYPE_NAME_LEN for t in stats['unsupported_types'])
+        summary = [
+            r.getMessage()
+            for r in credactor_caplog.records
+            if 'unsupported source type(s)' in r.getMessage()
+        ]
+        assert summary and '(further types omitted)' in summary[-1]
+
+
+class TestReportPathRegularFileGuard:
+    """Library-layer K-1: a non-regular report path must raise ValueError, not
+    hang (FIFO) or leak an OS error (directory) — direct callers do not pass
+    through the CLI's own report-path checks."""
+
+    def test_directory_report_raises_valueerror(self, tmp_path):
+        target = tmp_path / 'repo'
+        target.mkdir()
+        report_dir = tmp_path / 'report_dir'
+        report_dir.mkdir()
+        with pytest.raises(ValueError, match='not a regular file'):
+            ingest_gitleaks(str(report_dir), str(target))
+        with pytest.raises(ValueError, match='not a regular file'):
+            ingest_trufflehog(str(report_dir), str(target))
+
+    @pytest.mark.skipif(os.name != 'posix', reason='mkfifo is POSIX-only')
+    def test_fifo_report_raises_instead_of_blocking(self, tmp_path):
+        target = tmp_path / 'repo'
+        target.mkdir()
+        fifo = tmp_path / 'report.fifo'
+        os.mkfifo(fifo)
+        with pytest.raises(ValueError, match='not a regular file'):
+            ingest_trufflehog(str(fifo), str(target))
+        with pytest.raises(ValueError, match='not a regular file'):
+            ingest_gitleaks(str(fifo), str(target))

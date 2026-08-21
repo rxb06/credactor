@@ -654,17 +654,30 @@ def _ingest_external(
                 # K-1: a directory/FIFO/other non-regular path exists — saying
                 # 'not found' sends the user chasing a phantom typo.
                 _fatal('%s report path is not a regular file: %s', name, report_path)
+            if report.is_symlink():
+                # K-1: a dangling symlink fails exists() (which follows the
+                # link) yet is plainly visible in a directory listing — 'not
+                # found' plus the CWD hint is the same phantom-typo chase.
+                _fatal('%s report path is a broken symlink: %s', name, report_path)
             if not report.is_absolute():
                 # K-3: relative report paths resolve against the CWD, not the
                 # target — name the base so a wrong-CWD invocation is obvious.
-                _fatal(
-                    '%s file not found: %s (resolved against the current working '
-                    'directory: %s — report paths are CWD-relative, not '
-                    'target-relative)',
-                    name,
-                    report_path,
-                    Path.cwd() / report_path,
-                )
+                # Path.cwd() raises when the CWD itself was deleted (a reaped
+                # CI workspace); fall through to the plain error rather than
+                # tracebacking with exit 1 instead of the contracted exit 2.
+                try:
+                    resolved_against_cwd = Path.cwd() / report_path
+                except OSError:
+                    resolved_against_cwd = None
+                if resolved_against_cwd is not None:
+                    _fatal(
+                        '%s file not found: %s (resolved against the current working '
+                        'directory: %s — report paths are CWD-relative, not '
+                        'target-relative)',
+                        name,
+                        report_path,
+                        resolved_against_cwd,
+                    )
             _fatal('%s file not found: %s', name, report_path)
         if Path(target).is_file():
             _fatal(
@@ -712,6 +725,13 @@ def _main_inner(argv: list[str] | None = None) -> None:
     # extra_extensions, [ingest]) and can flip a failing gate to a pass via a
     # filename typo. Implicit discovery finding nothing stays a normal no-op.
     if config.config_path and not Path(config.config_path).is_file():
+        config_p = Path(config.config_path)
+        if config_p.exists():
+            # K-1 parity with report paths: a directory/FIFO exists — saying
+            # 'not found' sends the user chasing a phantom typo.
+            _fatal('Config path is not a regular file: %s', config.config_path)
+        if config_p.is_symlink():
+            _fatal('Config path is a broken symlink: %s', config.config_path)
         _fatal('Config file not found: %s', config.config_path)
     try:
         file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)

@@ -119,7 +119,34 @@ def new_ingest_stats() -> dict[str, Any]:
     the CLI passes one dict to both ingest calls). Drives the run-level
     stale-report and unsupported-source summaries — per-finding logs alone
     scroll past and can leave an exit-0 run looking clean (E04/A08)."""
-    return {'missing_file': 0, 'unsupported_source': 0, 'unsupported_types': set()}
+    return {
+        'missing_file': 0,
+        'unsupported_source': 0,
+        'unsupported_types': set(),
+        'unsupported_types_truncated': False,
+    }
+
+
+# The unsupported-type set holds report-controlled strings, so both the entry
+# count and each entry's length are bounded: the file-size cap bounds parse
+# memory, but without these a single record carrying a huge or high-cardinality
+# source key would balloon the set and flood the run-level summary line.
+_MAX_UNSUPPORTED_TYPE_NAMES = 20
+_MAX_UNSUPPORTED_TYPE_NAME_LEN = 60
+
+
+def _note_unsupported_types(stats: dict[str, Any], labels: set[str]) -> None:
+    """Fold *labels* into ``stats['unsupported_types']`` under the bounds above."""
+    types = stats['unsupported_types']
+    for label in labels:
+        if len(label) > _MAX_UNSUPPORTED_TYPE_NAME_LEN:
+            label = label[: _MAX_UNSUPPORTED_TYPE_NAME_LEN - 3] + '...'
+        if label in types:
+            continue
+        if len(types) >= _MAX_UNSUPPORTED_TYPE_NAMES:
+            stats['unsupported_types_truncated'] = True
+            continue
+        types.add(label)
 
 
 def _resolve_external_finding_path(
@@ -219,6 +246,12 @@ def _load_report_preamble(
         report_size = os.path.getsize(filepath)
     except OSError as exc:
         raise ValueError(f'Cannot open {scanner_name} file {filepath!r}: {exc}') from exc
+    if not os.path.isfile(filepath):
+        # K-1 at the library layer: getsize succeeds on a FIFO (size 0) or a
+        # directory, and the parsers' open() would then block forever on a
+        # FIFO. The CLI pre-checks its own report path, but direct callers
+        # reach here first (same guard _parse_toml applies for the same reason).
+        raise ValueError(f'{scanner_name} report path is not a regular file: {filepath!r}')
     if report_size > _MAX_REPORT_BYTES:
         # K-2: the boundary is inclusive — a report of exactly _MAX_REPORT_BYTES
         # parses; only strictly-larger files are refused. The limit is a
@@ -473,15 +506,23 @@ def _parse_trufflehog_record(
 
     if not source_found:
         supported = {'Filesystem', 'Git'}
-        unsupported = set(data.keys()) - supported if isinstance(data, dict) else set()
+        keys = set(data.keys()) if isinstance(data, dict) else set()
+        unsupported = {str(k) for k in keys - supported}
+        # A Filesystem/Git key that is present but not a usable object is a
+        # malformed supported-source record, not an unsupported source — label
+        # it as such so the run-level summary's count is always explained by
+        # its type list and the 'only filesystem and git' advice is never
+        # pointed at records that WERE filesystem/git.
+        malformed = {f'{k} (malformed entry)' for k in keys & supported}
+        labels = unsupported | malformed
         logger.info(
             'TruffleHog line %d: unsupported source type %s; skipping.',
             lineno_file,
-            list(unsupported) if unsupported else '(unknown)',
+            sorted(labels) if labels else '(unknown)',
         )
         if stats is not None:
             stats['unsupported_source'] += 1
-            stats['unsupported_types'].update(unsupported)
+            _note_unsupported_types(stats, labels)
         return None
 
     if not isinstance(file_path_raw, str) or not file_path_raw:
@@ -662,6 +703,8 @@ def ingest_trufflehog(
     # exits 0 — a false all-clear in CI.
     if stats['unsupported_source']:
         types = sorted(str(t) for t in stats['unsupported_types'])
+        if stats.get('unsupported_types_truncated'):
+            types.append('(further types omitted)')
         logger.warning(
             '%d TruffleHog finding(s) skipped: unsupported source type(s) %s — '
             'only filesystem and git sources can be ingested.',

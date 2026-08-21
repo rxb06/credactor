@@ -748,21 +748,26 @@ def fix_all(
 
     total_replaced = 0
     total_failed = 0
+    failed_in_ingested_files = 0
 
     for filepath, file_findings in by_file.items():
         replaced, failed = batch_replace_in_file(filepath, file_findings, config)
         total_replaced += replaced
         total_failed += failed
+        if failed and any(f['type'].startswith('external:') for f in file_findings):
+            failed_in_ingested_files += failed
 
     _print_summary(total_replaced, total_failed, len(findings), config, label='failed')
-    if total_failed and any(f['type'].startswith('external:') for f in findings):
+    if failed_in_ingested_files:
         # K-5: per-finding warns scroll past — one run-level pointer at the
-        # most likely cause when an ingested report is in play.
+        # most likely cause. Counted per file containing ingested findings, not
+        # run-wide: failures confined to purely-native files must not blame a
+        # report that applied cleanly (and send the user regenerating it).
         logger.warning(
-            '%d finding(s) could not be applied in a run that ingested a scanner '
-            'report — if the tree changed since the scan, the report is stale: '
-            'regenerate it and re-run.',
-            total_failed,
+            '%d finding(s) in file(s) with ingested findings could not be '
+            'applied — if the tree changed since the scan, the report is '
+            'stale: regenerate it and re-run.',
+            failed_in_ingested_files,
         )
     return total_failed
 
