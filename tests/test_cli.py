@@ -1130,3 +1130,25 @@ class TestIngestConfigEmptyPathExitsTwo:
             main(['--config', cfg, '--ci', tmp_dir])
         assert exc_info.value.code == 2
         assert 'ingest.from_gitleaks is empty' in credactor_caplog.text
+
+
+class TestStagedHistoryModeGuards:
+    """Conflicting or unsupported mode/target pairings must fail loudly with
+    exit 2 — not silently drop a scan or traceback with exit 1."""
+
+    def test_staged_plus_scan_history_exits_2(self):
+        # Dispatch would run --staged and never reach the history scan: a repo
+        # whose only secret lives in history would gate green.
+        with pytest.raises(SystemExit) as exc:
+            _validate_invocation(Config(staged_only=True, scan_history=True))
+        assert exc.value.code == 2
+
+    def test_staged_or_history_with_file_target_exits_2(self, make_file):
+        path = make_file('lone.py', 'x = 1\n')
+        for cfg in (
+            Config(staged_only=True, target=path),
+            Config(scan_history=True, target=path),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _validate_invocation(cfg)
+            assert exc.value.code == 2

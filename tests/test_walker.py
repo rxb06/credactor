@@ -627,3 +627,58 @@ class TestIsSafeRelpath:
         # 'secret..py' contains '..' as a substring but not as a path component.
         assert _is_safe_relpath('secret..py') is True
         assert _is_safe_relpath('a/b/c.py') is True
+
+
+class TestWalkErrorAccounting:
+    """os.walk swallows unreadable directories by default — a chmod-000 subtree
+    silently vanished from the scan, a false all-clear --fail-on-error is
+    documented to prevent. The onerror hook must warn and count the directory
+    as errored."""
+
+    @pytest.mark.skipif(
+        os.name != 'posix' or os.geteuid() == 0, reason='chmod-000 needs non-root POSIX'
+    )
+    def test_unreadable_directory_counts_as_errored(self, tmp_dir, credactor_caplog):
+        locked = os.path.join(tmp_dir, 'locked')
+        os.makedirs(locked)
+        with open(os.path.join(locked, 'secret.py'), 'w') as f:
+            f.write('aws = "AKIA' + 'IOSFODNN7EXAMPLE"\n')
+        os.chmod(locked, 0)
+        try:
+            _, _, _, errored = walk_and_scan(tmp_dir, config=Config(no_color=True))
+        finally:
+            os.chmod(locked, 0o755)
+        assert any('locked' in e for e in errored)
+        assert any('Cannot traverse' in r.getMessage() for r in credactor_caplog.records)
+
+
+class TestStagedTargetScoping:
+    """The staged set is repo-wide but the scan is scoped to the target: a
+    staged secret outside the target must not vanish without a signal (the
+    monorepo silent-miss class)."""
+
+    def test_outside_target_staged_files_warn(self, tmp_dir, credactor_caplog):
+        subprocess.run(['git', 'init', '-q'], cwd=tmp_dir, check=True, capture_output=True)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'root_secret.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        subdir = os.path.join(tmp_dir, 'pkg')
+        os.makedirs(subdir)
+        subprocess.run(['git', 'add', '-A'], cwd=tmp_dir, check=True, capture_output=True)
+        findings, errored = scan_staged_files(subdir, config=Config(no_color=True))
+        assert findings == [] and errored == []
+        assert any(
+            'staged file(s) outside the target directory' in r.getMessage()
+            for r in credactor_caplog.records
+        )
+
+    def test_no_warn_when_all_staged_inside_target(self, tmp_dir, credactor_caplog):
+        subprocess.run(['git', 'init', '-q'], cwd=tmp_dir, check=True, capture_output=True)
+        with open(os.path.join(tmp_dir, 'app.py'), 'w') as f:
+            f.write('aws = "AKIA' + 'IOSFODNN7EXAMPLE"\n')
+        subprocess.run(['git', 'add', '-A'], cwd=tmp_dir, check=True, capture_output=True)
+        findings, _ = scan_staged_files(tmp_dir, config=Config(no_color=True))
+        assert len(findings) >= 1
+        assert not any(
+            'outside the target directory' in r.getMessage() for r in credactor_caplog.records
+        )
