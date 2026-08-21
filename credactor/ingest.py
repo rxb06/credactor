@@ -114,12 +114,49 @@ def _synthesise_raw(filepath: str, lineno: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def new_ingest_stats() -> dict[str, Any]:
+    """Per-run skip counters shared by both parsers (and across two reports when
+    the CLI passes one dict to both ingest calls). Drives the run-level
+    stale-report and unsupported-source summaries — per-finding logs alone
+    scroll past and can leave an exit-0 run looking clean (E04/A08)."""
+    return {
+        'missing_file': 0,
+        'unsupported_source': 0,
+        'unsupported_types': set(),
+        'unsupported_types_truncated': False,
+        'invalid_record': 0,
+    }
+
+
+# The unsupported-type set holds report-controlled strings, so both the entry
+# count and each entry's length are bounded: the file-size cap bounds parse
+# memory, but without these a single record carrying a huge or high-cardinality
+# source key would balloon the set and flood the run-level summary line.
+_MAX_UNSUPPORTED_TYPE_NAMES = 20
+_MAX_UNSUPPORTED_TYPE_NAME_LEN = 60
+
+
+def _note_unsupported_types(stats: dict[str, Any], labels: set[str]) -> None:
+    """Fold *labels* into ``stats['unsupported_types']`` under the bounds above."""
+    types = stats['unsupported_types']
+    for label in labels:
+        if len(label) > _MAX_UNSUPPORTED_TYPE_NAME_LEN:
+            label = label[: _MAX_UNSUPPORTED_TYPE_NAME_LEN - 3] + '...'
+        if label in types:
+            continue
+        if len(types) >= _MAX_UNSUPPORTED_TYPE_NAMES:
+            stats['unsupported_types_truncated'] = True
+            continue
+        types.add(label)
+
+
 def _resolve_external_finding_path(
     raw_file: str,
     target_resolved: str,
     filepath_resolved: str,
     *,
     scanner_name: str,
+    stats: dict[str, Any] | None = None,
 ) -> str | None:
     """Resolve, traversal-check, and self-ref-check a path from an external
     scanner finding. Returns the resolved path, or ``None`` to skip.
@@ -164,6 +201,8 @@ def _resolve_external_finding_path(
         # isn't on disk, and a phantom finding inflates counts / exit codes —
         # skip it (was previously kept with only an info log).
         logger.warning('%s finding references missing file %r; skipping.', scanner_name, resolved)
+        if stats is not None:
+            stats['missing_file'] += 1
         return None
 
     return resolved
@@ -208,10 +247,20 @@ def _load_report_preamble(
         report_size = os.path.getsize(filepath)
     except OSError as exc:
         raise ValueError(f'Cannot open {scanner_name} file {filepath!r}: {exc}') from exc
+    if not os.path.isfile(filepath):
+        # K-1 at the library layer: getsize succeeds on a FIFO (size 0) or a
+        # directory, and the parsers' open() would then block forever on a
+        # FIFO. The CLI pre-checks its own report path, but direct callers
+        # reach here first (same guard _parse_toml applies for the same reason).
+        raise ValueError(f'{scanner_name} report path is not a regular file: {filepath!r}')
     if report_size > _MAX_REPORT_BYTES:
+        # K-2: the boundary is inclusive — a report of exactly _MAX_REPORT_BYTES
+        # parses; only strictly-larger files are refused. The limit is a
+        # built-in constant, not configurable.
         raise ValueError(
             f'{scanner_name} file {filepath!r} is {report_size:,} bytes; refusing to '
-            f'parse files over {_MAX_REPORT_BYTES:,} bytes the configured limit.'
+            f'parse reports over the {_MAX_REPORT_BYTES:,}-byte built-in limit. '
+            f'Split the report or narrow the scanner scope.'
         )
     return target_resolved, filepath_resolved
 
@@ -219,11 +268,14 @@ def _load_report_preamble(
 def ingest_gitleaks(
     filepath: str,
     target: str,
+    stats: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """Parse a Gitleaks JSON report and return a list of Credactor finding dicts.
 
     Validates top-level is a list, caps at 10,000 findings, and checks
-    resolved paths are within the target directory.
+    resolved paths are within the target directory. *stats* (see
+    ``new_ingest_stats``) accumulates skip counters for the CLI's run-level
+    summaries; ``None`` skips the bookkeeping.
     """
     target_resolved, filepath_resolved = _load_report_preamble(
         filepath, target, scanner_name='Gitleaks'
@@ -240,7 +292,15 @@ def ingest_gitleaks(
             f'Gitleaks file {filepath!r} contains non-UTF-8 bytes; cannot parse safely: {exc}'
         ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f'Gitleaks file is not valid JSON ({filepath!r}): {exc}') from exc
+        # K-4: 'Extra data' after a complete first JSON value is the signature
+        # of an NDJSON report fed to the wrong flag — say so instead of leaving
+        # only the raw decoder text.
+        hint = (
+            ' (the file looks like NDJSON — TruffleHog reports go to --from-trufflehog)'
+            if exc.msg.startswith('Extra data')
+            else ''
+        )
+        raise ValueError(f'Gitleaks file is not valid JSON ({filepath!r}): {exc}{hint}') from exc
     except RecursionError as exc:
         # Deeply-nested JSON (e.g. '['*200k) exhausts the interpreter recursion
         # limit. RecursionError is a RuntimeError, not one of the above, so it
@@ -265,16 +325,23 @@ def ingest_gitleaks(
         data = data[:_MAX_FINDINGS]
 
     findings: list[Finding] = []
+    invalid = 0
 
     for obj in data:
         if not isinstance(obj, dict):
             logger.info('Skipping non-object entry in Gitleaks report.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         # --- Secret ---
         secret = obj.get('Secret', '')
         if not isinstance(secret, str) or not secret:
             logger.info('Skipping Gitleaks finding with empty Secret.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         # --- File path ---
@@ -282,6 +349,9 @@ def ingest_gitleaks(
         raw_file = obj.get('SymlinkFile') or obj.get('File', '')
         if not isinstance(raw_file, str) or not raw_file:
             logger.info('Skipping Gitleaks finding with non-string or empty File.')
+            invalid += 1
+            if stats is not None:
+                stats['invalid_record'] += 1
             continue
 
         resolved = _resolve_external_finding_path(
@@ -289,6 +359,7 @@ def ingest_gitleaks(
             target_resolved,
             filepath_resolved,
             scanner_name='Gitleaks',
+            stats=stats,
         )
         if resolved is None:
             continue
@@ -333,6 +404,19 @@ def ingest_gitleaks(
             finding['commit'] = commit[:12]
 
         findings.append(finding)
+
+    if invalid:
+        # Same class as the A08 unsupported-source summary: the per-record
+        # skips are INFO-only, so a wholly-invalid report (schema drift, or a
+        # post-processor that strips Secret fields) would otherwise be
+        # byte-indistinguishable from a clean run and exit 0.
+        logger.warning(
+            '%d Gitleaks record(s) skipped as invalid (non-object entry, or '
+            'empty/missing Secret or File) — check the report and scanner '
+            'version; an all-invalid report is otherwise indistinguishable '
+            'from a clean scan.',
+            invalid,
+        )
 
     return findings
 
@@ -384,6 +468,7 @@ def _parse_trufflehog_record(
     lineno_file: int,
     target_resolved: str,
     filepath_resolved: str,
+    stats: dict[str, Any] | None = None,
 ) -> Finding | None:
     """Validate one TruffleHog NDJSON record and build its Finding.
 
@@ -399,6 +484,8 @@ def _parse_trufflehog_record(
             'TruffleHog line %d: skipping finding with empty Raw.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
     if '\ufffd' in raw_secret:
         logger.info(
@@ -406,6 +493,8 @@ def _parse_trufflehog_record(
             '(replacement character U+FFFD); skipping to avoid corrupted redaction.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
     # TruffleHog URL-encodes special characters in URI-based credentials
     # (e.g. '@' → '%40').  Save both forms; the right one is selected
@@ -445,12 +534,23 @@ def _parse_trufflehog_record(
 
     if not source_found:
         supported = {'Filesystem', 'Git'}
-        unsupported = set(data.keys()) - supported if isinstance(data, dict) else set()
+        keys = set(data.keys()) if isinstance(data, dict) else set()
+        unsupported = {str(k) for k in keys - supported}
+        # A Filesystem/Git key that is present but not a usable object is a
+        # malformed supported-source record, not an unsupported source — label
+        # it as such so the run-level summary's count is always explained by
+        # its type list and the 'only filesystem and git' advice is never
+        # pointed at records that WERE filesystem/git.
+        malformed = {f'{k} (malformed entry)' for k in keys & supported}
+        labels = unsupported | malformed
         logger.info(
             'TruffleHog line %d: unsupported source type %s; skipping.',
             lineno_file,
-            list(unsupported) if unsupported else '(unknown)',
+            sorted(labels) if labels else '(unknown)',
         )
+        if stats is not None:
+            stats['unsupported_source'] += 1
+            _note_unsupported_types(stats, labels)
         return None
 
     if not isinstance(file_path_raw, str) or not file_path_raw:
@@ -458,6 +558,8 @@ def _parse_trufflehog_record(
             'TruffleHog line %d: skipping finding with non-string or empty file path.',
             lineno_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
 
     resolved = _resolve_external_finding_path(
@@ -465,6 +567,7 @@ def _parse_trufflehog_record(
         target_resolved,
         filepath_resolved,
         scanner_name='TruffleHog',
+        stats=stats,
     )
     if resolved is None:
         return None
@@ -526,15 +629,24 @@ def _parse_trufflehog_record(
 def ingest_trufflehog(
     filepath: str,
     target: str,
+    stats: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """Parse a TruffleHog NDJSON output file and return Credactor finding dicts.
 
     Validates each line as a JSON object, caps at 10,000 findings, and
-    checks resolved paths are within the target directory.
+    checks resolved paths are within the target directory. *stats* (see
+    ``new_ingest_stats``) accumulates skip counters for the CLI's run-level
+    summaries; a local dict is used when ``None`` so the unsupported-source
+    summary below fires for direct callers too.
     """
     target_resolved, filepath_resolved = _load_report_preamble(
         filepath, target, scanner_name='TruffleHog'
     )
+    if stats is None:
+        stats = new_ingest_stats()
+    # The CLI shares one stats dict across both ingest calls, so the summary
+    # below must count only THIS parser's skips.
+    invalid_start = stats['invalid_record']
 
     try:
         # Closed via `with fh:` below; opened inside try only to convert OSError
@@ -547,12 +659,15 @@ def ingest_trufflehog(
     count = 0
     saw_content = False  # any non-blank line
     saw_object = False  # any line that parsed to a JSON object
+    first_line_is_array = False  # first non-blank line opens a JSON array
 
     with fh:
         for lineno_file, line in enumerate(fh, start=1):
             line = line.strip()
             if not line:
                 continue
+            if not saw_content:
+                first_line_is_array = line.startswith('[')
             saw_content = True
 
             try:
@@ -587,7 +702,9 @@ def ingest_trufflehog(
                 )
                 break
 
-            finding = _parse_trufflehog_record(obj, lineno_file, target_resolved, filepath_resolved)
+            finding = _parse_trufflehog_record(
+                obj, lineno_file, target_resolved, filepath_resolved, stats=stats
+            )
             if finding is None:
                 continue
 
@@ -601,9 +718,46 @@ def ingest_trufflehog(
     # a wrong/typo'd report is a false all-clear. An empty / blank-only file is a
     # legitimate "no findings" (saw_content False) and still returns [].
     if saw_content and not saw_object:
+        # K-4 twin: a leading '[' is the signature of a Gitleaks JSON array fed
+        # to the NDJSON flag.
+        hint = (
+            ' (a JSON array looks like a Gitleaks report — use --from-gitleaks)'
+            if first_line_is_array
+            else ''
+        )
         raise ValueError(
             f'TruffleHog file {filepath!r} is not valid NDJSON: '
-            f'no JSON object found on any non-empty line.'
+            f'no JSON object found on any non-empty line.{hint}'
+        )
+
+    # A08: records from unsupported sources (github, docker, s3, ...) are
+    # skipped at INFO level per record; without this summary an
+    # all-unsupported report is byte-indistinguishable from a clean run and
+    # exits 0 — a false all-clear in CI.
+    if stats['unsupported_source']:
+        types = sorted(str(t) for t in stats['unsupported_types'])
+        if stats.get('unsupported_types_truncated'):
+            types.append('(further types omitted)')
+        logger.warning(
+            '%d TruffleHog finding(s) skipped: unsupported source type(s) %s — '
+            'only filesystem and git sources can be ingested.',
+            stats['unsupported_source'],
+            types if types else '(unknown)',
+        )
+
+    invalid_here = stats['invalid_record'] - invalid_start
+    if invalid_here:
+        # Same class as the unsupported-source summary above: these skips are
+        # INFO-only per record, and a report whose records all carry empty or
+        # binary secrets (TruffleHog emits U+FFFD for binary matches) would
+        # otherwise be a silent exit-0 all-clear — dropping even Verified
+        # findings invisibly.
+        logger.warning(
+            '%d TruffleHog record(s) skipped as invalid (empty or binary '
+            'non-UTF-8 Raw secret, or missing file path) — these findings, '
+            'Verified ones included, are not ingested and cannot be redacted; '
+            'handle them with the scanner directly.',
+            invalid_here,
         )
 
     return findings

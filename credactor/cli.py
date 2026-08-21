@@ -86,13 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             'Exit codes: 0 = no findings (clean), '
             '1 = unresolved findings detected, '
-            '2 = error (path not found, permission denied, --fail-on-error)\n\n'
+            '2 = error (path not found, permission denied, --fail-on-error, '
+            'missing/invalid/oversized ingestion report)\n\n'
             'Examples:\n'
             '  credactor .                          Scan current directory interactively\n'
             '  credactor --dry-run src/              Preview findings without modifying\n'
             '  credactor --staged --ci               Pre-commit hook (read-only)\n'
             '  credactor --fix-all --secure-delete   Redact all and wipe backups\n'
             '  credactor -f sarif . > report.sarif   GitHub Code Scanning output\n'
+            '  credactor --ci --from-gitleaks gl.json .   Gate on an ingested Gitleaks report\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -245,24 +247,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # External tool ingestion
-    ingest = parser.add_argument_group('external tool ingestion (BETA)')
+    ingest = parser.add_argument_group('external tool ingestion')
     ingest.add_argument(
         '--from-gitleaks',
         type=str,
         default=None,
         metavar='FILE',
-        help='[BETA] ingest findings from a Gitleaks JSON report file; '
-        'file paths in the report are resolved relative to the '
-        'target directory',
+        help='ingest findings from a Gitleaks JSON report file; requires a '
+        'directory target (the root the scanner ran against). FILE is '
+        'resolved against the current working directory; finding paths '
+        'inside the report are resolved against the target directory. '
+        'Regenerate the report after redacting or changing the tree.',
     )
     ingest.add_argument(
         '--from-trufflehog',
         type=str,
         default=None,
         metavar='FILE',
-        help='[BETA] ingest findings from a TruffleHog JSON output file '
-        '(newline-delimited); file paths are resolved relative to '
-        'the target directory',
+        help='ingest findings from a TruffleHog JSON output file '
+        '(newline-delimited); same rules as --from-gitleaks: directory '
+        'target required, FILE is CWD-relative, finding paths are '
+        'target-relative, regenerate after redacting.',
     )
 
     return parser
@@ -620,17 +625,59 @@ def _ingest_external(
     if not (config.from_gitleaks or config.from_trufflehog):
         return findings
 
-    from .ingest import deduplicate_findings, ingest_gitleaks, ingest_trufflehog
+    from .ingest import (
+        deduplicate_findings,
+        ingest_gitleaks,
+        ingest_trufflehog,
+        new_ingest_stats,
+    )
+
+    stats = new_ingest_stats()
 
     def _suppressed(f: Finding) -> bool:
-        return allowlist.is_suppressed(f['file'], f['line'], f['full_value'])
+        # GA-H1: mirror the native scan's -v breadcrumb (scanner.py) so an
+        # ingested finding filtered by the allowlist is not dropped silently.
+        reason = allowlist.suppression_reason(f['file'], f['line'], f['full_value'])
+        if reason is not None:
+            logger.debug('%s:%d suppressed by allowlist (%s)', f['file'], f['line'], reason)
+            return True
+        return False
 
     def _ingest_one(
         name: str,
         report_path: str,
-        ingest_fn: Callable[[str, str], list[Finding]],
+        ingest_fn: Callable[..., list[Finding]],
     ) -> None:
-        if not Path(report_path).is_file():
+        report = Path(report_path)
+        if not report.is_file():
+            if report.exists():
+                # K-1: a directory/FIFO/other non-regular path exists — saying
+                # 'not found' sends the user chasing a phantom typo.
+                _fatal('%s report path is not a regular file: %s', name, report_path)
+            if report.is_symlink():
+                # K-1: a dangling symlink fails exists() (which follows the
+                # link) yet is plainly visible in a directory listing — 'not
+                # found' plus the CWD hint is the same phantom-typo chase.
+                _fatal('%s report path is a broken symlink: %s', name, report_path)
+            if not report.is_absolute():
+                # K-3: relative report paths resolve against the CWD, not the
+                # target — name the base so a wrong-CWD invocation is obvious.
+                # Path.cwd() raises when the CWD itself was deleted (a reaped
+                # CI workspace); fall through to the plain error rather than
+                # tracebacking with exit 1 instead of the contracted exit 2.
+                try:
+                    resolved_against_cwd = Path.cwd() / report_path
+                except OSError:
+                    resolved_against_cwd = None
+                if resolved_against_cwd is not None:
+                    _fatal(
+                        '%s file not found: %s (resolved against the current working '
+                        'directory: %s — report paths are CWD-relative, not '
+                        'target-relative)',
+                        name,
+                        report_path,
+                        resolved_against_cwd,
+                    )
             _fatal('%s file not found: %s', name, report_path)
         if Path(target).is_file():
             _fatal(
@@ -641,7 +688,7 @@ def _ingest_external(
                 name,
             )
         try:
-            ext = ingest_fn(report_path, target)
+            ext = ingest_fn(report_path, target, stats=stats)
             findings.extend(f for f in ext if not _suppressed(f))
         except ValueError as exc:
             _fatal('%s', exc)
@@ -650,6 +697,17 @@ def _ingest_external(
         _ingest_one('Gitleaks', config.from_gitleaks, ingest_gitleaks)
     if config.from_trufflehog:
         _ingest_one('TruffleHog', config.from_trufflehog, ingest_trufflehog)
+
+    if stats['missing_file']:
+        # E04/K-5: per-finding missing-file warns scroll past, and a run whose
+        # only findings were dropped this way exits 0 — surface one run-level
+        # summary so a stale report (renamed/deleted files) is never silent.
+        logger.warning(
+            '%d ingested finding(s) reference files that no longer exist and were '
+            'skipped (moved or deleted since the scan?) — regenerate the scanner '
+            'report if the tree has changed.',
+            stats['missing_file'],
+        )
 
     return deduplicate_findings(findings)
 
@@ -667,16 +725,25 @@ def _main_inner(argv: list[str] | None = None) -> None:
     # extra_extensions, [ingest]) and can flip a failing gate to a pass via a
     # filename typo. Implicit discovery finding nothing stays a normal no-op.
     if config.config_path and not Path(config.config_path).is_file():
+        config_p = Path(config.config_path)
+        if config_p.exists():
+            # K-1 parity with report paths: a directory/FIFO exists — saying
+            # 'not found' sends the user chasing a phantom typo.
+            _fatal('Config path is not a regular file: %s', config.config_path)
+        if config_p.is_symlink():
+            _fatal('Config path is a broken symlink: %s', config.config_path)
         _fatal('Config file not found: %s', config.config_path)
     try:
         file_data = load_config_file(target, config.config_path, ci_mode=config.ci_mode)
+        if file_data:
+            apply_config_file(config, file_data)
     except ConfigError as exc:
         # An explicit --config that exists but won't parse (invalid TOML /
         # unreadable) is fatal for the same reason a missing one is: degrading
-        # to defaults silently drops every intended setting.
+        # to defaults silently drops every intended setting. apply_config_file
+        # raises the same for an empty [ingest] path (parity with the fatal
+        # empty --from-* flag).
         _fatal('%s', exc)
-    if file_data:
-        apply_config_file(config, file_data)
 
     # S9: an explicit CLI --from-* overrides a same-kind .credactor.toml
     # [ingest] entry (precedence CLI > config > default, consistent with

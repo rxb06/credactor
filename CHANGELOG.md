@@ -10,6 +10,91 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [2.6.0] - 2026-08-21
+
+External-scanner ingestion (`--from-gitleaks`, `--from-trufflehog`, and the
+`[ingest]` config table) is **out of beta**. The GA contract — finding type
+strings, exit codes, the inclusive 20,000,000-byte / 10,000-finding caps,
+dedup priority (native > gitleaks > trufflehog), severity mapping, supported
+scanner versions (Gitleaks 8.18.4–8.27.2, TruffleHog 3.88.1–3.97.0), and the
+suppression-layer table — is documented in the manual, backed by a five-part
+black-box test campaign (~150 cases, zero data-loss-class defects).
+
+### Changed (behaviour)
+
+- A TruffleHog report whose records come from unsupported sources (`github`,
+  `docker`, …) now emits a default-visible `[WARN] N finding(s) skipped:
+  unsupported source type(s) […]` summary; previously the skips were
+  INFO-only and an all-unsupported report was indistinguishable from a clean
+  run (a silent false all-clear in CI). The type list labels a present but
+  unusable `Filesystem`/`Git` entry as `(malformed entry)` rather than
+  miscounting it as an unsupported source, and — since it repeats
+  report-controlled strings — is bounded (20 entries of at most 60 chars,
+  with an omission marker).
+- Records skipped as **invalid** now emit a run-level summary for both
+  scanners — Gitleaks entries with an empty/missing `Secret` or `File` (or a
+  non-object entry), and TruffleHog records with an empty or binary
+  (non-UTF-8) `Raw` secret or a missing file path, were previously INFO-only:
+  an all-invalid report (schema drift, a stripping post-processor, binary
+  secrets) was another silent false all-clear, invisibly discarding even
+  `Verified: true` findings.
+- An empty `from_gitleaks` / `from_trufflehog` value in the `[ingest]` config
+  table is now **fatal (exit 2)**, matching the identical mistake spelled as
+  a CLI flag; previously it silently disabled ingestion, so a configured CI
+  gate degraded to native-only scanning with no diagnostic.
+- An explicit `--config` pointing outside the project root is now a **fatal
+  error (exit 2)** under `--ci`, matching a missing or unparseable
+  `--config`; previously it was refused on stderr while the run continued
+  with defaults and could exit 0.
+- Runs that ingest a report now emit a run-level stale-report summary: one
+  `[WARN]` when ingested findings were dropped because their files no longer
+  exist (renamed/deleted since the scan), and one after a `--fix-all` in
+  which replacements failed in files containing ingested findings (failures
+  confined to purely-native files are not blamed on the report) — both point
+  at regenerating the report.
+
+### Added
+
+- Ingestion suppressions now log a `-v` breadcrumb (`suppressed by allowlist
+  (<kind>)`), matching the native scan's audit trail.
+- Cross-feed hints on report-parse failures: NDJSON fed to `--from-gitleaks`
+  suggests `--from-trufflehog`, and a JSON array fed to `--from-trufflehog`
+  suggests `--from-gitleaks`.
+- `--help` for the ingestion flags now states the directory-target
+  requirement, the CWD-relative report path, and the regenerate-after-redact
+  rule; the exit-code epilog covers ingestion fatals.
+
+### Fixed
+
+- Error-message accuracy: a directory or FIFO passed as a report path is now
+  reported as “not a regular file” instead of “file not found”; a missing
+  *relative* report path names the CWD-resolved location it was looked up at;
+  the oversized-report error no longer calls the built-in 20 MB cap
+  “configured” (and its grammar is fixed). For an ingested finding, the
+  stale-value warning now names the likely causes (stale report, multi-line
+  value, already redacted) instead of the misleading `(already replaced?)`.
+  The same accuracy applies to a dangling symlink (“broken symlink”, for
+  report and `--config` paths) and to a directory/FIFO passed as `--config`
+  (“not a regular file”); the CWD-resolved hint degrades to the plain error
+  when the working directory itself has been deleted (clean exit 2, not a
+  traceback).
+- The not-a-regular-file report check also runs in the library-level parsers
+  (`ingest_gitleaks` / `ingest_trufflehog` raise `ValueError`), so a FIFO
+  report path can no longer block a direct caller's `open()` forever — the
+  same guard config parsing already had.
+
+### Documentation
+
+- Manual: the External scanner ingestion section now records the full GA
+  contract — dedup priority and type strings, cap numbers and their inclusive
+  boundary, the monorepo target rule, path-resolution bases, stale-report
+  semantics, the suppression-layer table for ingested findings,
+  symlink/`SymlinkFile` semantics, the multi-line limitation, and the
+  supported scanner/interpreter version statement — including the
+  report-inside-the-target hazard (a finding pointing at the report file
+  itself is skipped with only a `-v` note; keep reports outside the tree).
+  BETA labels removed from the manual, README, CI guide, and `--help`.
+
 ## [2.5.0] - 2026-06-24
 
 ### Changed (behaviour)
@@ -282,6 +367,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rxb06/credactor/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/rxb06/credactor/compare/v2.3.2...v2.3.3

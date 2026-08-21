@@ -21,7 +21,7 @@ Credactor is a static analysis tool that uses regex patterns and entropy heurist
 - **No cross-file tracking.** A credential split across two files (e.g. key in one, secret in another) is not detected.
 - **Entropy thresholds are tunable, not perfect.** Lowering them catches more but increases false positives. The defaults balance precision and recall for common codebases.
 - **No semantic analysis.** The tool does not understand code execution flow. A credential constructed at runtime from multiple variables will not be detected.
-- **External-scanner ingestion is BETA.** `--from-gitleaks` / `--from-trufflehog` ingest a third-party report as **untrusted input**; ingested findings are best-effort and should be reviewed especially carefully before redaction.
+- **External-scanner reports are untrusted input.** `--from-gitleaks` / `--from-trufflehog` ingest a third-party report; an ingested finding is only as accurate as the scanner that produced it, so review before redaction (`--dry-run` first).
 
 ### Redaction
 
