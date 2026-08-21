@@ -136,7 +136,7 @@ Credactor can ingest findings from [Gitleaks](https://github.com/gitleaks/gitlea
 
 Both `--from-gitleaks` and `--from-trufflehog` **require a directory target** (the repository root) so report file paths resolve correctly. A file target exits with code 2. Ingestion also **cannot be combined with `--scan-history`** (exits 2): external reports reference on-disk files, history scanning references committed content.
 
-**Run the scanner and Credactor against the same root** — the examples below run both from the repo root. A report generated at the root but ingested against a subdirectory target makes its findings silently miss. Pin TruffleHog to `filesystem` or `git` sources: records from any other source (`github`, `docker`, …) are skipped with a warning, not ingested.
+**Run the scanner and Credactor against the same root** — the examples below run both from the repo root. A report generated at the root but ingested against a subdirectory target makes its findings miss — each is warned and skipped, with a run-level summary, but the run can still exit 0 and pass the gate. Pin TruffleHog to `filesystem` or `git` sources: records from any other source (`github`, `docker`, …) are skipped with a warning, not ingested.
 
 Run the external scanner first, then feed its report to Credactor as a CI gate:
 

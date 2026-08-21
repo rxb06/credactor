@@ -606,7 +606,8 @@ Verified behaviour and **requirements**:
 
 - Ingested findings are **merged** with native findings and **deduplicated**.
   On a same-location/value/commit duplicate the surviving finding's `type`
-  follows a fixed priority — **native `pattern:*` > `external:gitleaks:*` >
+  follows a fixed priority — **native (any `pattern:*`, `variable:*`,
+  `xml-attr:*`, or `multiline:*` type) > `external:gitleaks:*` >
   `external:trufflehog:*`** (processing order, not flag order) — and the
   **higher severity of the two is kept** (a TruffleHog `Verified: true`
   duplicate escalates a native medium to critical).
@@ -653,8 +654,11 @@ Verified behaviour and **requirements**:
     report — content with no JSON object on any line (an HTML error page, a
     typo'd file, or a Gitleaks JSON array fed to `--from-trufflehog`) — is
     likewise **fatal, exit 2**, never a silent zero-findings all-clear; the
-    cross-feed errors hint at the mix-up. An empty report is a legitimate "no
-    findings". **Caps:** a report **over 20,000,000 bytes is refused** (fatal,
+    cross-feed errors hint at the mix-up. An **empty (0-byte) report** is a
+    legitimate "no findings" **for TruffleHog only** — for **Gitleaks** an
+    empty file is not valid JSON and is **fatal, exit 2** (a zero-findings
+    Gitleaks run writes `[]`, which ingests as no findings; an empty file
+    usually means the scanner step itself failed). **Caps:** a report **over 20,000,000 bytes is refused** (fatal,
     exit 2; a report of exactly 20,000,000 bytes parses — the boundary is
     inclusive), and findings beyond **10,000** are truncated with a warning.
   - *Each finding inside the report* has its secret-location path **confined to
@@ -705,9 +709,13 @@ verbatim:
 ### Symlinks and `SymlinkFile`
 
 An ingested finding whose path is a symlink **dereferences and redacts the
-real file** (containment is checked after resolution) — unlike the native
-scan, which refuses symlinked files. In Gitleaks reports a non-empty
-`SymlinkFile` field takes precedence over `File` unconditionally.
+real file** (containment is checked after resolution). The native scan
+differs on two points: it *scans* within-root symlinked files (only symlinks
+resolving outside the root are skipped) but *refuses to redact* them — and
+when a native finding at the symlink path wins deduplication over its
+ingested duplicate, that refusal applies (warned, exit 1) instead of the
+dereferenced redaction. In Gitleaks reports a non-empty `SymlinkFile` field
+takes precedence over `File` unconditionally.
 
 ### Multi-line findings
 
@@ -739,7 +747,8 @@ behaviour is untested.
 > ingestion with the broadest detector. Note also the overlap-tail class of
 > limitation: any scanner that reports a *truncated or shorter substring* of the
 > on-disk secret (e.g. a connection string cut at the port) leaves a live-looking
-> tail after redaction, disclosed by a warning — pair connection-string
+> tail after redaction — **silently**: the substring replacement itself
+> succeeds, so nothing flags the leftover. Pair connection-string
 > ingestion with native coverage (`--scan-json` where relevant).
 
 ---
@@ -809,9 +818,10 @@ detail; these are the behaviours most likely to surprise.)
 - **Overlap-tail artifacts.** When any scanner (native or ingested) reports a
   shorter substring of a longer on-disk secret — overlapping rules, or a
   connection string truncated at the port — redacting the substring leaves a
-  short live-looking tail on the line. The leftover is disclosed with a
-  warning and the credential itself is dead once rotated; pair
-  connection-string ingestion with native coverage (`--scan-json` for JSON).
+  short live-looking tail on the line. The replacement itself succeeds, so
+  **no warning flags the leftover** — review redacted lines by hand (the
+  credential itself is dead once rotated) and pair connection-string
+  ingestion with native coverage (`--scan-json` for JSON).
 - **No cross-file or semantic analysis**; obfuscated/runtime-assembled secrets
   are missed.
 - **`--scan-history` covers the most recent 100 commits.** Secrets introduced

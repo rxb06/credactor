@@ -26,7 +26,11 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   `docker`, …) now emits a default-visible `[WARN] N finding(s) skipped:
   unsupported source type(s) […]` summary; previously the skips were
   INFO-only and an all-unsupported report was indistinguishable from a clean
-  run (a silent false all-clear in CI).
+  run (a silent false all-clear in CI). The type list labels a present but
+  unusable `Filesystem`/`Git` entry as `(malformed entry)` rather than
+  miscounting it as an unsupported source, and — since it repeats
+  report-controlled strings — is bounded (20 entries of at most 60 chars,
+  with an omission marker).
 - An explicit `--config` pointing outside the project root is now a **fatal
   error (exit 2)** under `--ci`, matching a missing or unparseable
   `--config`; previously it was refused on stderr while the run continued
@@ -34,7 +38,9 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
 - Runs that ingest a report now emit a run-level stale-report summary: one
   `[WARN]` when ingested findings were dropped because their files no longer
   exist (renamed/deleted since the scan), and one after a `--fix-all` in
-  which replacements failed — both point at regenerating the report.
+  which replacements failed in files containing ingested findings (failures
+  confined to purely-native files are not blamed on the report) — both point
+  at regenerating the report.
 
 ### Added
 
@@ -56,6 +62,15 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   “configured” (and its grammar is fixed). For an ingested finding, the
   stale-value warning now names the likely causes (stale report, multi-line
   value, already redacted) instead of the misleading `(already replaced?)`.
+  The same accuracy applies to a dangling symlink (“broken symlink”, for
+  report and `--config` paths) and to a directory/FIFO passed as `--config`
+  (“not a regular file”); the CWD-resolved hint degrades to the plain error
+  when the working directory itself has been deleted (clean exit 2, not a
+  traceback).
+- The not-a-regular-file report check also runs in the library-level parsers
+  (`ingest_gitleaks` / `ingest_trufflehog` raise `ValueError`), so a FIFO
+  report path can no longer block a direct caller's `open()` forever — the
+  same guard config parsing already had.
 
 ### Documentation
 
