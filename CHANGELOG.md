@@ -42,6 +42,12 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   table is now **fatal (exit 2)**, matching the identical mistake spelled as
   a CLI flag; previously it silently disabled ingestion, so a configured CI
   gate degraded to native-only scanning with no diagnostic.
+- Redaction now **refuses a private-key block** (warned, counted unresolved,
+  exit 1) under `--fix-all` and interactive review alike. The finding's match
+  value is only the `-----BEGIN` header line, so the previous line-based
+  replacement rewrote the header, reported success, and left the entire key
+  material in a file the next scan certified clean. Rotate the key and remove
+  the block manually.
 - An explicit `--config` pointing outside the project root is now a **fatal
   error (exit 2)** under `--ci`, matching a missing or unparseable
   `--config`; previously it was refused on stderr while the run continued
@@ -82,6 +88,11 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   (`ingest_gitleaks` / `ingest_trufflehog` raise `ValueError`), so a FIFO
   report path can no longer block a direct caller's `open()` forever — the
   same guard config parsing already had.
+- The hash-field guard now also recognises `revision` and bare `…_sha` keys
+  (`revision = "<hex>"`, `commit_sha = "<hex>"`), matching the documented
+  claim that commit SHAs and revision fields are exempt from `--fix-all` —
+  previously those spellings were silently rewritten. The credential-keyword
+  veto is unchanged: `api_key_sha`-style names still flag.
 
 ### Documentation
 
@@ -291,7 +302,7 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
 
 ### Added
 
-- TTP-based vulnerability chain analysis (`mydocs/vulnerability-chains.md`).
+- TTP-based vulnerability chain analysis.
 - 21 new security tests covering SEC-35 through SEC-39.
 
 ## [2.3.2] - 2026-03-28

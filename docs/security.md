@@ -33,7 +33,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 - **No shell injection:** All subprocess calls use list arguments, never `shell=True`.
 - **File size guard:** Files over 50 MB are skipped to prevent OOM.
-- **PEM block recovery:** Unclosed PEM blocks auto-reset after 100 lines to prevent scan suppression.
+- **PEM block recovery:** Unclosed PEM blocks auto-reset after a line cap (100 when introduced; 500 today) to prevent scan suppression.
 - **Config traversal limit:** Config file search stops after 5 parent directories.
 - **Credential masking:** All output formats (text, JSON, SARIF) mask credential values; `full_value` never appears in user-facing output.
 - **Safe-value precision:** Function call detection uses regex matching (`identifier(...)`) instead of naive substring checks.
@@ -53,7 +53,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-09**: Symlink race in backup creation. `_create_backup()` checks `os.path.islink()` before writing `.bak` files.
 - **SEC-10**: Replacement string injection validation. `--replacement` values are checked against dangerous character patterns.
 - **SEC-11**: Data loss safeguard for `--fix-all --no-backup`. Displays a prominent DANGER banner.
-- **SEC-12**: Config injection bounds validation. `entropy_threshold` clamped to 0.0–6.0 and `min_value_length` to 1–200.
+- **SEC-12**: Config injection bounds validation. `entropy_threshold` is validated against 0.0–6.0 and `min_value_length` against 1–200; an out-of-range value warns and reverts to the default.
 - **SEC-13**: Wildcard `.credactorignore` warning. Overly broad patterns trigger a `[WARN]`.
 - **SEC-14**: `--replace-with env` semantic change warning.
 - **SEC-15**: Best-effort advisory file lock (`fcntl.flock(LOCK_EX|LOCK_NB)`) attempted before the read-modify-write; on lock contention it proceeds unlocked, so it is a courtesy marker, not a hard TOCTOU guarantee.
@@ -115,6 +115,15 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **Suppression visibility**: value-literal and positional `file:line` suppressions warn at load time (the latter matches by line number only and can be defeated by line drift), and overly broad globs are flagged (`fnmatch` has no globstar, so `**` behaves as `*`). `.credactorignore` gains a `value:<literal>` prefix for values containing glob metacharacters.
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
+
+### v2.6.0 (ingestion GA hardening)
+
+- **Silent-false-all-clear closures across ingestion** — run-level, default-visible summaries for every dropped-record class: invalid records (either scanner), unsupported TruffleHog sources, missing-file skips, and stale-report `--fix-all` failures. An all-invalid or all-unsupported report is no longer byte-indistinguishable from a clean run.
+- **Config trust under `--ci` is fail-closed** — an explicit `--config` refused for being outside the project root is fatal (exit 2), and an empty `[ingest]` path value is fatal in any mode (parity with the fatal empty `--from-*` flag): neither mistake can silently degrade a configured gate.
+- **Report-path guards** — the not-a-regular-file check runs at the library layer too (a FIFO report path raises instead of blocking `open()` forever), a dangling symlink is diagnosed as such, and a deleted working directory degrades to a clean exit 2 rather than a traceback.
+- **Bounded untrusted-input accounting** — the unsupported-source type list repeats report-controlled strings and is now capped (20 entries × 60 chars with an omission marker); malformed `Filesystem`/`Git` records are labeled rather than miscounted.
+- **Private-key blocks are refused by redaction (fail closed)** — the previous line-based rewrite replaced only the `-----BEGIN` header, reported success, and left the full key material in a file the next scan certified clean. Redaction now refuses, warns, and counts the block unresolved (exit 1): rotate the key and remove the block manually.
+- **Hash-field guard covers `revision` and `…_sha` keys** — `revision = "<hex>"` and `commit_sha = "<hex>"` are no longer auto-rewritten by `--fix-all`, matching the v2.5.0 claim below (the credential-keyword veto still flags `api_key_sha`-style names).
 
 ### v2.5.0 (pre-commit parity, redaction safety, ingest + supply-chain hardening)
 

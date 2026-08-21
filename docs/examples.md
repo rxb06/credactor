@@ -19,13 +19,6 @@ Scanning: /path/to/project
   CREDENTIAL SCAN REPORT  --  5 finding(s) in 3 file(s)
 ======================================================================
 
-  FILE: src/config.py
-  ────────────────────────────────────────────────────────────
-  Line   12  [CRITICAL]  [pattern:AWS access key]
-           AWS_KEY = "AKIA[REDACTED]"
-  Line   15  [HIGH]  [variable:db_password]
-           db_password = "xK9#[REDACTED]"
-
   FILE: deploy/settings.yaml
   ────────────────────────────────────────────────────────────
   Line    8  [HIGH]  [pattern:connection string]
@@ -37,6 +30,13 @@ Scanning: /path/to/project
            GITHUB_TOKEN = "ghp_[REDACTED]"
   Line   52  [HIGH]  [pattern:JWT token]
            refresh = "eyJh[REDACTED]"
+
+  FILE: src/config.py
+  ────────────────────────────────────────────────────────────
+  Line   12  [CRITICAL]  [pattern:AWS access key]
+           AWS_KEY = "AKIA[REDACTED]"
+  Line   15  [HIGH]  [variable:db_password]
+           db_password = "xK9#[REDACTED]"
 ```
 
 ## 2. Interactive cleanup
@@ -48,10 +48,10 @@ python -m credactor /path/to/project
 ```
 
 ```
-  [1/5]  src/config.py  --  line 12
-  Type     : pattern:AWS access key
-  Severity : critical
-  Value    : AKIA[REDACTED]
+  [1/5]  deploy/settings.yaml  --  line 8
+  Type     : pattern:connection string
+  Severity : high
+  Value    : post[REDACTED]
 
   Replace? [y/N]: y
   -> Replaced.
@@ -133,10 +133,15 @@ repos:
       - id: credactor
         name: credactor
         entry: python -m credactor --staged --ci
-        language: python
+        language: system
         pass_filenames: false
         always_run: true
 ```
+
+(`language: system` runs your installed credactor — `pip install credactor`
+first. `language: python` would not work for a `repo: local` hook: the
+framework builds an isolated hook venv that does not contain credactor, so
+every commit would fail with `No module named credactor`.)
 
 Clean output:
 
@@ -319,6 +324,12 @@ MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB...
 
 Lines inside the block aren't scanned separately.
 
+Redaction **refuses** key blocks (fail closed): `--fix-all` or an interactive
+`y` on this finding warns and counts it unresolved (exit 1), rather than
+rewriting only the header line — which would leave the key material in the
+file while the next scan reports it clean. Rotate the key and remove the
+block manually.
+
 ## 13. Ingest external scanner findings
 
 Merge findings from Gitleaks or TruffleHog into Credactor's redaction pipeline, so one tool both detects (across scanners) and redacts. Ingested findings are deduplicated against Credactor's native findings, keeping the higher severity.
@@ -333,7 +344,7 @@ trufflehog filesystem . --no-verification --json > trufflehog.json
 python -m credactor --from-trufflehog trufflehog.json --ci .
 ```
 
-The target must be a **directory** (the repository root): file paths in the report are resolved relative to it, so a file target is rejected with exit 2. Ingestion also cannot be combined with `--scan-history`.
+The target must be a **directory** (the repository root): file paths in the report are resolved relative to it, so a file target is rejected with exit 2. Ingestion also cannot be combined with `--scan-history`. Multi-line findings (PEM private keys) are never redacted by either path — native ones are refused, ingested ones fail the line-based value match (both warned, exit 1); rotate the key and remove the block manually (see Example 12).
 
 Pin the report paths in `.credactor.toml` instead of passing the flags:
 
