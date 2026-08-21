@@ -48,6 +48,19 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
   replacement rewrote the header, reported success, and left the entire key
   material in a file the next scan certified clean. Rotate the key and remove
   the block manually.
+- `--staged` combined with `--scan-history` is now **rejected (exit 2)**;
+  previously the staged pass silently won and the history scan never ran — a
+  repo whose only secret lived in history gated green.
+- `--staged` / `--scan-history` with a **file** target now exit 2 with a
+  clear error; previously they crashed with an unhandled traceback and exit
+  1, which a gate reads as "findings detected".
+- `--fail-on-error` now counts directories that could not be traversed:
+  `os.walk` errors are warned and trip the flag; previously a
+  permission-denied subtree silently vanished from the scan and the gate
+  passed. (Size- and type-based skips remain warnings, not errors.)
+- `--staged` emits a run-level `[WARN]` when staged files **outside the
+  target directory** were skipped; previously a subdirectory-scoped gate
+  silently ignored staged changes elsewhere in the repo.
 - An explicit `--config` pointing outside the project root is now a **fatal
   error (exit 2)** under `--ci`, matching a missing or unparseable
   `--config`; previously it was refused on stderr while the run continued
