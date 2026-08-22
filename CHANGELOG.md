@@ -61,6 +61,18 @@ black-box test campaign (~150 cases, zero data-loss-class defects).
 - `--staged` emits a run-level `[WARN]` when staged files **outside the
   target directory** were skipped; previously a subdirectory-scoped gate
   silently ignored staged changes elsewhere in the repo.
+- An in-tree **FIFO no longer hangs the scan forever**: a named pipe with a
+  scannable extension used to block the walker's `open()` indefinitely (a
+  leftover `mkfifo` in a build tree turned a CI gate into an infinite hang).
+  Non-regular files are now warned and counted as unscannable, tripping
+  `--fail-on-error` like any unreadable file; a FIFO/device named directly
+  as the target is a clear fatal (exit 2) instead of a silent clean exit 0.
+- Packaging: the PyPI `Development Status` classifier moves from `4 - Beta`
+  to **`5 - Production/Stable`**, ratified by a production-simulation
+  campaign (surgical-redaction byte audits at 4,751- and 20,000-file scale,
+  136 kill-signal crash-safety rounds, 75-run gate-determinism checks, 700
+  randomized invariant-fuzz rounds, live scanner-fusion and pre-commit
+  workflows — zero data-loss or corruption defects).
 - An explicit `--config` pointing outside the project root is now a **fatal
   error (exit 2)** under `--ci`, matching a missing or unparseable
   `--config`; previously it was refused on stderr while the run continued
