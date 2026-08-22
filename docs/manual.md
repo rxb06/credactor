@@ -502,8 +502,9 @@ even if its extension is not in this list.
 
 ### `--fail-on-error`
 
-Exit **2** if any file could not be scanned (permissions, encoding) —
-including a directory that could not be traversed (warned and counted).
+Exit **2** if any file could not be scanned (permissions, encoding, a
+non-regular file such as an in-tree FIFO) — including a directory that could
+not be traversed (warned and counted).
 Verified: a directory whose only file is unreadable exits **0** without the
 flag (a warning only) and **2** with it. Two scope notes: size- and
 type-based skips (the 50 MB per-file cap, unscanned extensions, `.json`
@@ -826,7 +827,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories |
+| `2` | Error: path not found; a target that is neither a regular file nor a directory (a FIFO/device); system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories |
 
 Two adjacent notes: **Ctrl-C during a scan exits 130**; at an interactive
 `Replace?` or `--fix-all` `Proceed?` prompt it is caught (the run reports and
@@ -901,6 +902,13 @@ detail; these are the behaviours most likely to surprise.)
   and removed earlier are out of scope; on a deeper repository a `[WARN]`
   says so. For full-history audits use a dedicated history scanner
   (e.g. `gitleaks git`), then remediate with Credactor.
+- **Pathological content scans slowly.** Files made of very long
+  low-diversity lines (wrapped base64 blobs, repeated-character runs, some
+  minified/log content) can scan at ~0.1 MB/s — content-dependent, up to
+  ~8× slower than prose-like text, so a worst-case file near the 50 MB cap
+  can take minutes with no progress output. Typical trees scan at ~1 MB/s.
+  Exclude such files via `skip_files`/`extra_extensions` and bound CI gates
+  with a job timeout.
 - **Lines are matched up to 4096 characters.** Matching cost grows
   superlinearly with line length, so each line is truncated at 4096 chars
   before pattern matching — a secret past that column (e.g. at the end of a

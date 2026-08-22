@@ -470,6 +470,12 @@ def _validate_target(target: str) -> Path:
     if not Path(target).exists():
         _fatal('path not found: %s', target)
 
+    if not Path(target).is_file() and not Path(target).is_dir():
+        # A FIFO/device named directly would otherwise fall into the
+        # directory branch, walk nothing, and report a clean [OK] exit 0 —
+        # a silent no-op on an explicitly named target.
+        _fatal('target is not a regular file or directory: %s', target)
+
     target_resolved_path = Path(target).resolve()
     resolved = str(target_resolved_path)
 
