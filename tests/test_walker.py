@@ -682,3 +682,29 @@ class TestStagedTargetScoping:
         assert not any(
             'outside the target directory' in r.getMessage() for r in credactor_caplog.records
         )
+
+
+class TestNonRegularFilesInWalk:
+    """A FIFO in-tree used to hang every mode forever: the walker admitted it
+    by extension and read_lines' open() blocked with no error (unlike a
+    socket). It must be warned, counted errored (--fail-on-error parity), and
+    never block."""
+
+    @pytest.mark.skipif(os.name != 'posix', reason='mkfifo is POSIX-only')
+    def test_fifo_in_tree_counted_errored_not_hung(self, tmp_dir, credactor_caplog):
+        os.mkfifo(os.path.join(tmp_dir, 'pipe.txt'))
+        with open(os.path.join(tmp_dir, 'ok.py'), 'w') as f:
+            f.write('x = 1\n')
+        findings, _, _, errored = walk_and_scan(tmp_dir, config=Config(no_color=True))
+        assert findings == []
+        assert any('pipe.txt' in e for e in errored)
+        assert any('not a regular file' in r.getMessage() for r in credactor_caplog.records)
+
+    @pytest.mark.skipif(os.name != 'posix', reason='mkfifo is POSIX-only')
+    def test_scan_file_raises_on_fifo(self, tmp_dir):
+        from credactor.scanner import scan_file
+
+        fifo = os.path.join(tmp_dir, 'pipe.py')
+        os.mkfifo(fifo)
+        with pytest.raises(OSError, match='not a regular file'):
+            scan_file(fifo, config=Config(no_color=True))

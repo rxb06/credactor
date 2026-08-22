@@ -9,6 +9,7 @@ Addresses: #3 (inline suppression in scan), #10 (multi-line awareness),
 from __future__ import annotations
 
 import re
+import stat
 from pathlib import Path
 
 from ._log import logger
@@ -606,19 +607,27 @@ def scan_file(
     allowlist: AllowList | None = None,
 ) -> list[Finding]:
     """Scan a single file for credential findings."""
-    # File size guard to prevent OOM on huge files — hard cap at 50 MB.
+    # File size + regular-file guard. The stat also pre-empts the open()
+    # below for non-regular files: a FIFO blocks open() forever with no
+    # error (unlike a socket, which raises) — a leftover mkfifo in a build
+    # tree must not hang a CI gate. Raise instead of returning [] so the
+    # caller records the path in errored_files, keeping --fail-on-error
+    # parity with unreadable files.
     try:
-        file_size = Path(filepath).stat().st_size
-        if file_size > _MAX_FILE_SIZE:
+        st = Path(filepath).stat()
+    except OSError:
+        st = None  # proceed; open() will fail with a better message
+    if st is not None:
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f'not a regular file (FIFO or special file): {filepath}')
+        if st.st_size > _MAX_FILE_SIZE:
             logger.warning(
                 'Skipping %s: file too large (%.1f MB > %.0f MB limit)',
                 filepath,
-                file_size / 1024 / 1024,
+                st.st_size / 1024 / 1024,
                 _MAX_FILE_SIZE / 1024 / 1024,
             )
             return []
-    except OSError:
-        pass  # proceed; open() will fail with a better message
 
     # read_lines may raise OSError; let it propagate so the caller
     # (walker._scan_files / the cli single-file and --scan-json branches)

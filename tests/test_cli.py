@@ -1152,3 +1152,18 @@ class TestStagedHistoryModeGuards:
             with pytest.raises(SystemExit) as exc:
                 _validate_invocation(cfg)
             assert exc.value.code == 2
+
+
+class TestNonRegularTarget:
+    """A FIFO/device named directly as the target used to fall into the
+    directory branch, walk nothing, and report a clean [OK] exit 0 — a silent
+    no-op on an explicitly named target."""
+
+    @pytest.mark.skipif(os.name != 'posix', reason='mkfifo is POSIX-only')
+    def test_fifo_target_exits_2(self, tmp_dir, credactor_caplog):
+        fifo = os.path.join(tmp_dir, 'pipe.txt')
+        os.mkfifo(fifo)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--dry-run', fifo])
+        assert exc_info.value.code == 2
+        assert 'not a regular file or directory' in credactor_caplog.text
