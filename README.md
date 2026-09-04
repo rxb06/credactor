@@ -8,9 +8,8 @@
 
 Secret scanners are good at sounding the alarm and not much help putting it out. They hand you a list of leaked credentials and leave the cleanup to you. Credactor closes the loop: it finds a hardcoded secret and rewrites it in place, so a leak goes from detection to fix in a single command.
 
-Keeping credentials out of source code is a baseline security practice, not an optional one. Credactor makes that baseline cheap to hold, on your machine before a commit or in CI before a merge. Run it on its own, or alongside the scanners you already trust.
-
 <img alt="Credactor: scan, redact, commit clean" src="https://raw.githubusercontent.com/rxb06/credactor/main/docs/assets/credactor-banner.png" width="1280" height="320" />
+Keeping credentials out of source code is a baseline security practice, not an optional one. Credactor makes that baseline cheap to hold, on your machine before a commit or in CI before a merge. Run it on its own, or alongside the scanners you already trust.
 
 ```python
 # Credactor finds this:
@@ -74,7 +73,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.0   # pin to the latest release tag
+    rev: v2.7.1   # pin to the latest release tag
     hooks:
       - id: credactor
 ```

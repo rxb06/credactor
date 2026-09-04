@@ -116,7 +116,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
-### v2.7.0 (Betterleaks ingestion)
+### v2.7.1 (Betterleaks ingestion)
 
 - **Un-redactable findings are accounted separately from malformed ones**: Betterleaks scans `stdin`, GitHub, GitLab, Hugging Face and S3, and those findings have no local file to rewrite. They are counted and summarised as unsupported sources rather than invalid records, so a wholly un-redactable report is never reported as a corrupt one, and never exits 0 in silence. The gate is the absence of a path, not the `resource` label: a `stdin` finding carries `resource: fs.content` with an empty path, so a label allowlist would have admitted it.
 - **Run-level summaries are scoped to their own parser**: the CLI shares one statistics dict across all three ingest parsers and runs Betterleaks last, so rendering the unsupported-source label set from the shared dict reported another scanner's source types, and its truncation flag, as Betterleaks'. With the shared 20-entry cap already full, the Betterleaks label could be omitted entirely while its count was still reported.
