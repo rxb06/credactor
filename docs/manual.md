@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects Credactor 2.6.0 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
+Reflects Credactor 2.7.0 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -50,6 +50,7 @@ credactor path/to/file.py   # scan one file
 | `--verbose`, `-v` | config | Log scan/suppression activity on stderr |
 | `--from-gitleaks FILE` | ingest | Ingest a Gitleaks JSON report |
 | `--from-trufflehog FILE` | ingest | Ingest a TruffleHog NDJSON report |
+| `--from-betterleaks FILE` | ingest | Ingest a Betterleaks JSON report |
 
 ---
 
@@ -637,6 +638,9 @@ credactor --from-gitleaks gl.json --fix-all --yes .
 
 trufflehog filesystem . --no-verification --json > th.json
 credactor --from-trufflehog th.json --ci .
+
+betterleaks dir . -f json -r bl.json
+credactor --from-betterleaks bl.json --dry-run .
 ```
 
 > **`--no-verification` keeps trufflehog offline.** It still detects secrets but
@@ -649,20 +653,42 @@ credactor --from-trufflehog th.json --ci .
 > `gitleaks detect --no-git -s . -f json`, whose report is identical on every
 > field Credactor consumes).
 
+> **`betterleaks dir`, not `betterleaks detect`.** Betterleaks' subcommands are
+> `dir`, `git`, `github`, `gitlab`, `huggingface`, `s3` and `stdin`; there is
+> no `detect` subcommand (that is Gitleaks' spelling, and most third-party
+> write-ups still show it), `-f json` selects the format and `-r` writes the
+> report. Two further rules: generate the report **without** Betterleaks'
+> `--redact` flag (see [Stale reports](#stale-reports)), and note that
+> `--validation` is opt-in and makes live provider API calls, so a plain
+> `betterleaks dir` stays offline. Verified against Betterleaks 1.8.1.
+
 Verified behaviour and **requirements**:
 
 - Ingested findings are **merged** with native findings and **deduplicated**.
   On a same-location/value/commit duplicate the surviving finding's `type`
   follows a fixed priority — **native (any `pattern:*`, `variable:*`,
   `xml-attr:*`, or `multiline:*` type) > `external:gitleaks:*` >
-  `external:trufflehog:*`** (processing order, not flag order) — and the
-  **higher severity of the two is kept** (a TruffleHog `Verified: true`
-  duplicate escalates a native medium to critical).
-- Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**
-  and **`external:trufflehog:<DetectorName>`** in every output format (in
-  SARIF rule ids the `:` is sanitised to `-`) — filter on these in `-f json`
+  `external:trufflehog:*` > `external:betterleaks:*`** (processing order, not
+  flag order) — and the **higher severity of the two is kept** (a TruffleHog
+  `Verified: true` duplicate escalates a native medium to critical). The
+  priority therefore decides only which `type` string survives an exact
+  collision, never which finding is kept or at what severity.
+- Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,
+  **`external:trufflehog:<DetectorName>`** and
+  **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule
+  ids the `:` is sanitised to `-`) — filter on these in `-f json`
   pipelines. Severity maps from a per-rule table for Gitleaks (with a
   `Tags` override); for TruffleHog, `Verified: true` is always **critical**.
+- **Betterleaks severity** comes from the same per-rule table and the same
+  `Tags` override as Gitleaks, because Betterleaks inherits the Gitleaks rule
+  ids. A report produced with Betterleaks' opt-in `--validation` pass carries
+  a provider verdict, and a decisive one wins outright: `valid` is
+  **critical**, `invalid` and `revoked` are **low**. `needs_validation`,
+  `unknown`, `error` and the unset case fall through to the rule table, so an
+  unvalidated finding never reads as a less serious one. A default
+  `betterleaks dir` report carries no validation fields at all. A rule id absent from the
+  table maps to **medium**, which is the common case rather than the exception:
+  the shared table names 20 ids and Betterleaks 1.8.1 ships 417.
 - The target **must be a directory** — a **file target exits 2** (verified).
 - **Path bases differ, deliberately:** the *report path* (flag or `[ingest]`
   entry) resolves against the **current working directory**, never the target
@@ -729,6 +755,47 @@ Verified behaviour and **requirements**:
   run-level `[WARN] N TruffleHog finding(s) skipped: unsupported source
   type(s) […]` is emitted so an all-unsupported report is never a silent
   all-clear.
+- **A clean Betterleaks scan writes `null`, and ingests as no findings.** A
+  zero-finding Betterleaks run writes a top-level JSON `null` where Gitleaks
+  writes `[]`; Credactor reads that as an empty report, so a clean upstream
+  scan exits 0. Any *other* non-array top level is **fatal, exit 2** (a SARIF
+  document is a JSON object, and the error says so), and an empty (0-byte)
+  report is not valid JSON, so it is fatal too, exactly as for Gitleaks. The
+  20,000,000-byte and 10,000-finding caps apply unchanged; a Betterleaks
+  record carries more on the wire than a Gitleaks record for the same secret,
+  so the byte cap bites at fewer findings.
+- **Betterleaks findings with no file path are unsupported sources, not
+  invalid records.** The `stdin`, `github`, `gitlab`, `huggingface` and `s3`
+  scan modes report secrets that have no local file, so there is nothing to
+  redact. Those findings are skipped and counted as unsupported sources, with
+  a run-level `[WARN] N Betterleaks finding(s) skipped: no file path, source
+  type(s) […]`; they are never counted as a malformed report. The gate is the
+  absence of a path, not the `resource` label: a `stdin` finding carries
+  `resource: fs.content` with an empty path.
+- **Multi-part rules: only the primary secret is ingested.** 26 of
+  Betterleaks 1.8.1's 417 shipped rules declare components, so one finding can carry
+  a second secret (an access key id plus its secret key, say) inside its
+  `ComponentSets`. Credactor ingests the top-level `Secret`; the component
+  secrets are **not** ingested and **not** redacted, and a run-level `[WARN] N
+  Betterleaks finding(s) carry multi-part component secrets…` names the count.
+  The native scan usually catches those component values on its own, since
+  they sit on credential-named variables, but do not bank on it: check every
+  warned finding against the scanner's own output.
+- **Betterleaks is not a superset of Credactor.** Some of its rules gate on a
+  **required** component, so a lone AWS access key id with no secret key
+  nearby is reported by Credactor and not by Betterleaks. The two tools are
+  complementary: ingesting a report widens coverage; it does not replace the
+  native scan.
+- **A Betterleaks re-scan of a redacted tree is not clean.** Betterleaks'
+  `generic-password` rule matches Credactor's own replacement token, so after a
+  redaction pass a line like `password = "REDACTED_BY_CREDACTOR"` is reported
+  again as `generic-password`. Credactor's own re-scan **is** clean, because the
+  sentinel is one of its safe values, and Gitleaks does not flag it either, so
+  this is specific to Betterleaks' broader password rule. Suppress it with a
+  `betterleaks:allow` comment on the line, a `.betterleaksignore` entry, or a
+  `--replacement` value Betterleaks does not match. Verified against Betterleaks
+  1.8.1: the ingest, redact and native re-scan steps all pass; only the
+  Betterleaks re-scan reports the sentinel.
 
 ### Stale reports
 
@@ -750,6 +817,12 @@ from, and **regenerate it after redacting or after any tree change**:
 - Reports are OS-specific: ingest them on the OS/checkout that produced them
   (Windows backslash paths are literal filename characters on Linux and miss
   gracefully).
+- Generate Betterleaks reports **without its `--redact` flag**. That flag
+  rewrites `Secret` inside the report itself to a truncated form, so Credactor
+  looks for a value the line does not contain and the finding fails exactly as
+  a stale one does (warned, counted unresolved, exit 1). It fails safe, no
+  wrong bytes are written, but the message points at the tree when the cause
+  is the flag.
 
 ### Suppression layers and ingested findings
 
@@ -768,6 +841,10 @@ verbatim:
 | `entropy_threshold` / `min_value_length` | no |
 | `.gitignore` / skipped dirs (`node_modules`, …) | no — an explicit report beats walk-time exclusions; redaction then leaves `.bak` files inside those trees |
 
+The table reads the same for all three sources: Gitleaks, TruffleHog and
+Betterleaks findings are filtered by the layer, not by the scanner that
+reported them.
+
 ### Symlinks and `SymlinkFile`
 
 An ingested finding whose path is a symlink **dereferences and redacts the
@@ -778,6 +855,11 @@ when a native finding at the symlink path wins deduplication over its
 ingested duplicate, that refusal applies (warned, exit 1) instead of the
 dereferenced redaction. In Gitleaks reports a non-empty `SymlinkFile` field
 takes precedence over `File` unconditionally.
+
+In Betterleaks reports the source path is read from `Attributes` first,
+`fs.symlink` ahead of `path`, and only then from the deprecated `SymlinkFile`
+and `File` mirrors, so the same symlink-first precedence holds and a report
+from a future version that drops the deprecated fields still ingests.
 
 ### Multi-line findings
 
@@ -790,6 +872,14 @@ a line-based replacement would rewrite the header, leave the entire key
 material in the file, and make the next scan report it clean. Rotate the key
 and remove the block manually — redaction never half-eats a key block.
 
+Betterleaks findings follow the external rule above. Betterleaks' `Match`
+field can span lines for some rules, so the `raw` context line of an ingested
+Betterleaks finding is read from the file on disk, falling back to `Match`
+only when that read yields nothing and the match itself is single-line, and to
+the bare `Secret` beyond that. Multi-part component secrets are a separate
+case: they are never ingested, so they are never redacted either (see the
+run-level warning above).
+
 ### Supported scanner versions
 
 Tested ranges (report schemas verified identical on every consumed field):
@@ -798,10 +888,15 @@ Tested ranges (report schemas verified identical on every consumed field):
 |---|---|---|
 | Gitleaks | **8.18.4 – 8.27.2** | top-level array; `RuleID`, `File` (+`SymlinkFile` override), `StartLine`, `Secret`, `Match`, `Tags`, `Commit` |
 | TruffleHog | **3.88.1 – 3.97.0** | per-line object; `Raw`, `DetectorName`, `Verified`, `SourceMetadata.Data.Filesystem.{file,line}`, `.Git.{file,line,commit}` |
+| Betterleaks | **1.8.1** (one version, not a range) | top-level array **or `null`**; `RuleID`, `Attributes` (`path`, `fs.symlink`, `git.sha`, `resource`), `StartLine`, `Secret`, `Match`, `Tags`, `ValidationStatus`, `ComponentSets` (counted, not ingested), plus the deprecated `File`/`SymlinkFile`/`Commit` mirrors |
 
 Newer versions with additional JSON fields are ingested with the unknown
 fields ignored. ⚠ TruffleHog **self-updates by default** — pass
 `--no-update` in CI or anywhere a version is pinned.
+
+Betterleaks is stated as a single tested version rather than a range because
+it releases frequently: treat a newer release as unverified until a report
+from it has ingested cleanly.
 
 Ingestion end-to-end behaviour is verified on **Linux** with **CPython 3.11,
 3.12, 3.13, and 3.14** (3.11.16 / 3.12.14 / 3.13.15 / 3.14.x tested —
@@ -850,9 +945,13 @@ Verified rules:
 | `--scan-history` (any) | forces dry-run; `--fix-all` is ignored (warned) — history findings cannot be redacted in place |
 | `--replacement` (CLI) vs `.credactor.toml` `replacement` | **CLI wins** (CLI > config > default) |
 | `--from-gitleaks`/`--from-trufflehog` (CLI) vs `.credactor.toml` `[ingest]` | **CLI wins** (CLI > config); the same-kind `[ingest]` entry's path is not used (an *empty* config value is still fatal, exit 2) |
+| `--from-betterleaks` (CLI) vs `.credactor.toml` `[ingest] from_betterleaks` | **CLI wins**, same rule as the row above (an *empty* config value is still fatal, exit 2) |
 | `--replace-with custom` without `--replacement` | uses the default/config replacement |
 | `--scan-history` + `--from-gitleaks`/`--from-trufflehog` | **rejected, exit 2** |
 | `--staged` + `--from-gitleaks`/`--from-trufflehog` | allowed: staged-native and ingested working-tree findings merge into one read-only report (`--fix-all` still ignored with a warning) |
+| `--scan-history` + `--from-betterleaks` | **rejected, exit 2** |
+| `--staged` + `--from-betterleaks` | allowed, on the same read-only terms as the `--from-gitleaks`/`--from-trufflehog` row above |
+| `--from-gitleaks` + `--from-trufflehog` + `--from-betterleaks` | allowed: all three reports are ingested in that order and merged with the native findings in one deduplicated report |
 | `--from-*` with a **file** target | **rejected, exit 2** (needs a directory) |
 | `--secure-backup-dir` + `--secure-delete` | backup moved to DIR, then wiped |
 | `--no-backup` + `--fix-all` | redacts with no recovery copy (a DANGER banner is shown; still a single confirmation, and `--yes` skips it) |

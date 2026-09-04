@@ -10,6 +10,62 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [2.7.0] - 2026-09-04
+
+### Added
+
+- **Betterleaks ingestion**: `--from-betterleaks FILE` and the matching
+  `[ingest] from_betterleaks` config key ingest a
+  [Betterleaks](https://github.com/betterleaks/betterleaks) JSON report and
+  merge its findings with the native scan, alongside the existing Gitleaks and
+  TruffleHog sources. Generate the report with
+  `betterleaks dir . -f json -r report.json`. Betterleaks uses `dir`, `git`,
+  `github`, `gitlab`, `huggingface`, `s3` and `stdin` subcommands, not
+  Gitleaks' `detect`. Findings carry the type `external:betterleaks:<RuleID>`.
+  Verified against Betterleaks v1.8.1.
+- Betterleaks' `--validation` verdict drives severity when present: a
+  provider-confirmed `valid` secret is **critical**, an `invalid` or `revoked`
+  one is **low**. `needs_validation`, `unknown`, `error` and the unset case
+  fall through to the rule table, so an unvalidated finding never reads as a
+  less serious one. Validation is opt-in in Betterleaks (it makes live provider
+  API calls), so a default report carries no validation fields and severity
+  comes from the shared rule table as before.
+- Findings from sources with no local file (`stdin`, and the `github`,
+  `gitlab`, `huggingface` and `s3` scan modes) are counted and reported as
+  **unsupported sources**, not as invalid records, with a default-visible
+  run-level `[WARN]`. They cannot be redacted because there is no file to
+  rewrite, which is a different thing from a malformed report, and conflating
+  the two told users their report was broken when it was not.
+- A Betterleaks finding carrying multi-part **component secrets** (26 of the
+  417 rules shipped with 1.8.1 declare components) emits a run-level `[WARN]` naming
+  the count. Only the primary secret of such a finding is ingested. The
+  component halves are not redacted, and the warning exists so that half a
+  credential is never redacted while the run reports success.
+- Betterleaks is appended last in the existing dedup chain, giving
+  Credactor > Gitleaks > TruffleHog > Betterleaks. The Gitleaks and TruffleHog
+  order is unchanged. Ordering decides only which type string survives an exact
+  collision; the higher severity of a merged pair still wins regardless.
+- A **clean** Betterleaks scan reads as zero findings, not as a broken report.
+  Betterleaks writes a top-level JSON `null` for a zero-finding report where
+  Gitleaks writes `[]`; the parser accepts both. Rejecting `null` as a non-array
+  would have failed every clean upstream scan with exit 2.
+
+### Notes
+
+- Gitleaks and TruffleHog ingestion are untouched: Betterleaks has its own
+  parser and its own flag, and the existing paths keep their behaviour
+  bit-for-bit.
+- Generate Betterleaks reports **without** its `--redact` flag. That flag
+  rewrites `Secret` in the report itself: at its default it replaces the value
+  with the literal `REDACTED`, and at a percentage (`--redact=20`) it truncates.
+  Either way Credactor cannot match the value on the line and reports a
+  stale-report failure. Nothing wrong is written, but the message points at the
+  tree when the cause is the flag.
+- Betterleaks is not a superset of Credactor. Some of its rules gate on a
+  **required** component, so a lone AWS access key ID with no secret key
+  nearby is reported by Credactor and not by Betterleaks. Ingesting a report
+  widens coverage; it does not replace the native scan.
+
 ## [2.6.0] - 2026-08-21
 
 External-scanner ingestion (`--from-gitleaks`, `--from-trufflehog`, and the
@@ -403,6 +459,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[2.7.0]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rxb06/credactor/compare/v2.3.3...v2.4.0

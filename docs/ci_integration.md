@@ -23,7 +23,7 @@ If you use [pre-commit](https://pre-commit.com), add this to `.pre-commit-config
 ```yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.6.0  # pin to a release tag
+    rev: v2.7.0  # pin to a release tag
     hooks:
       - id: credactor
 ```
@@ -132,11 +132,11 @@ credactor --ci --fail-on-error .  # strict mode
 
 ## Ingesting External Scanner Findings
 
-Credactor can ingest findings from [Gitleaks](https://github.com/gitleaks/gitleaks) and [TruffleHog](https://github.com/trufflesecurity/trufflehog), merge them into its own pipeline, and gate (or redact) on the combined set. Ingested findings are deduplicated against native Credactor findings, and on a duplicate the higher severity is kept. Ingestion behaviour is verified on **Linux**; Windows and macOS are untested (see the manual's supported-versions statement).
+Credactor can ingest findings from [Gitleaks](https://github.com/gitleaks/gitleaks), [TruffleHog](https://github.com/trufflesecurity/trufflehog) and [Betterleaks](https://github.com/betterleaks/betterleaks), merge them into its own pipeline, and gate (or redact) on the combined set. Ingested findings are deduplicated against native Credactor findings, and on a duplicate the higher severity is kept. Ingestion behaviour is verified on **Linux**; Windows and macOS are untested (see the manual's supported-versions statement).
 
-Both `--from-gitleaks` and `--from-trufflehog` **require a directory target** (the repository root) so report file paths resolve correctly. A file target exits with code 2. Ingestion also **cannot be combined with `--scan-history`** (exits 2): external reports reference on-disk files, history scanning references committed content.
+`--from-gitleaks`, `--from-trufflehog` and `--from-betterleaks` all **require a directory target** (the repository root) so report file paths resolve correctly. A file target exits with code 2. Ingestion also **cannot be combined with `--scan-history`** (exits 2): external reports reference on-disk files, history scanning references committed content.
 
-**Run the scanner and Credactor against the same root** — the examples below run both from the repo root. A report generated at the root but ingested against a subdirectory target makes its findings miss — each is warned and skipped, with a run-level summary, but the run can still exit 0 and pass the gate. Pin TruffleHog to `filesystem` or `git` sources: records from any other source (`github`, `docker`, …) are skipped with a warning, not ingested.
+**Run the scanner and Credactor against the same root** — the examples below run both from the repo root. A report generated at the root but ingested against a subdirectory target makes its findings miss — each is warned and skipped, with a run-level summary, but the run can still exit 0 and pass the gate. Pin TruffleHog to `filesystem` or `git` sources: records from any other source (`github`, `docker`, …) are skipped with a warning, not ingested. Pin Betterleaks to its `dir` or `git` subcommands for the same reason: findings from `stdin`, `github`, `gitlab`, `huggingface` and `s3` have no local file to redact and are skipped with a warning.
 
 Run the external scanner first, then feed its report to Credactor as a CI gate:
 
@@ -160,6 +160,26 @@ TruffleHog emits newline-delimited JSON:
   run: credactor --ci --from-trufflehog trufflehog.json .
 ```
 
+[Betterleaks](https://github.com/betterleaks/betterleaks) scans with `dir` / `git` / `github` / `gitlab` / `huggingface` / `s3` / `stdin` subcommands; there is no `detect` subcommand:
+
+```yaml
+- name: Betterleaks scan
+  run: betterleaks dir . -f json -r betterleaks.json
+  continue-on-error: true
+
+- name: Credactor gate (native + Betterleaks)
+  run: credactor --ci --from-betterleaks betterleaks.json .
+```
+
+> Generate the Betterleaks report **without** its `--redact` flag. `--redact`
+> rewrites `Secret` in the report itself (the literal `REDACTED` at its
+> default, a truncation at a percentage), so Credactor has no value left to
+> match on the line: the finding is counted as failed with the stale-report
+> wording instead of being redacted. It fails safe, no wrong bytes are
+> written, but the gate then reports a problem that is not there.
+
+`--from-betterleaks` carries the same rules as the other two sources: a directory target (a file target exits 2), no `--scan-history`, the report path resolved against the working directory, and finding paths resolved against the target. Pin Betterleaks to the `dir` or `git` subcommands: findings from `stdin`, `github`, `gitlab`, `huggingface` and `s3` have no local file to redact, so they are skipped as unsupported sources with a run-level warning. A clean Betterleaks scan writes a literal `null` report rather than an empty array; Credactor reads that as zero findings, so a clean upstream scan passes the gate rather than failing it as a malformed report.
+
 These examples write the report inside the workspace, which is fine for an ephemeral CI checkout that is discarded after the run. Anywhere the tree persists (local use, a reused runner), write the report **outside** the target tree: the report file holds the found secrets in plaintext, `.json` files are not scanned natively without `--scan-json`, and a finding pointing at the report itself is skipped (see the manual's ingestion section).
 
 Under `--ci` the run is report-only: ingested findings are scanned, merged, and reported, and the run exits 1 if anything remains. To configure ingestion in `.credactor.toml` instead, add an `[ingest]` table (an empty path value is fatal, exit 2 — same as an empty flag):
@@ -168,7 +188,10 @@ Under `--ci` the run is report-only: ingested findings are scanned, merged, and 
 [ingest]
 from_gitleaks = "gitleaks.json"
 from_trufflehog = "trufflehog.json"
+from_betterleaks = "betterleaks.json"
 ```
+
+All three keys can be set at once, and the matching CLI flag overrides each one.
 
 > Report paths — on the flags and in `[ingest]` alike — resolve against the
 > job's **working directory**, not the target or the config file's location.

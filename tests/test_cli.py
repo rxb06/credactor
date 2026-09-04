@@ -1167,3 +1167,554 @@ class TestNonRegularTarget:
             main(['--dry-run', fifo])
         assert exc_info.value.code == 2
         assert 'not a regular file or directory' in credactor_caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Betterleaks ingestion (--from-betterleaks) — CLI surface
+# ---------------------------------------------------------------------------
+# Every value below is low-entropy filler ('aaaaaaaaaa' and friends): the native
+# scanner ignores it, so any finding in the output can only have come from the
+# ingested report. No credential literal is written to disc by these tests.
+
+
+def _bl_finding(**kwargs) -> dict:
+    """Return a minimal valid Betterleaks finding object, overridden by kwargs.
+
+    Keys are the Go field names verbatim, exactly as the real 1.8.1 binary
+    writes them (no struct tags), including the deprecated-but-populated
+    File/SymlinkFile/Commit mirrors.
+    """
+    base = {
+        'RuleID': 'generic-api-key',
+        'Description': 'Generic API Key',
+        'StartLine': 1,
+        'EndLine': 1,
+        'StartColumn': 1,
+        'EndColumn': 22,
+        'Match': 'api_key = "aaaaaaaaaa"',
+        'Secret': 'aaaaaaaaaa',
+        'Attributes': {'path': 'src/config.py', 'resource': 'fs.content'},
+        'Tags': [],
+        'Fingerprint': 'src/config.py:generic-api-key:1',
+        'File': 'src/config.py',
+        'SymlinkFile': '',
+        'Commit': '',
+        'Entropy': 2.5,
+        'Author': '',
+        'Email': '',
+        'Date': '',
+        'Message': '',
+    }
+    base.update(kwargs)
+    return base
+
+
+def _write_bl_report(tmp_dir: str, payload, name: str = 'bl.json') -> str:
+    """Write a Betterleaks JSON report; ``payload=None`` writes literal ``null``,
+    which is what Betterleaks emits for a zero-finding scan."""
+    path = os.path.join(tmp_dir, name)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f)
+    return path
+
+
+def _make_bl_repo(tmp_dir: str, name: str = 'repo') -> str:
+    """Create a repo dir holding src/config.py with a filler value the native
+    scanner does not flag, so exit codes attribute cleanly to ingestion."""
+    repo = os.path.join(tmp_dir, name)
+    os.makedirs(os.path.join(repo, 'src'))
+    _bl_write_source(repo, 'src/config.py', 'aaaaaaaaaa')
+    return repo
+
+
+def _bl_write_source(repo: str, rel: str, value: str) -> str:
+    """Write ``api_key = "<value>"`` at <repo>/<rel> and return the path."""
+    path = os.path.join(repo, *rel.split('/'))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(f'api_key = "{value}"\n')
+    return path
+
+
+def _bl_types(capsys) -> list[str]:
+    """Return the 'type' of every finding in a --format json run's stdout."""
+    return [f['type'] for f in json.loads(capsys.readouterr().out)['findings']]
+
+
+class TestBetterleaksParserSurface:
+    """--from-betterleaks must exist on the parser as a third, independent ingest
+    source, default to None, and reach Config unchanged.
+
+    Prevents: a flag that parses but is never carried into Config — the report
+    would be silently ignored and an ingesting gate would read clean. The
+    None default is what distinguishes 'flag not passed' from an explicit
+    empty value, so CLI-beats-config precedence depends on it.
+    """
+
+    def test_default_is_none(self):
+        assert build_parser().parse_args([]).from_betterleaks is None
+
+    def test_dest_captures_the_value(self):
+        args = build_parser().parse_args(['--from-betterleaks', '/tmp/bl.json'])
+        assert args.from_betterleaks == '/tmp/bl.json'
+
+    def test_config_from_args_maps_the_flag(self):
+        args = build_parser().parse_args(['--from-betterleaks', '/tmp/bl.json', '/tmp/x'])
+        config = _config_from_args(args)
+        assert config.from_betterleaks == '/tmp/bl.json'
+        # C1: the third source must not disturb the two that already work.
+        assert config.from_gitleaks is None
+        assert config.from_trufflehog is None
+
+
+class TestBetterleaksEmptyFlagIsFatal:
+    """--from-betterleaks "" is a user error (exit 2), never a silent disable.
+
+    Prevents: an unset shell var collapsing the flag to "" and quietly turning
+    an ingesting run into a native-only one. Worse, it must not clobber a
+    .credactor.toml [ingest] source into a false-clean exit 0. Same contract as
+    --from-gitleaks "" and --replacement "".
+    """
+
+    def test_empty_value_exits_2(self, tmp_dir):
+        repo = _make_bl_repo(tmp_dir)
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', '', repo])
+        assert exc.value.code == 2
+
+    def test_empty_value_does_not_clobber_config_source(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        cfg_report = _write_bl_report(tmp_dir, [_bl_finding()], name='cfg.json')
+        with open(os.path.join(repo, '.credactor.toml'), 'w', encoding='utf-8') as f:
+            f.write('[ingest]\n')
+            # as_posix(): a Windows path's backslashes are escape sequences
+            # inside a double-quoted TOML string (parse error -> config ignored).
+            f.write(f'from_betterleaks = "{Path(cfg_report).as_posix()}"\n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', '', repo])
+        assert exc.value.code == 2  # fails closed, not a silent drop to 0
+        assert '--from-betterleaks requires a non-empty report path' in credactor_caplog.text
+
+
+class TestBetterleaksScanHistoryRejection:
+    """--scan-history plus --from-betterleaks exits 2, and the message names the
+    flag the user actually passed.
+
+    Prevents: history mode (committed content) silently swallowing an ingest
+    source that references on-disc files, and a rejection message that lists
+    only the two older flags so the user cannot tell which one is at fault.
+    """
+
+    def test_validate_invocation_rejects_the_pair(self):
+        config = Config(scan_history=True, from_betterleaks='/tmp/bl.json')
+        with pytest.raises(SystemExit) as exc:
+            _validate_invocation(config)
+        assert exc.value.code == 2
+
+    def test_cli_message_names_the_flag(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        report = _write_bl_report(tmp_dir, [])
+        with pytest.raises(SystemExit) as exc:
+            main(['--scan-history', '--from-betterleaks', report, repo])
+        assert exc.value.code == 2
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any(
+            '--scan-history cannot be combined with' in m and '--from-betterleaks' in m
+            for m in msgs
+        )
+
+
+class TestBetterleaksFileTargetRejection:
+    """--from-betterleaks against a file target exits 2 with a message naming the
+    flag and the scanner.
+
+    Prevents: report paths (relative to a repo root) being joined onto a single
+    file, which resolves nothing and would report a clean run.
+    """
+
+    def test_file_target_exits_2(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        report = _write_bl_report(tmp_dir, [])
+        with pytest.raises(SystemExit) as exc:
+            main(['--from-betterleaks', report, os.path.join(repo, 'src', 'config.py')])
+        assert exc.value.code == 2
+        msgs = [r.getMessage() for r in credactor_caplog.records]
+        assert any(
+            '--from-betterleaks requires a directory target' in m and 'Betterleaks report' in m
+            for m in msgs
+        )
+
+
+class TestBetterleaksReportPathErrors:
+    """A report path that is missing, not a regular file, or unreadable exits 2
+    with a message that distinguishes the three cases and names Betterleaks.
+
+    Prevents: the phantom-typo chase — 'file not found' for a path plainly
+    visible in a directory listing — and prevents an unreadable report
+    tracebacking (exit 1, which a gate reads as 'findings') instead of the
+    contracted fatal exit 2.
+    """
+
+    def test_missing_report_exits_2(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        missing = os.path.join(tmp_dir, 'nope.json')  # absolute: no CWD hint
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', missing, repo])
+        assert exc.value.code == 2
+        assert any('Betterleaks file not found' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_directory_report_path_exits_2(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        as_dir = os.path.join(tmp_dir, 'report.json')
+        os.makedirs(as_dir)
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', as_dir, repo])
+        assert exc.value.code == 2
+        assert 'Betterleaks report path is not a regular file' in credactor_caplog.text
+        assert 'Betterleaks file not found' not in credactor_caplog.text
+
+    @_NOT_ROOT
+    def test_unreadable_report_exits_2(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        report = _write_bl_report(tmp_dir, [_bl_finding()])
+        os.chmod(report, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                main(['--dry-run', '--from-betterleaks', report, repo])
+        finally:
+            os.chmod(report, 0o600)
+        assert exc.value.code == 2
+        assert 'Cannot open Betterleaks file' in credactor_caplog.text
+
+
+class TestBetterleaksNullReportIsClean:
+    """D0, the must-fix: a Betterleaks report that is literal `null` (what the
+    binary writes for a zero-finding scan) over an otherwise-clean tree exits 0.
+
+    Prevents: the worst CI failure mode there is — a CLEAN upstream scan turning
+    the build red. Without the null coercion the non-list guard fires and the
+    run exits 2 with 'must be a JSON array at top level (got NoneType)', so
+    every clean run of the gate fails with a malformed-report message.
+    """
+
+    def test_null_report_clean_tree_exits_0(self, tmp_dir, credactor_caplog):
+        repo = _make_bl_repo(tmp_dir)
+        report = _write_bl_report(tmp_dir, None)
+        with open(report, encoding='utf-8') as f:
+            assert f.read().strip() == 'null'  # the exact bytes betterleaks writes
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', report, repo])
+        assert exc.value.code == 0
+        assert 'must be a JSON array at top level' not in credactor_caplog.text
+
+    def test_null_report_still_exits_1_on_a_native_finding(self, tmp_dir):
+        """A null report is empty, not a mute: the native scan still gates."""
+        repo = _make_bl_repo(tmp_dir)
+        # credactor:ignore
+        _bl_write_source(repo, 'src/aws.py', 'AKIA' + 'IOSFODNN7EXAMPLE')
+        report = _write_bl_report(tmp_dir, None)
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', report, repo])
+        assert exc.value.code == 1
+
+
+class TestBetterleaksCliBeatsConfigFile:
+    """An explicit --from-betterleaks overrides a same-kind [ingest]
+    from_betterleaks entry in .credactor.toml (CLI > config > default).
+
+    Prevents: a stale config-file report silently winning over the one the user
+    named on the command line. The CLI report carries a finding (exit 1) while
+    the config report is a clean `null` (exit 0), so the exit code alone proves
+    which report was actually ingested.
+    """
+
+    def test_cli_report_wins(self, tmp_dir):
+        repo = _make_bl_repo(tmp_dir)
+        cli_report = _write_bl_report(tmp_dir, [_bl_finding()], name='cli.json')
+        cfg_report = _write_bl_report(tmp_dir, None, name='cfg.json')
+        with open(os.path.join(repo, '.credactor.toml'), 'w', encoding='utf-8') as f:
+            f.write('[ingest]\n')
+            # as_posix(): a Windows path's backslashes are escape sequences
+            # inside a double-quoted TOML string (parse error -> config ignored).
+            f.write(f'from_betterleaks = "{Path(cfg_report).as_posix()}"\n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', '--from-betterleaks', cli_report, repo])
+        assert exc.value.code == 1  # the CLI report's finding
+
+    def test_config_file_source_is_consumed_when_no_flag(self, tmp_dir):
+        """The config spelling works on its own — the flag is not the only path in."""
+        repo = _make_bl_repo(tmp_dir)
+        cfg_report = _write_bl_report(tmp_dir, [_bl_finding()], name='cfg.json')
+        with open(os.path.join(repo, '.credactor.toml'), 'w', encoding='utf-8') as f:
+            f.write('[ingest]\n')
+            f.write(f'from_betterleaks = "{Path(cfg_report).as_posix()}"\n')
+        with pytest.raises(SystemExit) as exc:
+            main(['--dry-run', repo])
+        assert exc.value.code == 1
+
+
+class TestBetterleaksEndToEnd:
+    """A valid Betterleaks report over a real tree produces findings attributed
+    to Betterleaks and exits 1.
+
+    Prevents: D1 regressing to the Gitleaks type string. Provenance is not
+    cosmetic — the last colon segment drives --replace-with env variable names,
+    and a mislabelled finding tells the user the wrong scanner found it.
+    """
+
+    def test_finding_type_is_external_betterleaks(self, tmp_dir, capsys):
+        repo = _make_bl_repo(tmp_dir)
+        report = _write_bl_report(tmp_dir, [_bl_finding()])
+        with pytest.raises(SystemExit) as exc:
+            main(['--format', 'json', '--dry-run', '--from-betterleaks', report, repo])
+        assert exc.value.code == 1
+        types = _bl_types(capsys)
+        assert types == ['external:betterleaks:generic-api-key']
+        assert all(t.startswith('external:betterleaks:') for t in types)
+
+    def test_attributes_path_only_report_is_ingested(self, tmp_dir, capsys):
+        """Attributes['path'] alone is enough — the deprecated File mirror may go."""
+        repo = _make_bl_repo(tmp_dir)
+        finding = _bl_finding(File='', SymlinkFile='')
+        report = _write_bl_report(tmp_dir, [finding])
+        with pytest.raises(SystemExit) as exc:
+            main(['--format', 'json', '--dry-run', '--from-betterleaks', report, repo])
+        assert exc.value.code == 1
+        assert _bl_types(capsys) == ['external:betterleaks:generic-api-key']
+
+
+class TestBetterleaksCombinedWithOtherSources:
+    """All three ingest sources may be named in one invocation; each contributes
+    its own findings under its own type string.
+
+    Prevents: a third source turning the two-source condition into an
+    either/or — one flag winning and the others' reports being dropped without
+    a word, which is a silent partial gate.
+    """
+
+    def test_three_sources_in_one_run(self, tmp_dir, capsys):
+        repo = _make_bl_repo(tmp_dir)
+        _bl_write_source(repo, 'src/other.py', 'bbbbbbbbbb')
+        _bl_write_source(repo, 'src/third.py', 'cccccccccc')
+
+        gl_report = os.path.join(tmp_dir, 'gl.json')
+        with open(gl_report, 'w', encoding='utf-8') as f:
+            json.dump(
+                [
+                    {
+                        'File': 'src/config.py',
+                        'StartLine': 1,
+                        'Secret': 'aaaaaaaaaa',
+                        'Match': 'api_key = "aaaaaaaaaa"',
+                        'RuleID': 'generic-api-key',
+                        'Tags': [],
+                        'Commit': '',
+                        'SymlinkFile': '',
+                    }
+                ],
+                f,
+            )
+
+        th_report = os.path.join(tmp_dir, 'th.jsonl')
+        with open(th_report, 'w', encoding='utf-8') as f:
+            f.write(
+                json.dumps(
+                    {
+                        'DetectorName': 'CustomRegex',
+                        'Raw': 'bbbbbbbbbb',
+                        'Verified': False,
+                        'SourceMetadata': {
+                            'Data': {'Filesystem': {'file': 'src/other.py', 'line': 1}}
+                        },
+                    }
+                )
+                + '\n'
+            )
+
+        bl_report = _write_bl_report(
+            tmp_dir,
+            [
+                _bl_finding(
+                    Secret='cccccccccc',
+                    Match='api_key = "cccccccccc"',
+                    File='src/third.py',
+                    Attributes={'path': 'src/third.py', 'resource': 'fs.content'},
+                )
+            ],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    '--format',
+                    'json',
+                    '--dry-run',
+                    '--from-gitleaks',
+                    gl_report,
+                    '--from-trufflehog',
+                    th_report,
+                    '--from-betterleaks',
+                    bl_report,
+                    repo,
+                ]
+            )
+        assert exc.value.code == 1
+        types = _bl_types(capsys)
+        assert 'external:gitleaks:generic-api-key' in types
+        assert 'external:trufflehog:CustomRegex' in types
+        assert 'external:betterleaks:generic-api-key' in types
+
+
+class TestBetterleaksDispatchOrder:
+    """The documented dedup priority Credactor > Gitleaks > TruffleHog >
+    Betterleaks is produced ONLY by the append order of the three ``if`` blocks
+    in ``cli._ingest_external``; nothing in ingest.py asserts it.
+
+    Prevents: reordering those blocks, which would silently change a documented,
+    user-visible ``type`` string on every cross-scanner duplicate while the rest
+    of the suite stayed green. The severity merge is order-independent, so the
+    type string is the only observable, which is exactly why it needs pinning.
+    """
+
+    def test_trufflehog_identity_beats_betterleaks_on_a_duplicate(self, tmp_dir, capsys):
+        repo = _make_bl_repo(tmp_dir)
+        secret = 'z' * 24
+        _bl_write_source(repo, 'src/dup.py', secret)
+
+        th_report = os.path.join(tmp_dir, 'th.ndjson')
+        with open(th_report, 'w', encoding='utf-8') as f:
+            f.write(
+                json.dumps(
+                    {
+                        'Raw': secret,
+                        'DetectorName': 'AWS',
+                        'SourceMetadata': {
+                            'Data': {'Filesystem': {'file': 'src/dup.py', 'line': 1}}
+                        },
+                    }
+                )
+                + '\n'
+            )
+        bl_report = _write_bl_report(
+            tmp_dir,
+            [
+                _bl_finding(
+                    Secret=secret,
+                    Attributes={'path': 'src/dup.py', 'resource': 'fs.content'},
+                    File='src/dup.py',
+                    Fingerprint='src/dup.py:generic-api-key:1',
+                )
+            ],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    repo,
+                    '--ci',
+                    '--format',
+                    'json',
+                    '--from-trufflehog',
+                    th_report,
+                    '--from-betterleaks',
+                    bl_report,
+                ]
+            )
+        assert exc.value.code == 1
+        types = _bl_types(capsys)
+        # One surviving finding for the shared file:line:value, and TruffleHog
+        # keeps the identity because it is dispatched first.
+        dup = [t for t in types if t.endswith(':AWS') or 'betterleaks' in t]
+        assert dup == ['external:trufflehog:AWS'], types
+
+
+class TestBetterleaksLeavesGitleaksAlone:
+    """C1 regression guard: --from-gitleaks behaves exactly as it did before,
+    whether or not --from-betterleaks is also passed.
+
+    Prevents: the third source being wired in by widening the Gitleaks path.
+    A Gitleaks report must still yield external:gitleaks: types, and adding an
+    empty Betterleaks report alongside must change neither the reported
+    findings nor the exit code.
+    """
+
+    def _gitleaks_report(self, tmp_dir: str) -> str:
+        report = os.path.join(tmp_dir, 'gl.json')
+        with open(report, 'w', encoding='utf-8') as f:
+            json.dump(
+                [
+                    {
+                        'File': 'src/config.py',
+                        'StartLine': 1,
+                        'Secret': 'aaaaaaaaaa',
+                        'Match': 'api_key = "aaaaaaaaaa"',
+                        'RuleID': 'generic-api-key',
+                        'Tags': [],
+                        'Commit': '',
+                        'SymlinkFile': '',
+                    }
+                ],
+                f,
+            )
+        return report
+
+    def test_gitleaks_output_unchanged_by_a_betterleaks_flag(self, tmp_dir, capsys):
+        repo = _make_bl_repo(tmp_dir)
+        gl_report = self._gitleaks_report(tmp_dir)
+        bl_report = _write_bl_report(tmp_dir, None)  # clean: contributes nothing
+
+        with pytest.raises(SystemExit) as exc:
+            main(['--format', 'json', '--dry-run', '--from-gitleaks', gl_report, repo])
+        alone_code, alone_out = exc.value.code, capsys.readouterr().out
+
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    '--format',
+                    'json',
+                    '--dry-run',
+                    '--from-gitleaks',
+                    gl_report,
+                    '--from-betterleaks',
+                    bl_report,
+                    repo,
+                ]
+            )
+        both_code, both_out = exc.value.code, capsys.readouterr().out
+
+        assert alone_code == both_code == 1
+        assert json.loads(alone_out) == json.loads(both_out)
+        assert json.loads(both_out)['findings'][0]['type'] == 'external:gitleaks:generic-api-key'
+
+    def test_gitleaks_type_survives_a_populated_betterleaks_report(self, tmp_dir, capsys):
+        repo = _make_bl_repo(tmp_dir)
+        _bl_write_source(repo, 'src/third.py', 'cccccccccc')
+        gl_report = self._gitleaks_report(tmp_dir)
+        bl_report = _write_bl_report(
+            tmp_dir,
+            [
+                _bl_finding(
+                    Secret='cccccccccc',
+                    Match='api_key = "cccccccccc"',
+                    File='src/third.py',
+                    Attributes={'path': 'src/third.py', 'resource': 'fs.content'},
+                )
+            ],
+        )
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    '--format',
+                    'json',
+                    '--dry-run',
+                    '--from-gitleaks',
+                    gl_report,
+                    '--from-betterleaks',
+                    bl_report,
+                    repo,
+                ]
+            )
+        assert exc.value.code == 1
+        types = _bl_types(capsys)
+        assert 'external:gitleaks:generic-api-key' in types
+        assert 'external:betterleaks:generic-api-key' in types

@@ -269,6 +269,16 @@ def build_parser() -> argparse.ArgumentParser:
         'target required, FILE is CWD-relative, finding paths are '
         'target-relative, regenerate after redacting.',
     )
+    ingest.add_argument(
+        '--from-betterleaks',
+        type=str,
+        default=None,
+        metavar='FILE',
+        help='ingest findings from a Betterleaks JSON report file; same rules '
+        'as --from-gitleaks: directory target required, FILE is CWD-relative, '
+        'finding paths are target-relative, regenerate after redacting. '
+        'Generate with: betterleaks dir . -f json -r report.json',
+    )
 
     return parser
 
@@ -344,6 +354,7 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         config_path=args.config,
         from_gitleaks=args.from_gitleaks,
         from_trufflehog=args.from_trufflehog,
+        from_betterleaks=args.from_betterleaks,
     )
 
 
@@ -368,10 +379,13 @@ def _validate_invocation(config: Config) -> None:
             'Pass the repository root (or a subdirectory) to scan.',
         )
 
-    if config.scan_history and (config.from_gitleaks or config.from_trufflehog):
+    if config.scan_history and (
+        config.from_gitleaks or config.from_trufflehog or config.from_betterleaks
+    ):
         _fatal(
-            '--scan-history cannot be combined with --from-gitleaks or --from-trufflehog. '
-            'External findings reference on-disc files; history scan references committed content.',
+            '--scan-history cannot be combined with --from-gitleaks, --from-trufflehog '
+            'or --from-betterleaks. External findings reference on-disc files; history '
+            'scan references committed content.',
         )
 
     if config.ci_mode:
@@ -647,11 +661,12 @@ def _ingest_external(
     (external scanners report file paths relative to a repo root). Runs
     deduplication when any external source contributed findings.
     """
-    if not (config.from_gitleaks or config.from_trufflehog):
+    if not (config.from_gitleaks or config.from_trufflehog or config.from_betterleaks):
         return findings
 
     from .ingest import (
         deduplicate_findings,
+        ingest_betterleaks,
         ingest_gitleaks,
         ingest_trufflehog,
         new_ingest_stats,
@@ -722,6 +737,8 @@ def _ingest_external(
         _ingest_one('Gitleaks', config.from_gitleaks, ingest_gitleaks)
     if config.from_trufflehog:
         _ingest_one('TruffleHog', config.from_trufflehog, ingest_trufflehog)
+    if config.from_betterleaks:
+        _ingest_one('Betterleaks', config.from_betterleaks, ingest_betterleaks)
 
     if stats['missing_file']:
         # E04/K-5: per-finding missing-file warns scroll past, and a run whose
@@ -788,6 +805,10 @@ def _main_inner(argv: list[str] | None = None) -> None:
         if not args.from_trufflehog:
             _fatal('--from-trufflehog requires a non-empty report path')
         config.from_trufflehog = args.from_trufflehog
+    if args.from_betterleaks is not None:
+        if not args.from_betterleaks:
+            _fatal('--from-betterleaks requires a non-empty report path')
+        config.from_betterleaks = args.from_betterleaks
 
     # Validate invocation flags AFTER the config file is applied so a
     # .credactor.toml [ingest] table can't slip past the --scan-history/ingest
