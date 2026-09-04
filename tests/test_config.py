@@ -457,3 +457,199 @@ class TestIngestEmptyPathFatal:
         with pytest.raises(ConfigError, match=r'ingest\.from_trufflehog is empty'):
             apply_config_file(c, {'ingest': {'from_trufflehog': ''}})
         assert c.from_trufflehog is None
+
+
+class TestIngestFromBetterleaksConfigKey:
+    """`[ingest] from_betterleaks = "report.json"` must reach Config.from_betterleaks.
+
+    Prevents the field existing on the dataclass and on the CLI flag while the
+    config-file spelling is never applied — a user who pins the ingest gate in
+    .credactor.toml would get a scan that silently ingests nothing and exits 0.
+    """
+
+    def test_apply_config_file_sets_field(self):
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': '/tmp/b.json'}})
+        assert c.from_betterleaks == '/tmp/b.json'
+
+    def test_round_trip_from_toml_file(self, tmp_dir):
+        # The whole path a user actually exercises: TOML on disk -> load -> apply.
+        config_path = os.path.join(tmp_dir, '.credactor.toml')
+        with open(config_path, 'w') as f:
+            f.write('[ingest]\n')
+            f.write('from_betterleaks = "report.json"\n')
+        c = Config()
+        apply_config_file(c, load_config_file(tmp_dir))
+        assert c.from_betterleaks == 'report.json'
+
+    def test_does_not_disturb_the_other_two_gates(self):
+        # C1: the betterleaks key is additive — it must not set or clear the
+        # gitleaks/trufflehog fields as a side effect.
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': '/tmp/b.json'}})
+        assert c.from_gitleaks is None
+        assert c.from_trufflehog is None
+
+
+class TestIngestFromBetterleaksNonString:
+    """A non-string `ingest.from_betterleaks` warns and is ignored.
+
+    Prevents an integer/table/list TOML value being coerced into a path-shaped
+    repr (or crashing open()) — the field stays None and the user is told, the
+    same warn-and-ignore discipline the other two ingest keys follow.
+    """
+
+    def test_int_warns_and_leaves_field_none(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': 42}})
+        assert c.from_betterleaks is None
+        assert any(
+            'ingest.from_betterleaks' in r.message and 'string path' in r.message
+            for r in credactor_caplog.records
+        )
+
+    def test_list_warns_and_leaves_field_none(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': ['a.json', 'b.json']}})
+        assert c.from_betterleaks is None
+        assert any(
+            'ingest.from_betterleaks' in r.message and 'string path' in r.message
+            for r in credactor_caplog.records
+        )
+
+    def test_non_string_is_not_fatal(self):
+        # Deliberate asymmetry with the empty string below: a wrong TYPE warns,
+        # only an EMPTY string is fatal. A regression that raised here would
+        # abort scans on a merely sloppy config.
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': True}})
+        assert c.from_betterleaks is None
+
+
+class TestIngestFromBetterleaksEmptyPathFatal:
+    """An empty `ingest.from_betterleaks` raises ConfigError — parity with the
+    other two keys, and for the same reason: an empty value must not silently
+    disable a configured ingest gate into a false-clean exit 0.
+
+    Prevents `from_betterleaks = ""` being treated as "unset" (warn, or worse,
+    applied as a falsy path that the CLI then skips), which would turn a
+    configured gate into a green build that ingested nothing.
+    """
+
+    def test_empty_from_betterleaks_raises(self):
+        c = Config()
+        with pytest.raises(ConfigError, match=r'ingest\.from_betterleaks is empty'):
+            apply_config_file(c, {'ingest': {'from_betterleaks': ''}})
+        assert c.from_betterleaks is None
+
+    def test_empty_is_fatal_even_beside_a_valid_sibling_key(self):
+        # A valid from_gitleaks alongside must not make the empty betterleaks
+        # value look harmless — the gate the user asked for is still missing.
+        c = Config()
+        with pytest.raises(ConfigError, match=r'ingest\.from_betterleaks is empty'):
+            apply_config_file(
+                c, {'ingest': {'from_gitleaks': '/tmp/g.json', 'from_betterleaks': ''}}
+            )
+        assert c.from_betterleaks is None
+
+
+class TestIngestBetterleaksTypoGuard:
+    """An unknown key inside `[ingest]` still warns as a typo, and a valid
+    from_betterleaks alongside it does not suppress that warning.
+
+    Prevents the typo guard being widened or short-circuited when the third key
+    was added: `from_betterleeks = "r.json"` must not be dropped in silence,
+    because the misspelling means the ingest gate never runs at all.
+    """
+
+    def test_misspelled_betterleaks_key_warns(self, credactor_caplog):
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleeks': 'r.json'}})
+        assert c.from_betterleaks is None
+        assert any('ingest.from_betterleeks' in r.message for r in credactor_caplog.records)
+
+    def test_typo_still_warns_beside_the_real_key(self, credactor_caplog):
+        c = Config()
+        apply_config_file(
+            c, {'ingest': {'from_betterleaks': '/tmp/b.json', 'from_betterleeks': 'r.json'}}
+        )
+        assert c.from_betterleaks == '/tmp/b.json'  # the real key still applies
+        assert any('ingest.from_betterleeks' in r.message for r in credactor_caplog.records)
+
+    def test_valid_betterleaks_key_alone_does_not_warn(self, credactor_caplog):
+        # The other half of the guard: from_betterleaks must be IN the known set,
+        # or every correct config would warn about its own valid key.
+        c = Config()
+        apply_config_file(c, {'ingest': {'from_betterleaks': '/tmp/b.json'}})
+        assert not any('Unknown config key' in r.message for r in credactor_caplog.records)
+
+
+class TestIngestAllThreeKeysTogether:
+    """All three ingest keys can be set in one `[ingest]` table.
+
+    Prevents the third branch being written as an elif (or otherwise made
+    mutually exclusive), which would silently drop one of the report gates in a
+    config that ingests from several scanners at once.
+    """
+
+    def test_three_keys_in_one_table(self):
+        c = Config()
+        apply_config_file(
+            c,
+            {
+                'ingest': {
+                    'from_gitleaks': '/tmp/g.json',
+                    'from_trufflehog': '/tmp/t.jsonl',
+                    'from_betterleaks': '/tmp/b.json',
+                }
+            },
+        )
+        assert c.from_gitleaks == '/tmp/g.json'
+        assert c.from_trufflehog == '/tmp/t.jsonl'
+        assert c.from_betterleaks == '/tmp/b.json'
+
+    def test_three_keys_from_toml_file(self, tmp_dir, credactor_caplog):
+        config_path = os.path.join(tmp_dir, '.credactor.toml')
+        with open(config_path, 'w') as f:
+            f.write('[ingest]\n')
+            f.write('from_gitleaks = "g.json"\n')
+            f.write('from_trufflehog = "t.jsonl"\n')
+            f.write('from_betterleaks = "b.json"\n')
+        c = Config()
+        apply_config_file(c, load_config_file(tmp_dir))
+        assert (c.from_gitleaks, c.from_trufflehog, c.from_betterleaks) == (
+            'g.json',
+            't.jsonl',
+            'b.json',
+        )
+        assert not any('Unknown config key' in r.message for r in credactor_caplog.records)
+
+
+class TestKnownIngestKeysRoster:
+    """`_KNOWN_INGEST_KEYS` holds exactly the three supported names.
+
+    Prevents a fourth key being added to the Config dataclass and to
+    _apply_ingest_config but forgotten in the typo guard — it would then warn
+    "unknown key" on a perfectly valid config — and equally prevents a name
+    being left in the set after its branch is removed, which would make a real
+    typo pass unremarked.
+    """
+
+    def test_roster_is_exactly_the_three_names(self):
+        from credactor.config import _KNOWN_INGEST_KEYS
+
+        assert set(_KNOWN_INGEST_KEYS) == {
+            'from_gitleaks',
+            'from_trufflehog',
+            'from_betterleaks',
+        }
+
+    def test_every_known_key_is_a_config_field(self):
+        # The set and the dataclass must not drift: each guarded name has to be
+        # a real Config attribute, or the key it protects goes nowhere.
+        from credactor.config import _KNOWN_INGEST_KEYS
+
+        c = Config()
+        for key in _KNOWN_INGEST_KEYS:
+            assert hasattr(c, key), key
+            assert getattr(c, key) is None

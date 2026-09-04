@@ -32,7 +32,7 @@ db_password = os.environ["DB_PASSWORD"]
 - **Redaction, not just detection.** Most scanners stop at the finding. Credactor replaces the secret in place: a loud `REDACTED_BY_CREDACTOR` sentinel that fails at runtime by default, or a language-aware environment-variable reference (Python, JavaScript/TypeScript, Go, Java/Kotlin, Ruby, PHP, and shell) such as `os.environ["KEY"]`. The replacement is valid code. If the file does not already include the matching import (for example `import os`), add it.
 - **Safe by default.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup cannot be written, Credactor skips the file rather than rewrite it blind, and a crash mid-write leaves the original intact.
 - **Zero runtime dependencies.** Pure Python 3.11+ standard library, plus an optional extra for non-UTF-8 encodings.
-- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook (beta), and ingestion of Gitleaks or TruffleHog reports. Detect with Gitleaks or TruffleHog, remediate with Credactor.
+- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook (beta), and ingestion of Gitleaks, TruffleHog or Betterleaks reports. Detect with the scanner you already run, remediate with Credactor.
 
 ## Install
 
@@ -74,7 +74,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.6.0   # pin to the latest release tag
+    rev: v2.7.0   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
@@ -96,18 +96,21 @@ Credactor detects the credential types that leak most often, and assigns each a 
 
 Deterministic provider tokens (the prefixes above) are flagged regardless of entropy. Heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex or Base64 is flagged only when quoted. An unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. For the full detection and severity rules, see the [Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#detection--severity).
 
-> Credactor's native rule set is narrower than a dedicated scanner's, and some provider formats (for example SendGrid, Twilio, and Slack webhooks) are not detected. Its edge is remediation: pair it with Gitleaks or TruffleHog for the broadest detection, or run it on its own.
+> Credactor's native rule set is narrower than a dedicated scanner's, and some provider formats (for example SendGrid, Twilio, and Slack webhooks) are not detected. Its edge is remediation: pair it with Gitleaks, TruffleHog or Betterleaks for the broadest detection, or run it on its own.
 
 ## Pair it with another scanner, redact the lot
 
-Credactor stands on its own, and it gets stronger in company. Already run Gitleaks or TruffleHog? Pass their report to Credactor and it redacts the combined set, deduplicated against its own findings (on overlap, the higher severity wins). One remediation pass covers your scan and theirs:
+Credactor stands on its own, and it gets stronger in company. Already run Gitleaks, TruffleHog or Betterleaks? Pass their report to Credactor and it redacts the combined set, deduplicated against its own findings (on overlap, the higher severity wins). One remediation pass covers your scan and theirs:
 
 ```bash
 gitleaks dir . -f json -r gitleaks.json
 credactor --from-gitleaks gitleaks.json --fix-all --yes .
+
+betterleaks dir . -f json -r betterleaks.json
+credactor --from-betterleaks betterleaks.json --fix-all --yes .
 ```
 
-`--from-gitleaks` / `--from-trufflehog` (or an `[ingest]` table in `.credactor.toml`) require a directory target — point Credactor at the same root the scanner ran against. Report paths resolve against the working directory, and a report is a snapshot: regenerate it after redacting or changing the tree. See the [CI Integration guide](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md).
+`--from-gitleaks` / `--from-trufflehog` / `--from-betterleaks` (or an `[ingest]` table in `.credactor.toml`) require a directory target — point Credactor at the same root the scanner ran against. Report paths resolve against the working directory, and a report is a snapshot: regenerate it after redacting or changing the tree. See the [CI Integration guide](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md).
 
 ## More features
 

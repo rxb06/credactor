@@ -116,6 +116,13 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
+### v2.7.0 (Betterleaks ingestion)
+
+- **Un-redactable findings are accounted separately from malformed ones**: Betterleaks scans `stdin`, GitHub, GitLab, Hugging Face and S3, and those findings have no local file to rewrite. They are counted and summarised as unsupported sources rather than invalid records, so a wholly un-redactable report is never reported as a corrupt one, and never exits 0 in silence. The gate is the absence of a path, not the `resource` label: a `stdin` finding carries `resource: fs.content` with an empty path, so a label allowlist would have admitted it.
+- **Run-level summaries are scoped to their own parser**: the CLI shares one statistics dict across all three ingest parsers and runs Betterleaks last, so rendering the unsupported-source label set from the shared dict reported another scanner's source types, and its truncation flag, as Betterleaks'. With the shared 20-entry cap already full, the Betterleaks label could be omitted entirely while its count was still reported.
+- **Multi-part component secrets are disclosed, not silently half-redacted**: 26 of the 417 rules shipped with Betterleaks 1.8.1 declare components, so a single finding can carry a second secret on another line. Only the primary secret is ingested, and a run-level warning names the count rather than letting a half-redacted credential report success.
+- **A clean upstream report is not a fatal one**: Betterleaks writes a top-level JSON `null` for a zero-finding scan where Gitleaks writes `[]`. Rejecting that as a non-array would have failed every clean scan with exit 2, turning a passing gate red and training operators to ignore it.
+
 ### v2.6.0 (ingestion GA hardening)
 
 - **Silent-false-all-clear closures across ingestion** — run-level, default-visible summaries for every dropped-record class: invalid records (either scanner), unsupported TruffleHog sources, missing-file skips, and stale-report `--fix-all` failures. An all-invalid or all-unsupported report is no longer byte-indistinguishable from a clean run.

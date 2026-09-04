@@ -2,6 +2,6 @@
 
 from .types import Finding
 
-__version__ = '2.6.0'
+__version__ = '2.7.0'
 
 __all__ = ['Finding', '__version__']

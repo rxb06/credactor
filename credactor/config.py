@@ -80,6 +80,7 @@ class Config:
     config_path: str | None = None
     from_gitleaks: str | None = None
     from_trufflehog: str | None = None
+    from_betterleaks: str | None = None
     backup_warn_shown: bool = False
 
     def __post_init__(self) -> None:
@@ -298,11 +299,14 @@ def _coerce_str_list(key: str, raw: object, *, lower: bool = False) -> list[str]
     return out
 
 
-_KNOWN_INGEST_KEYS = frozenset({'from_gitleaks', 'from_trufflehog'})
+_KNOWN_INGEST_KEYS = frozenset({'from_gitleaks', 'from_trufflehog', 'from_betterleaks'})
 
 
 def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
-    """Apply the optional ``[ingest]`` table (from_gitleaks / from_trufflehog)."""
+    """Apply the optional ``[ingest]`` table.
+
+    Keys: from_gitleaks / from_trufflehog / from_betterleaks.
+    """
     ingest = file_data.get('ingest', {})
     if not isinstance(ingest, dict):
         logger.warning('[ingest] config section must be a table, ignoring')
@@ -333,6 +337,16 @@ def _apply_ingest_config(config: Config, file_data: TomlData) -> None:
             )
         else:
             config.from_trufflehog = val
+    if 'from_betterleaks' in ingest:
+        val = ingest['from_betterleaks']
+        if not isinstance(val, str):
+            logger.warning('ingest.from_betterleaks must be a string path, ignoring')
+        elif not val:
+            raise ConfigError(
+                'ingest.from_betterleaks is empty — set a report path or remove the key'
+            )
+        else:
+            config.from_betterleaks = val
 
 
 # Top-level keys apply_config_file consumes. Anything else warns: every

@@ -1,5 +1,5 @@
 """
-External scanner ingestion: Gitleaks JSON and TruffleHog NDJSON.
+External scanner ingestion: Gitleaks JSON, Betterleaks JSON and TruffleHog NDJSON.
 """
 
 from __future__ import annotations
@@ -73,6 +73,41 @@ def _gitleaks_severity(rule_id: str, tags: list[str] | None = None) -> str:
             if isinstance(tag, str) and tag.lower() in _SEVERITY_LEVELS:
                 return tag.lower()
     return _GITLEAKS_SEVERITY.get(rule_id, 'medium')
+
+
+# Betterleaks' `--validation` pass asks the provider whether the secret is live.
+# That verdict outranks the rule table: it is direct evidence, not a heuristic.
+# Only the three decisive statuses appear here — '', 'needs_validation',
+# 'unknown' and 'error' deliberately fall through to the rule table, because
+# "not validated" must not read as "not serious".
+_BETTERLEAKS_VALIDATION_SEVERITY: dict[str, str] = {
+    'valid': 'critical',
+    'invalid': 'low',
+    'revoked': 'low',
+}
+
+
+def _betterleaks_severity(
+    rule_id: str,
+    validation_status: str = '',
+    tags: list[str] | None = None,
+) -> str:
+    """Map a Betterleaks finding to a Credactor severity string.
+
+    Precedence: a decisive ``ValidationStatus`` (provider-confirmed live or
+    dead) wins outright, then a Tags override, then the shared Gitleaks rule
+    table, then 'medium'. Betterleaks is a Gitleaks fork and inherits its rule
+    IDs — 20 of the 22 ids in ``_GITLEAKS_SEVERITY`` are present verbatim in
+    its bundled config — so reusing that table is deliberate, not a shortcut.
+
+    Putting the machine verdict above a rule author's Tags mirrors the
+    TruffleHog rule where ``Verified: true`` short-circuits its own table.
+    """
+    if isinstance(validation_status, str):
+        decisive = _BETTERLEAKS_VALIDATION_SEVERITY.get(validation_status.lower())
+        if decisive is not None:
+            return decisive
+    return _gitleaks_severity(rule_id, tags)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +452,286 @@ def ingest_gitleaks(
             'from a clean scan.',
             invalid,
         )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Betterleaks ingestion
+# ---------------------------------------------------------------------------
+# Betterleaks writes a JSON array whose objects carry Go field names verbatim
+# (no struct tags), so the Gitleaks field mapping reads them unchanged. This
+# parser is separate on purpose: the Gitleaks path works and stays untouched.
+# The deltas are the type string, the ValidationStatus severity, non-filesystem
+# source accounting, and the JSON-null clean report below.
+
+
+def _betterleaks_summaries(
+    stats: dict[str, Any],
+    own_unsupported: dict[str, Any],
+    invalid_start: int,
+    unsupported_start: int,
+    component_sets: int,
+) -> None:
+    """Emit ``ingest_betterleaks``'s three run-level summaries.
+
+    Extracted from the parser to keep it under the statement ceiling, and
+    because the scoping rules here are the subtle part: the counts are deltas
+    against the shared *stats* dict (the CLI passes one to every parser), while
+    the source-type labels come from *own_unsupported*, a parser-local view.
+    Rendering the labels from the shared set reported another scanner's source
+    types as Betterleaks'.
+    """
+    invalid_here = stats['invalid_record'] - invalid_start
+    if invalid_here:
+        # Per-record skips are INFO-only, so a wholly-invalid report (schema
+        # drift, or a post-processor that strips Secret fields) would otherwise
+        # be byte-indistinguishable from a clean scan and exit 0.
+        logger.warning(
+            '%d Betterleaks record(s) skipped as invalid (non-object entry, '
+            'empty/missing Secret, or a non-string file path) — check the report '
+            'and scanner version; an all-invalid report is otherwise '
+            'indistinguishable from a clean scan.',
+            invalid_here,
+        )
+
+    unsupported_here = stats['unsupported_source'] - unsupported_start
+    if unsupported_here:
+        types = sorted(str(t) for t in own_unsupported['unsupported_types'])
+        if own_unsupported['unsupported_types_truncated']:
+            types.append('(further types omitted)')
+        logger.warning(
+            '%d Betterleaks finding(s) skipped: no file path, source type(s) %s — '
+            'only filesystem and git sources can be ingested.',
+            unsupported_here,
+            types if types else '(unknown)',
+        )
+
+    if component_sets:
+        logger.warning(
+            '%d Betterleaks finding(s) carry multi-part component secrets that were '
+            'NOT ingested and will not be redacted — only the primary secret of each '
+            'is handled. Check those findings with the scanner directly.',
+            component_sets,
+        )
+
+
+def ingest_betterleaks(
+    filepath: str,
+    target: str,
+    stats: dict[str, Any] | None = None,
+) -> list[Finding]:
+    """Parse a Betterleaks JSON report and return a list of Credactor findings.
+
+    Same shape as ``ingest_gitleaks`` — JSON array, 10,000-finding cap, paths
+    confined to the target — with four Betterleaks-specific behaviours:
+
+    * a top-level JSON ``null`` (what Betterleaks writes for a clean scan) is
+      an empty report, not a malformed one;
+    * source metadata is read from ``Attributes`` first, falling back to the
+      deprecated ``File``/``SymlinkFile``/``Commit`` mirrors;
+    * findings with no file path (``stdin``, GitHub, GitLab, Hugging Face, S3)
+      are counted as unsupported sources, not invalid records;
+    * ``ValidationStatus`` drives severity when it is decisive.
+
+    *stats* (see ``new_ingest_stats``) accumulates skip counters; a local dict
+    is used when ``None`` so the run-level summaries fire for direct callers.
+    """
+    target_resolved, filepath_resolved = _load_report_preamble(
+        filepath, target, scanner_name='Betterleaks'
+    )
+    if stats is None:
+        stats = new_ingest_stats()
+    # The CLI shares one stats dict across every ingest call, so the summaries
+    # below must count only THIS parser's skips.
+    invalid_start = stats['invalid_record']
+    unsupported_start = stats['unsupported_source']
+
+    try:
+        with open(filepath, encoding='utf-8', errors='strict') as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise ValueError(f'Cannot open Betterleaks file {filepath!r}: {exc}') from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f'Betterleaks file {filepath!r} contains non-UTF-8 bytes; cannot parse safely: {exc}'
+        ) from exc
+    except json.JSONDecodeError as exc:
+        hint = (
+            ' (the file looks like NDJSON — TruffleHog reports go to --from-trufflehog)'
+            if exc.msg.startswith('Extra data')
+            else ''
+        )
+        raise ValueError(f'Betterleaks file is not valid JSON ({filepath!r}): {exc}{hint}') from exc
+    except RecursionError as exc:
+        # RecursionError is a RuntimeError, so without this it escapes the
+        # CLI's `except ValueError` as an uncaught traceback (exit 1) instead
+        # of the contracted fatal exit 2.
+        raise ValueError(
+            f'Betterleaks file {filepath!r} is too deeply nested to parse safely: {exc}'
+        ) from exc
+
+    if data is None:
+        # Betterleaks writes literal `null` for a zero-finding report, where
+        # Gitleaks writes `[]`. Without this a CLEAN upstream scan would hit
+        # the non-list guard below and exit 2 with 'must be a JSON array',
+        # failing the gate on every clean run.
+        data = []
+
+    if not isinstance(data, list):
+        hint = (
+            ' (a SARIF document is a JSON object — pass the JSON report instead)'
+            if isinstance(data, dict)
+            else ''
+        )
+        raise ValueError(
+            f'Betterleaks report must be a JSON array at top level '
+            f'(got {type(data).__name__}). File: {filepath!r}{hint}'
+        )
+
+    if len(data) > _MAX_FINDINGS:
+        logger.warning(
+            'Betterleaks report contains %d findings; truncating to %d.',
+            len(data),
+            _MAX_FINDINGS,
+        )
+        data = data[:_MAX_FINDINGS]
+
+    findings: list[Finding] = []
+    component_sets = 0
+    own_unsupported: dict[str, Any] = {
+        'unsupported_types': set(),
+        'unsupported_types_truncated': False,
+    }
+
+    for obj in data:
+        if not isinstance(obj, dict):
+            logger.info('Skipping non-object entry in Betterleaks report.')
+            stats['invalid_record'] += 1
+            continue
+
+        # --- Secret ---
+        secret = obj.get('Secret', '')
+        if not isinstance(secret, str) or not secret:
+            logger.info('Skipping Betterleaks finding with empty Secret.')
+            stats['invalid_record'] += 1
+            continue
+
+        # --- Source metadata ---
+        # Attributes is the forward-looking source; File/SymlinkFile/Commit are
+        # deprecated mirrors that Betterleaks still populates. Read Attributes
+        # first so the parser survives their eventual removal, and keep the
+        # symlink-before-path precedence the Gitleaks path already documents.
+        raw_attrs = obj.get('Attributes')
+        attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
+        raw_file = (
+            attrs.get('fs.symlink')
+            or attrs.get('path')
+            or obj.get('SymlinkFile')
+            or obj.get('File', '')
+        )
+        if raw_file and not isinstance(raw_file, str):
+            # A path that is present but not a string is a malformed record,
+            # not an unsupported source — parity with the Gitleaks parser,
+            # which counts a non-string File the same way. Keeping the two
+            # apart matters: the unsupported-source summary would otherwise
+            # tell the operator a source type could not be ingested when the
+            # report is simply corrupt.
+            logger.info('Skipping Betterleaks finding with a non-string file path.')
+            stats['invalid_record'] += 1
+            continue
+        if not raw_file:
+            # No path at all: a non-filesystem source (stdin, GitHub, GitLab,
+            # Hugging Face, S3). Structurally un-redactable rather than
+            # malformed, so it is counted as an unsupported source — NOT an
+            # invalid record. Gate on path presence, not on the `resource`
+            # label: a `stdin` finding carries resource='fs.content' with an
+            # empty path, so a resource allowlist would wrongly accept it.
+            label = attrs.get('resource')
+            logger.info(
+                'Skipping Betterleaks finding from unsupported source %r (no file path).',
+                label,
+            )
+            stats['unsupported_source'] += 1
+            labels = {str(label) if isinstance(label, str) and label else 'unknown'}
+            _note_unsupported_types(stats, labels)
+            # ...and again into a parser-local view. The CLI shares one stats
+            # dict across all three parsers and runs Betterleaks last, so
+            # rendering the summary from the shared set would report another
+            # scanner's source types (and its truncation flag) as Betterleaks'.
+            _note_unsupported_types(own_unsupported, labels)
+            continue
+
+        resolved = _resolve_external_finding_path(
+            raw_file,
+            target_resolved,
+            filepath_resolved,
+            scanner_name='Betterleaks',
+            stats=stats,
+        )
+        if resolved is None:
+            continue
+
+        # --- Line number ---
+        line = obj.get('StartLine', 1)
+        if not isinstance(line, int) or line < 1:
+            line = 1
+
+        # --- raw context line ---
+        # Prefer the on-disk line: Finding['raw'] is contracted as a single
+        # source line and Betterleaks' Match can span lines for some rules.
+        raw = _synthesise_raw(resolved, line)
+        if not raw:
+            match_ctx = obj.get('Match', '')
+            if isinstance(match_ctx, str) and match_ctx and '\n' not in match_ctx:
+                raw = match_ctx
+            else:
+                raw = secret
+
+        # --- Type ---
+        rule_id = obj.get('RuleID', 'unknown')
+        ftype = f'external:betterleaks:{rule_id}'
+
+        # --- Severity ---
+        tags = obj.get('Tags') or []
+        status = obj.get('ValidationStatus', '')
+        severity = _betterleaks_severity(
+            rule_id,
+            status if isinstance(status, str) else '',
+            tags if isinstance(tags, list) else [],
+        )
+
+        finding: Finding = {
+            'file': resolved,
+            'line': line,
+            'type': ftype,
+            'severity': severity,
+            'full_value': secret,
+            'value_preview': preview(secret),
+            'raw': raw,
+        }
+
+        # --- Commit (omit key when empty) ---
+        # Type-check before slicing: a non-string value would raise TypeError
+        # or produce an unhashable dedup key later.
+        commit = attrs.get('git.sha') or obj.get('Commit', '')
+        if isinstance(commit, str) and commit:
+            finding['commit'] = commit[:12]
+
+        # --- Multi-part rules ---
+        # A ComponentSet carries the other half of a multi-part credential
+        # (an access-key id plus its secret key, say) with its own line and
+        # value. Only the top-level Secret is ingested, so those component
+        # secrets are reported by neither this finding nor any other — count
+        # them for the run-level summary rather than redacting half a
+        # credential and reporting success.
+        comps = obj.get('ComponentSets')
+        if isinstance(comps, list) and comps:
+            component_sets += 1
+
+        findings.append(finding)
+
+    _betterleaks_summaries(stats, own_unsupported, invalid_start, unsupported_start, component_sets)
 
     return findings
 
@@ -785,8 +1100,8 @@ def deduplicate_findings(
       dropped.
 
     Expected call order from cli.py: native findings first, then gitleaks,
-    then trufflehog.  First occurrence wins, so priority is automatically
-    Credactor > Gitleaks > TruffleHog.
+    then trufflehog, then betterleaks.  First occurrence wins, so priority is
+    automatically Credactor > Gitleaks > TruffleHog > Betterleaks.
     """
 
     def _base(f: Finding) -> BaseKey:
