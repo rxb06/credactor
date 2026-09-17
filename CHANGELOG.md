@@ -516,7 +516,6 @@ Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
-[2.7.1]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.1
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rxb06/credactor/compare/v2.3.3...v2.4.0
