@@ -12,13 +12,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ## [2.7.2] - 2026-09-17
 
-This is the first release published to PyPI since 2.6.0. Versions 2.7.0 and
-2.7.1 were never tagged or uploaded, so an upgrade from 2.6.0 also picks up the
-Betterleaks ingestion work recorded in the 2.7.1 entry: the
-`--from-betterleaks` flag, the matching `[ingest] from_betterleaks` config key,
-severity driven by Betterleaks' validation verdict, and separate accounting for
-findings from sources that have no local file to rewrite. See the 2.7.1 entry
-for the full list.
+This is the first release published to PyPI since 2.6.0. Neither 2.7.0 nor
+2.7.1 reached it. The `v2.7.0` tag was consumed by a release against the wrong
+commit and cannot be reused, as the 2.7.1 entry records, and 2.7.1 was never
+tagged at all. An upgrade from 2.6.0 therefore also picks up the Betterleaks
+ingestion work recorded there: the `--from-betterleaks` flag, the matching
+`[ingest] from_betterleaks` config key, severity driven by Betterleaks'
+validation verdict, and separate accounting for findings from sources that have
+no local file to rewrite. See the 2.7.1 entry for the full list.
 
 ### Fixed
 
