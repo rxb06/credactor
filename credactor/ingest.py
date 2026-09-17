@@ -77,9 +77,9 @@ def _gitleaks_severity(rule_id: str, tags: list[str] | None = None) -> str:
 
 # Betterleaks' `--validation` pass asks the provider whether the secret is live.
 # That verdict outranks the rule table: it is direct evidence, not a heuristic.
-# Only the three decisive statuses appear here — '', 'needs_validation',
-# 'unknown' and 'error' deliberately fall through to the rule table, because
-# "not validated" must not read as "not serious".
+# Only the decisive statuses are mapped here. The inconclusive ones ('',
+# 'needs_validation', 'unknown' and 'error') fall through to the rule table on
+# purpose, because "not validated" must not read as "not serious".
 _BETTERLEAKS_VALIDATION_SEVERITY: dict[str, str] = {
     'valid': 'critical',
     'invalid': 'low',
@@ -150,10 +150,20 @@ def _synthesise_raw(filepath: str, lineno: int) -> str:
 
 
 def new_ingest_stats() -> dict[str, Any]:
-    """Per-run skip counters shared by both parsers (and across two reports when
-    the CLI passes one dict to both ingest calls). Drives the run-level
+    """Per-run skip counters shared by all three parsers (and across every report
+    when the CLI passes one dict to each ingest call). Drives the run-level
     stale-report and unsupported-source summaries — per-finding logs alone
-    scroll past and can leave an exit-0 run looking clean (E04/A08)."""
+    scroll past and can leave an exit-0 run looking clean (E04/A08).
+
+    Because the dict is shared, a parser must build its own summary from a delta
+    against the counter value it saw on entry, not from the counter itself. The
+    two ``unsupported_types`` keys are the exception. They collect a union across
+    parsers, for callers that want one view of a whole run, and no summary is
+    built from them; each parser keeps a private copy of the same shape for its
+    own labels. Their 20-entry cap is separate from any parser's, so
+    ``unsupported_types_truncated`` can be set here when no summary was actually
+    truncated.
+    """
     return {
         'missing_file': 0,
         'unsupported_source': 0,
@@ -197,8 +207,8 @@ def _resolve_external_finding_path(
     scanner finding. Returns the resolved path, or ``None`` to skip.
 
     Combines path-traversal and self-reference guards plus the optional
-    missing-file warning, so both ingest_gitleaks and
-    ingest_trufflehog share identical handling.
+    missing-file warning, so ingest_gitleaks, ingest_trufflehog and
+    ingest_betterleaks share identical handling.
     """
     try:
         resolved = str(Path(os.path.normpath(os.path.join(target_resolved, raw_file))).resolve())
@@ -254,12 +264,13 @@ def _load_report_preamble(
     *,
     scanner_name: str,
 ) -> tuple[str, str]:
-    """Resolve the report's target/filepath and run the size guards shared by both
-    external-report parsers. Returns ``(target_resolved, filepath_resolved)``.
+    """Resolve the report's target/filepath and run the size guards shared by every
+    external-report parser. Returns ``(target_resolved, filepath_resolved)``.
 
-    The ``open()`` + decode step is intentionally NOT shared: Gitleaks uses
-    ``errors='strict'`` + ``json.load`` while TruffleHog uses ``errors='replace'``
-    + a per-line loop, and they diverge in how they use the handle.
+    The ``open()`` + decode step is intentionally NOT shared: the JSON-array
+    parsers (Gitleaks, Betterleaks) use ``errors='strict'`` + ``json.load``
+    while TruffleHog uses ``errors='replace'`` + a per-line loop, and they
+    diverge in how they use the handle.
     """
     target_path = Path(target).resolve()
     filepath_resolved = str(Path(filepath).resolve())
@@ -298,6 +309,38 @@ def _load_report_preamble(
             f'Split the report or narrow the scanner scope.'
         )
     return target_resolved, filepath_resolved
+
+
+def _reject_redacted_report(secret: str, *, scanner_name: str, flag: str) -> None:
+    """Fail closed on a report whose ``Secret`` fields the scanner itself redacted.
+
+    Gitleaks and Betterleaks both take a ``--redact`` flag that rewrites
+    ``Secret`` inside the report. At its default 100% it writes the literal
+    ``REDACTED``, and that form does damage rather than just being useless. The
+    redactor applies ``full_value`` as a plain substring replacement and then
+    sweeps the file for further copies, so ingesting it rewrites every line
+    holding that word, including Credactor's own ``REDACTED_BY_CREDACTOR``
+    sentinel, which is what a re-scan of an already-redacted tree reports. The
+    run then reports success. Refusing the report is fatal (exit 2) and writes
+    no bytes. There is no partly usable case, because the flag redacts every
+    finding.
+
+    The percentage form (``--redact=20``, a ``<prefix>...`` truncation) is not
+    matched here, on purpose. It cannot substring-match a line holding the full
+    secret, so it already fails safe as an ordinary stale finding (warned,
+    unresolved, exit 1), and a trailing ``...`` is ordinary content that a
+    generic rule captures verbatim from an elided token in a README or a test
+    fixture. Refusing on it aborted whole runs over reports that were never
+    redacted, leaving the real secrets in place.
+    """
+    if secret == 'REDACTED':
+        raise ValueError(
+            f'{scanner_name} report contains scanner-redacted Secret values '
+            f'(found {secret!r}); it cannot be used for redaction. Regenerate '
+            f'the report without the {scanner_name} {flag} flag. That flag '
+            f'rewrites Secret inside the report, so Credactor would replace the '
+            f'placeholder text rather than the secret.'
+        )
 
 
 def ingest_gitleaks(
@@ -378,6 +421,7 @@ def ingest_gitleaks(
             if stats is not None:
                 stats['invalid_record'] += 1
             continue
+        _reject_redacted_report(secret, scanner_name='Gitleaks', flag='--redact')
 
         # --- File path ---
         # Use SymlinkFile if non-empty, otherwise File
@@ -616,27 +660,51 @@ def ingest_betterleaks(
             logger.info('Skipping Betterleaks finding with empty Secret.')
             stats['invalid_record'] += 1
             continue
+        _reject_redacted_report(secret, scanner_name='Betterleaks', flag='--redact')
 
         # --- Source metadata ---
         # Attributes is the forward-looking source; File/SymlinkFile/Commit are
         # deprecated mirrors that Betterleaks still populates. Read Attributes
-        # first so the parser survives their eventual removal, and keep the
-        # symlink-before-path precedence the Gitleaks path already documents.
+        # ahead of its mirror within each role so the parser survives their
+        # eventual removal.
         raw_attrs = obj.get('Attributes')
         attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
-        raw_file = (
-            attrs.get('fs.symlink')
-            or attrs.get('path')
-            or obj.get('SymlinkFile')
-            or obj.get('File', '')
-        )
-        if raw_file and not isinstance(raw_file, str):
+        # The candidates are ordered by role, not by field generation: both
+        # symlink fields rank above both real-path fields, which is the
+        # symlink-before-path precedence the Gitleaks path already documents.
+        # Reading Attributes straight through (fs.symlink, path, SymlinkFile,
+        # File) inverted that under the schema drift the Attributes-first
+        # ordering exists to survive. A version emitting Attributes.path while
+        # exposing the symlink only through the deprecated mirror would resolve
+        # the real file, and a real file outside the target root is then dropped
+        # by the traversal guard, so the redaction goes missing in silence.
+        #
+        # The candidates are taken one at a time rather than through an `or`
+        # chain. `or` skips over a falsy non-string (`0`, `False`, `[]`, `{}`)
+        # in any position but the last, so a corrupt value there reached the
+        # pathless branch and was charged to unsupported_source instead of
+        # invalid_record. An absent key and an empty string both mean "not set"
+        # (Betterleaks writes '' for the mirrors it does not populate) and fall
+        # through to the next candidate. Anything else is taken and type-checked
+        # below.
+        raw_file: Any = ''
+        for source, key in (
+            (attrs, 'fs.symlink'),
+            (obj, 'SymlinkFile'),
+            (attrs, 'path'),
+            (obj, 'File'),
+        ):
+            if key not in source or source[key] == '':
+                continue
+            raw_file = source[key]
+            break
+        if not isinstance(raw_file, str):
             # A path that is present but not a string is a malformed record,
-            # not an unsupported source — parity with the Gitleaks parser,
-            # which counts a non-string File the same way. Keeping the two
-            # apart matters: the unsupported-source summary would otherwise
-            # tell the operator a source type could not be ingested when the
-            # report is simply corrupt.
+            # not an unsupported source. This matches the Gitleaks parser,
+            # which counts a non-string File the same way, JSON `null`
+            # included. Keeping the two apart matters: the unsupported-source
+            # summary would otherwise tell the operator a source type could not
+            # be ingested when the report is simply corrupt.
             logger.info('Skipping Betterleaks finding with a non-string file path.')
             stats['invalid_record'] += 1
             continue
@@ -784,6 +852,7 @@ def _parse_trufflehog_record(
     target_resolved: str,
     filepath_resolved: str,
     stats: dict[str, Any] | None = None,
+    own_unsupported: dict[str, Any] | None = None,
 ) -> Finding | None:
     """Validate one TruffleHog NDJSON record and build its Finding.
 
@@ -866,6 +935,12 @@ def _parse_trufflehog_record(
         if stats is not None:
             stats['unsupported_source'] += 1
             _note_unsupported_types(stats, labels)
+        if own_unsupported is not None:
+            # ...and again into a parser-local view, for the same reason
+            # ingest_betterleaks keeps one: the CLI shares a single stats dict
+            # across all three parsers, so rendering the summary from the shared
+            # set would report another scanner's source types as TruffleHog's.
+            _note_unsupported_types(own_unsupported, labels)
         return None
 
     if not isinstance(file_path_raw, str) or not file_path_raw:
@@ -959,9 +1034,14 @@ def ingest_trufflehog(
     )
     if stats is None:
         stats = new_ingest_stats()
-    # The CLI shares one stats dict across both ingest calls, so the summary
+    # The CLI shares one stats dict across every ingest call, so the summaries
     # below must count only THIS parser's skips.
     invalid_start = stats['invalid_record']
+    unsupported_start = stats['unsupported_source']
+    own_unsupported: dict[str, Any] = {
+        'unsupported_types': set(),
+        'unsupported_types_truncated': False,
+    }
 
     try:
         # Closed via `with fh:` below; opened inside try only to convert OSError
@@ -1018,7 +1098,12 @@ def ingest_trufflehog(
                 break
 
             finding = _parse_trufflehog_record(
-                obj, lineno_file, target_resolved, filepath_resolved, stats=stats
+                obj,
+                lineno_file,
+                target_resolved,
+                filepath_resolved,
+                stats=stats,
+                own_unsupported=own_unsupported,
             )
             if finding is None:
                 continue
@@ -1049,14 +1134,15 @@ def ingest_trufflehog(
     # skipped at INFO level per record; without this summary an
     # all-unsupported report is byte-indistinguishable from a clean run and
     # exits 0 — a false all-clear in CI.
-    if stats['unsupported_source']:
-        types = sorted(str(t) for t in stats['unsupported_types'])
-        if stats.get('unsupported_types_truncated'):
+    unsupported_here = stats['unsupported_source'] - unsupported_start
+    if unsupported_here:
+        types = sorted(str(t) for t in own_unsupported['unsupported_types'])
+        if own_unsupported['unsupported_types_truncated']:
             types.append('(further types omitted)')
         logger.warning(
             '%d TruffleHog finding(s) skipped: unsupported source type(s) %s — '
             'only filesystem and git sources can be ingested.',
-            stats['unsupported_source'],
+            unsupported_here,
             types if types else '(unknown)',
         )
 

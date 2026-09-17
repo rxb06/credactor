@@ -2062,8 +2062,8 @@ class TestBetterleaksNullReport:
 
 class TestBetterleaksAttributesPrecedence:
     """Source metadata is read from ``Attributes`` first and falls back to the
-    deprecated ``File``/``SymlinkFile``/``Commit`` mirrors, with ``fs.symlink``
-    ahead of ``path``.
+    deprecated ``File``/``SymlinkFile``/``Commit`` mirrors, with both symlink
+    fields ranking above both real-path fields.
 
     Prevents both directions of the mistake. Reading the deprecated mirrors
     first would break the day betterleaks removes them, and losing the fallback
@@ -2094,6 +2094,27 @@ class TestBetterleaksAttributesPrecedence:
                 'path': 'src/notify.py',
                 'resource': 'fs.content',
             },
+            File='src/notify.py',
+        )
+        report = _write_betterleaks_report(tmp_path, [finding])
+        results = ingest_betterleaks(str(report), str(target))
+        assert len(results) == 1
+        assert results[0]['file'] == str(real.resolve())
+
+    def test_deprecated_symlinkfile_beats_attributes_path(self, tmp_path):
+        """The drift case the Attributes-first ordering exists to survive: a
+        version that emits ``Attributes.path`` but exposes the symlink only
+        through the deprecated mirror. Chaining Attributes straight through put
+        the new-format real path ahead of the deprecated symlink path and
+        inverted the symlink-first precedence. A dereferenced real file outside
+        the target root is then dropped by the traversal guard, so the redaction
+        goes missing in silence."""
+        target, _ = _make_bl_target(tmp_path)
+        real = target / 'src' / 'real.py'
+        real.write_text(_BL_LINE + '\n', encoding='utf-8')
+        finding = _make_betterleaks_finding(
+            Attributes={'path': 'src/notify.py', 'resource': 'fs.content'},
+            SymlinkFile='src/real.py',
             File='src/notify.py',
         )
         report = _write_betterleaks_report(tmp_path, [finding])
@@ -2159,6 +2180,56 @@ class TestBetterleaksAttributesPrecedence:
         assert results == []
         assert stats['invalid_record'] == 1
         assert stats['unsupported_source'] == 0
+
+    def test_falsy_non_string_path_is_an_invalid_record_too(self, tmp_path):
+        """The classification must key off the TYPE, not the truthiness. These
+        values are non-string and falsy, so a truthiness-first guard let every
+        one of them skip the malformed branch and land in the pathless branch,
+        telling the operator a source type could not be ingested when the record
+        is simply corrupt. JSON ``null`` counts as corrupt too, which is what
+        ingest_gitleaks does with the same value.
+
+        Every candidate position is covered, not just the last: an ``or`` chain
+        skips over a falsy non-string in any earlier position, so the miscount
+        survived there even once the guard itself was fixed."""
+        from credactor.ingest import new_ingest_stats
+
+        target, _ = _make_bl_target(tmp_path)
+        positions = (
+            ('Attributes', 'fs.symlink'),
+            ('SymlinkFile', None),
+            ('Attributes', 'path'),
+            ('File', None),
+        )
+        for bad in (0, False, [], {}, 0.0, None):
+            for field, attr_key in positions:
+                finding = _make_betterleaks_finding(File='', SymlinkFile='')
+                finding['Attributes'] = {'resource': 'fs.content'}
+                if attr_key is not None:
+                    finding['Attributes'][attr_key] = bad
+                else:
+                    finding[field] = bad
+                report = _write_betterleaks_report(tmp_path, [finding])
+                stats = new_ingest_stats()
+                where = f'{field}{"." + attr_key if attr_key else ""}={bad!r}'
+                assert ingest_betterleaks(str(report), str(target), stats=stats) == []
+                assert stats['invalid_record'] == 1, f'Not an invalid record for {where}'
+                assert stats['unsupported_source'] == 0, f'Miscounted for {where}'
+
+    def test_empty_string_paths_are_an_unsupported_source_not_corrupt(self, tmp_path):
+        """The legitimate pathless case must survive the type check above:
+        Betterleaks writes '' for the mirrors it does not populate, and a
+        non-filesystem finding (stdin, S3) has no path at all."""
+        from credactor.ingest import new_ingest_stats
+
+        target, _ = _make_bl_target(tmp_path)
+        finding = _make_betterleaks_finding(File='', SymlinkFile='')
+        finding['Attributes'] = {'path': '', 'resource': 's3.object'}
+        report = _write_betterleaks_report(tmp_path, [finding])
+        stats = new_ingest_stats()
+        assert ingest_betterleaks(str(report), str(target), stats=stats) == []
+        assert stats['unsupported_source'] == 1
+        assert stats['invalid_record'] == 0
 
 
 class TestBetterleaksSharedStatsIsolation:
@@ -3102,3 +3173,157 @@ class TestBetterleaksDedupInteraction:
         ingested = ingest_betterleaks(str(report), str(target))
         _read_file_lines.cache_clear()
         assert len(deduplicate_findings(ingested)) == 2
+
+
+class TestTrufflehogSharedStatsIsolation:
+    """Twin of TestBetterleaksSharedStatsIsolation, for the parser that already
+    existed. The CLI passes ONE stats dict to all three parsers, so TruffleHog's
+    unsupported-source summary must report only its OWN count and its OWN source
+    labels. Reading the shared counter absolutely was correct only while
+    TruffleHog was the sole parser incrementing it; ingest_betterleaks is a
+    second one."""
+
+    def test_summary_omits_another_parsers_count_and_labels(self, tmp_path, credactor_caplog):
+        from credactor.ingest import new_ingest_stats
+
+        th_target, _ = _make_th_target(tmp_path)
+        # A Betterleaks stdin finding: no file path, resource label s3.object.
+        bl_finding = _make_betterleaks_finding(
+            Attributes={'path': '', 'resource': 's3.object'},
+            File='',
+            SymlinkFile='',
+        )
+        bl_report = _write_betterleaks_report(tmp_path, [bl_finding])
+        th_report = _write_ndjson(tmp_path, [_make_trufflehog_finding()])
+
+        stats = new_ingest_stats()
+        ingest_betterleaks(str(bl_report), str(th_target), stats=stats)
+        results = ingest_trufflehog(str(th_report), str(th_target), stats=stats)
+
+        assert len(results) == 1  # TruffleHog's own record still ingests
+        assert stats['unsupported_source'] == 1  # Betterleaks' skip, shared
+        assert not any(
+            'TruffleHog finding(s) skipped: unsupported source type(s)' in r.getMessage()
+            for r in credactor_caplog.records
+        ), "TruffleHog reported another parser's skips as its own"
+
+    def test_own_unsupported_still_summarised(self, tmp_path, credactor_caplog):
+        """The isolation must not silence TruffleHog's real skips."""
+        from credactor.ingest import new_ingest_stats
+
+        target, _ = _make_th_target(tmp_path)
+        docker = _make_trufflehog_finding(SourceMetadata={'Data': {'Docker': {'image': 'x'}}})
+        report = _write_ndjson(tmp_path, [docker])
+        stats = new_ingest_stats()
+        stats['unsupported_source'] = 7  # as if Betterleaks had already run
+        stats['unsupported_types'].add('s3.object')
+
+        assert ingest_trufflehog(str(report), str(target), stats=stats) == []
+        assert stats['unsupported_source'] == 8
+        summary = [
+            r.getMessage()
+            for r in credactor_caplog.records
+            if 'TruffleHog finding(s) skipped: unsupported source type(s)' in r.getMessage()
+        ]
+        assert len(summary) == 1
+        assert summary[0].startswith('1 TruffleHog finding(s)')
+        assert 'Docker' in summary[0]
+        assert 's3.object' not in summary[0]
+
+
+class TestRedactedReportIsFatal:
+    """A report generated with the scanner's own ``--redact`` flag carries the
+    placeholder in ``Secret``, not the secret.
+
+    The redactor applies ``full_value`` as a plain substring replacement and then
+    sweeps the file for further copies, so ingesting the literal ``REDACTED``
+    rewrote every line containing that word, including Credactor's own
+    ``REDACTED_BY_CREDACTOR`` sentinel, and reported the run as
+    ``1 replaced | 0 failed``, exit 0. Both scanners take the flag, so both
+    parsers must refuse the report rather than match loosely against it.
+    """
+
+    def test_betterleaks_full_redaction_is_fatal(self, tmp_path):
+        target, _ = _make_bl_target(tmp_path)
+        report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(Secret='REDACTED')])
+        with pytest.raises(ValueError, match=r'scanner-redacted Secret values'):
+            ingest_betterleaks(str(report), str(target))
+
+    def test_gitleaks_full_redaction_is_fatal(self, tmp_path):
+        target, _ = _make_target(tmp_path)
+        report = _write_report(tmp_path, [_make_gitleaks_finding(Secret='REDACTED')])
+        with pytest.raises(ValueError, match=r'scanner-redacted Secret values'):
+            ingest_gitleaks(str(report), str(target))
+
+    def test_percentage_redaction_is_not_matched(self, tmp_path):
+        """``--redact=20`` truncates to a ``<prefix>...`` rather than replacing,
+        and that form is deliberately NOT refused. It cannot substring-match a
+        line holding the full secret, so it already fails safe as an ordinary
+        stale finding, and a '...' suffix is ordinary content."""
+        target, _ = _make_bl_target(tmp_path)
+        report = _write_betterleaks_report(
+            tmp_path, [_make_betterleaks_finding(Secret=_BL_SECRET[:10] + '...')]
+        )
+        assert len(ingest_betterleaks(str(report), str(target))) == 1
+
+    def test_elided_token_in_source_is_not_mistaken_for_a_redacted_report(self, tmp_path):
+        """Regression: matching a '...' suffix aborted runs over reports that were
+        never redacted at all. A generic rule captures an elided token in a README
+        or a test fixture verbatim, and refusing the report left the real secrets
+        sitting in the tree, which is worse than the corruption the guard is there
+        to prevent."""
+        from credactor.ingest import _read_file_lines
+
+        elided = 'xoxb-123456789012-1234567890123-AbCdEfGhIj...'
+        target, notify = _make_bl_target(tmp_path)
+        notify.write_text(f'slack_token = "{elided}"\n', encoding='utf-8')
+        _read_file_lines.cache_clear()
+        report = _write_betterleaks_report(
+            tmp_path,
+            [
+                _make_betterleaks_finding(
+                    RuleID='generic-api-key',
+                    Secret=elided,
+                    Match=f'slack_token = "{elided}"',
+                )
+            ],
+        )
+        results = ingest_betterleaks(str(report), str(target))
+        _read_file_lines.cache_clear()
+        assert len(results) == 1
+        assert results[0]['full_value'] == elided
+
+    def test_gitleaks_elided_token_is_not_mistaken_either(self, tmp_path):
+        elided = 'AKIAIOSFODNN7EXAMPLE...'
+        target, config_py = _make_target(tmp_path)
+        config_py.write_text(f'aws_key = "{elided}"\n', encoding='utf-8')
+        report = _write_report(tmp_path, [_make_gitleaks_finding(Secret=elided)])
+        assert len(ingest_gitleaks(str(report), str(target))) == 1
+
+    def test_error_names_the_flag(self, tmp_path):
+        """The message must point at the flag, not at the tree. The operator
+        cannot fix this by editing files."""
+        target, _ = _make_bl_target(tmp_path)
+        report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(Secret='REDACTED')])
+        with pytest.raises(ValueError) as exc:
+            ingest_betterleaks(str(report), str(target))
+        assert '--redact' in str(exc.value)
+        assert 'Betterleaks' in str(exc.value)
+
+    def test_ordinary_secrets_are_unaffected(self, tmp_path):
+        """The guard must not reject real values. An ellipsis anywhere but the
+        end, and the word REDACTED as a substring, both still ingest."""
+        from credactor.ingest import _read_file_lines
+
+        target, _ = _make_bl_target(tmp_path)
+        for secret in ('REDACTED_BY_CREDACTOR', 'xoxb-1...2-token', 'NOTREDACTED'):
+            notify = target / 'src' / 'notify.py'
+            notify.write_text(f'token = "{secret}"\n', encoding='utf-8')
+            _read_file_lines.cache_clear()
+            report = _write_betterleaks_report(
+                tmp_path, [_make_betterleaks_finding(Secret=secret, Match=f'token = "{secret}"')]
+            )
+            results = ingest_betterleaks(str(report), str(target))
+            assert len(results) == 1, f'Wrongly rejected Secret={secret!r}'
+            assert results[0]['full_value'] == secret
+        _read_file_lines.cache_clear()

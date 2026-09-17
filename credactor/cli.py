@@ -655,7 +655,7 @@ def _ingest_external(
     config: Config,
     allowlist: AllowList,
 ) -> list[Finding]:
-    """Merge external scanner findings (Gitleaks/TruffleHog) into *findings*.
+    """Merge external scanner findings (Gitleaks/TruffleHog/Betterleaks) into *findings*.
 
     Validates that the report file exists and that the target is a directory
     (external scanners report file paths relative to a repo root). Runs

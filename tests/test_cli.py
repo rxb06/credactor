@@ -1483,6 +1483,35 @@ class TestBetterleaksEndToEnd:
         assert _bl_types(capsys) == ['external:betterleaks:generic-api-key']
 
 
+class TestRedactedReportWritesNoBytes:
+    """A report made with the scanner's own ``--redact`` flag must abort the run
+    (exit 2) with the tree untouched.
+
+    Prevents the whole-file corruption it used to cause. ``--redact`` writes the
+    literal ``REDACTED`` into ``Secret``, the redactor applies ``full_value`` as
+    a substring replacement and then sweeps the file for further copies, and
+    every line holding that word was rewritten, including Credactor's own
+    ``REDACTED_BY_CREDACTOR`` sentinel, which is what a re-scan of an
+    already-redacted tree reports. The run then claimed ``1 replaced | 0 failed``
+    and exited 0, so nothing in the gate signalled the damage, and under
+    --no-backup the originals were gone.
+    """
+
+    def test_fix_all_aborts_and_leaves_the_tree_byte_identical(self, tmp_dir):
+        repo = _make_bl_repo(tmp_dir)
+        source = _bl_write_source(repo, 'src/config.py', 'REDACTED_BY_CREDACTOR')
+        before = Path(source).read_bytes()
+        report = _write_bl_report(
+            tmp_dir,
+            [_bl_finding(Secret='REDACTED', Match='api_key = "REDACTED"')],
+        )
+        with pytest.raises(SystemExit) as exc:
+            main(['--from-betterleaks', report, '--fix-all', '--yes', '--no-backup', repo])
+        assert exc.value.code == 2
+        assert Path(source).read_bytes() == before
+        assert not list(Path(repo).rglob('*.bak'))
+
+
 class TestBetterleaksCombinedWithOtherSources:
     """All three ingest sources may be named in one invocation; each contributes
     its own findings under its own type string.
