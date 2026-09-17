@@ -23,7 +23,7 @@ If you use [pre-commit](https://pre-commit.com), add this to `.pre-commit-config
 ```yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.1  # pin to a release tag
+    rev: v2.7.2  # pin to a release tag
     hooks:
       - id: credactor
 ```
@@ -172,11 +172,14 @@ TruffleHog emits newline-delimited JSON:
 ```
 
 > Generate the Betterleaks report **without** its `--redact` flag. `--redact`
-> rewrites `Secret` in the report itself (the literal `REDACTED` at its
-> default, a truncation at a percentage), so Credactor has no value left to
-> match on the line: the finding is counted as failed with the stale-report
-> wording instead of being redacted. It fails safe, no wrong bytes are
-> written, but the gate then reports a problem that is not there.
+> rewrites `Secret` in the report itself, so the report no longer carries the
+> value Credactor would match on the line. At its default the value becomes the
+> literal `REDACTED`, and such a report is refused outright: the run is fatal
+> (exit 2), the message names the flag rather than the tree, and no bytes are
+> written. At a percentage the value is truncated instead, which fails as an
+> ordinary stale finding (exit 1) with nothing written. Either way, regenerate
+> the report without the flag. Gitleaks' `--redact` is treated on the same
+> terms.
 
 `--from-betterleaks` carries the same rules as the other two sources: a directory target (a file target exits 2), no `--scan-history`, the report path resolved against the working directory, and finding paths resolved against the target. Pin Betterleaks to the `dir` or `git` subcommands: findings from `stdin`, `github`, `gitlab`, `huggingface` and `s3` have no local file to redact, so they are skipped as unsupported sources with a run-level warning. A clean Betterleaks scan writes a literal `null` report rather than an empty array; Credactor reads that as zero findings, so a clean upstream scan passes the gate rather than failing it as a malformed report.
 

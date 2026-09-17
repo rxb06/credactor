@@ -116,6 +116,12 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
+### v2.7.2 (ingestion correctness)
+
+- **A scanner-redacted report cannot drive a redaction**: Gitleaks and Betterleaks both take a `--redact` flag that rewrites `Secret` inside the report, and at its default the value becomes the literal `REDACTED`. That placeholder was ingested as the value to redact and applied as a plain substring replacement, so every line holding the word was rewritten, Credactor's own `REDACTED_BY_CREDACTOR` sentinel included, and the run reported success and exited 0. Both parsers now refuse such a report: fatal exit 2, no bytes written. The truncated form the flag produces at a percentage is left alone, because it cannot match a line holding the full secret and a trailing `...` is ordinary content that a generic rule captures from an elided token in a README or a test fixture.
+- **Ingested path fields are type-checked before they are believed**: a Betterleaks path field holding `0`, `false`, `[]`, `{}` or `null` was charged to the unsupported-source counter rather than counted as a malformed record, which told the operator a source type could not be ingested when the report was simply corrupt. The fields are now taken one at a time instead of through an `or` chain, which had skipped over such a value in every position but the last.
+- **Symlink-first precedence holds under schema drift**: the path fields are ordered by role rather than by field generation, so a report that carries the new `Attributes['path']` while exposing the symlink only through the deprecated `SymlinkFile` mirror no longer dereferences to the real file. A real file outside the target root is dropped by the containment guard, which would have lost the redaction in silence.
+
 ### v2.7.1 (Betterleaks ingestion)
 
 - **Un-redactable findings are accounted separately from malformed ones**: Betterleaks scans `stdin`, GitHub, GitLab, Hugging Face and S3, and those findings have no local file to rewrite. They are counted and summarised as unsupported sources rather than invalid records, so a wholly un-redactable report is never reported as a corrupt one, and never exits 0 in silence. The gate is the absence of a path, not the `resource` label: a `stdin` finding carries `resource: fs.content` with an empty path, so a label allowlist would have admitted it.

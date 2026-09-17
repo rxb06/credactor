@@ -73,7 +73,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.1   # pin to the latest release tag
+    rev: v2.7.2   # pin to the latest release tag
     hooks:
       - id: credactor
 ```

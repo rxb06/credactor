@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects Credactor 2.7.1 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
+Reflects Credactor 2.7.2 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -818,11 +818,19 @@ from, and **regenerate it after redacting or after any tree change**:
   (Windows backslash paths are literal filename characters on Linux and miss
   gracefully).
 - Generate Betterleaks reports **without its `--redact` flag**. That flag
-  rewrites `Secret` inside the report itself to a truncated form, so Credactor
-  looks for a value the line does not contain and the finding fails exactly as
-  a stale one does (warned, counted unresolved, exit 1). It fails safe, no
-  wrong bytes are written, but the message points at the tree when the cause
-  is the flag.
+  rewrites `Secret` inside the report itself, and the two forms are handled
+  differently. At its default the value becomes the literal `REDACTED`, and a
+  report holding that is refused outright: the run is fatal (**exit 2**), the
+  message names the flag rather than the tree, and no bytes are written. That
+  refusal matters, because `REDACTED` is an ordinary substring that a line in an
+  already-redacted tree can contain, so matching on it would rewrite the wrong
+  bytes. At a percentage (`--redact=20`) the value becomes a truncated
+  `<prefix>...`, which cannot match a line holding the full secret and so fails
+  as an ordinary stale finding (warned, counted unresolved, **exit 1**), with
+  nothing written. That second form is left alone on purpose: a trailing `...`
+  is ordinary content, and a generic rule will capture an elided token in a
+  README or a test fixture verbatim. Gitleaks' `--redact` is treated on the same
+  terms.
 
 ### Suppression layers and ingested findings
 
@@ -856,10 +864,13 @@ ingested duplicate, that refusal applies (warned, exit 1) instead of the
 dereferenced redaction. In Gitleaks reports a non-empty `SymlinkFile` field
 takes precedence over `File` unconditionally.
 
-In Betterleaks reports the source path is read from `Attributes` first,
-`fs.symlink` ahead of `path`, and only then from the deprecated `SymlinkFile`
-and `File` mirrors, so the same symlink-first precedence holds and a report
-from a future version that drops the deprecated fields still ingests.
+In Betterleaks reports the source path is read symlink-first across both field
+generations: `Attributes['fs.symlink']`, then the deprecated `SymlinkFile`,
+then `Attributes['path']`, then the deprecated `File`. Ordering by role rather
+than by generation keeps the symlink-first precedence intact even for a report
+that carries the new `path` field while exposing the symlink only through the
+deprecated mirror, and a report from a future version that drops the deprecated
+fields still ingests.
 
 ### Multi-line findings
 

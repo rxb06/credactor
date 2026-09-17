@@ -10,6 +10,49 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [2.7.2] - 2026-09-17
+
+### Fixed
+
+- **A scanner-redacted report no longer corrupts source files.** Gitleaks and
+  Betterleaks both take a `--redact` flag that rewrites `Secret` **inside the
+  report**, and at its default 100% the value becomes the literal `REDACTED`.
+  Credactor ingested that placeholder as the value to redact and applied it as a
+  plain substring replacement plus the value-global stray sweep, so every line
+  containing the word `REDACTED` was rewritten, Credactor's own
+  `REDACTED_BY_CREDACTOR` sentinel included, and the run reported
+  `1 replaced | 0 failed` and exited 0. Under `--no-backup` the originals were
+  unrecoverable. Both parsers now refuse such a report outright: fatal exit 2,
+  naming the flag, with no bytes written. The 2.7.1 notes and the docs claimed
+  this case already failed safe; it did not. The percentage form
+  (`--redact=20`, a `<prefix>...` truncation) is left alone on purpose: it
+  cannot match a line holding the full secret, so it already failed safe as an
+  ordinary stale finding, and a trailing `...` is ordinary content that a
+  generic rule captures verbatim from an elided token in a README or a test
+  fixture.
+- **Betterleaks: a corrupt file path is counted as an invalid record again.**
+  The guard tested truthiness before type, so a path field of `0`, `false`,
+  `[]`, `{}` or `null` skipped the malformed-record branch and was charged to
+  the unsupported-source counter instead, telling the operator a source type
+  could not be ingested when the report was simply corrupt. The path fields are
+  also selected one at a time rather than through an `or` chain, which skipped
+  over such a value in any position but the last. An absent field and an empty
+  string still mean "not set", so a genuinely pathless finding (stdin, S3) is
+  still an unsupported source.
+- **Betterleaks: symlink-first path precedence restored under schema drift.**
+  The path chain read `Attributes` straight through, putting the new-format
+  *real* path ahead of the deprecated *symlink* path. It is now ordered by role
+  (`Attributes['fs.symlink']`, `SymlinkFile`, `Attributes['path']`, `File`), so
+  a report that carries the new `path` field while exposing the symlink only
+  through the deprecated mirror no longer dereferences to the real file, which
+  the containment guard could then drop as a silent missed redaction.
+- **TruffleHog: its unsupported-source summary counts only its own skips.** The
+  summary read the shared stats counter absolutely rather than as a delta, which
+  was correct only while TruffleHog was the sole parser incrementing it.
+  `ingest_betterleaks` is a second one, so a library caller sharing a stats dict
+  across both saw Betterleaks' count and source labels reported as TruffleHog's.
+  The CLI's fixed dispatch order was unaffected.
+
 ## [2.7.1] - 2026-09-04
 
 Released as 2.7.1. The `v2.7.0` tag was consumed by a release published against
@@ -464,6 +507,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[2.7.2]: https://github.com/rxb06/credactor/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.1
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
