@@ -12,6 +12,15 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ## [2.7.2] - 2026-09-17
 
+This is the first release published to PyPI since 2.6.0. Neither 2.7.0 nor
+2.7.1 reached it. The `v2.7.0` tag was consumed by a release against the wrong
+commit and cannot be reused, as the 2.7.1 entry records, and 2.7.1 was never
+tagged at all. An upgrade from 2.6.0 therefore also picks up the Betterleaks
+ingestion work recorded there: the `--from-betterleaks` flag, the matching
+`[ingest] from_betterleaks` config key, severity driven by Betterleaks'
+validation verdict, and separate accounting for findings from sources that have
+no local file to rewrite. See the 2.7.1 entry for the full list.
+
 ### Fixed
 
 - **A scanner-redacted report no longer corrupts source files.** Gitleaks and
@@ -507,8 +516,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
-[2.7.2]: https://github.com/rxb06/credactor/compare/v2.7.1...v2.7.2
-[2.7.1]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.1
+[2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rxb06/credactor/compare/v2.3.3...v2.4.0
