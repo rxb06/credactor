@@ -31,7 +31,7 @@ db_password = os.environ["DB_PASSWORD"]
 - **Redaction, not just detection.** Most scanners stop at the finding. Credactor replaces the secret in place: a loud `REDACTED_BY_CREDACTOR` sentinel that fails at runtime by default, or a language-aware environment-variable reference (Python, JavaScript/TypeScript, Go, Java/Kotlin, Ruby, PHP, and shell) such as `os.environ["KEY"]`. The replacement is valid code. If the file does not already include the matching import (for example `import os`), add it.
 - **Safe by default.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup cannot be written, Credactor skips the file rather than rewrite it blind, and a crash mid-write leaves the original intact.
 - **Zero runtime dependencies.** Pure Python 3.11+ standard library, plus an optional extra for non-UTF-8 encodings.
-- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook (beta), and ingestion of Gitleaks, TruffleHog or Betterleaks reports. Detect with the scanner you already run, remediate with Credactor.
+- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook, and ingestion of Gitleaks, TruffleHog or Betterleaks reports. Detect with the scanner you already run, remediate with Credactor.
 
 ## Install
 
@@ -65,18 +65,43 @@ credactor --ci .                      # read-only gate: exit 1 on findings
 credactor --replace-with env .        # redact to env-var references instead of the sentinel
 ```
 
-### Pre-commit hook (beta)
+### Pre-commit hook
 
-> Hook integration is in beta. Run `credactor --dry-run .` manually before relying on it alone.
+> The hook gates staged content only, so a secret that is already committed is not
+> re-flagged. Use `credactor --scan-history .` to check what is already in the repo.
 
 ```yaml
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.2   # pin to the latest release tag
+    rev: v2.7.3   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
+
+### GitHub Action
+
+```yaml
+- uses: rxb06/credactor@v2.7.3
+```
+
+The action always passes `--ci`, so it reports and gates but never rewrites the
+checkout. Findings fail the step; set `fail-on-findings: false` to report
+without gating. An error fails the step either way.
+
+Upload to Code Scanning instead of failing on findings:
+
+```yaml
+- uses: rxb06/credactor@v2.7.3
+  with:
+    format: sarif
+    upload-sarif: true
+    fail-on-findings: false
+```
+
+The job needs `permissions: security-events: write` for the upload. See the
+[CI integration guide](docs/ci_integration.md#github-action) for every input,
+including ingestion of Gitleaks, TruffleHog and Betterleaks reports.
 
 ## Detection
 

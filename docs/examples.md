@@ -178,11 +178,14 @@ Strict mode, which also fails if any files could not be scanned:
   run: python -m credactor --ci --fail-on-error .
 ```
 
-Upload SARIF to Code Scanning (includes line and column annotations):
+Upload SARIF to Code Scanning (includes line and column annotations). Leave
+`--fail-on-error` off here: when it fires the run exits 2 before the report is
+written, and the upload step cannot parse the empty file. Gate on it in a
+separate step if you need it.
 
 ```yaml
 - name: Credential scan
-  run: python -m credactor --ci --fail-on-error --format sarif . > results.sarif
+  run: python -m credactor --ci --format sarif . > results.sarif
   continue-on-error: true
 
 - name: Upload SARIF
