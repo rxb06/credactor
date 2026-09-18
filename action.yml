@@ -22,7 +22,7 @@ inputs:
   version:
     description: 'Credactor version to install from PyPI, or "latest".'
     required: false
-    default: '2.7.3'
+    default: '2.7.4'
   python-version:
     description: 'Python version used to run Credactor. Requires 3.11 or newer.'
     required: false
