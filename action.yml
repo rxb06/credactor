@@ -1,0 +1,329 @@
+name: 'Credactor - Secrets Redactor'
+description: 'Read-only credential scan and CI gate. SARIF output, plus Gitleaks / TruffleHog / Betterleaks report ingestion. Never rewrites your checkout.'
+author: 'Rx'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  path:
+    description: >-
+      Target to scan, relative to working-directory. Default ".".
+      Must be a DIRECTORY when any from-* ingestion input is set.
+    required: false
+    default: '.'
+  working-directory:
+    description: >-
+      Directory to run from. Both the target and the from-* report paths
+      resolve against this, so run the external scanner from the same place.
+    required: false
+    default: '.'
+  version:
+    description: 'Credactor version to install from PyPI, or "latest".'
+    required: false
+    default: '2.7.3'
+  python-version:
+    description: 'Python version used to run Credactor. Requires 3.11 or newer.'
+    required: false
+    default: '3.11'
+  format:
+    description: 'Output format: text, json or sarif.'
+    required: false
+    default: 'text'
+  output-file:
+    description: >-
+      Where to write a json/sarif report. Defaults to credactor-results.<ext>.
+      Ignored for text format, which goes to the job log.
+    required: false
+    default: ''
+  fail-on-findings:
+    description: >-
+      Fail the step when credentials are found (Credactor exit 1).
+      Set false to report without gating, e.g. when Code Scanning is the gate.
+      Errors (exit 2) always fail regardless of this input.
+    required: false
+    default: 'true'
+  fail-on-error:
+    description: >-
+      Pass --fail-on-error, so unreadable files or undescendable directories
+      exit 2 instead of warning. Do not combine with format sarif: exit 2
+      writes an empty report that the upload step cannot parse.
+    required: false
+    default: 'false'
+  scan-json:
+    description: 'Pass --scan-json to also scan .json files (off by default upstream).'
+    required: false
+    default: 'false'
+  scan-history:
+    description: >-
+      Pass --scan-history to scan up to the 100 most recent file-changing
+      commits. Requires actions/checkout with fetch-depth 0, and cannot be
+      combined with any from-* ingestion input.
+    required: false
+    default: 'false'
+  config:
+    description: >-
+      Explicit .credactor.toml path (--config). Under --ci a config outside
+      the project root is refused and the run is fatal.
+    required: false
+    default: ''
+  verbose:
+    description: 'Pass --verbose to log scan and suppression activity on stderr.'
+    required: false
+    default: 'false'
+  from-gitleaks:
+    description: >-
+      Path to a Gitleaks JSON report to ingest, resolved against
+      working-directory. Generate it without the Gitleaks --redact flag.
+    required: false
+    default: ''
+  from-trufflehog:
+    description: >-
+      Path to a TruffleHog NDJSON report to ingest, resolved against
+      working-directory. Pin TruffleHog to the filesystem or git source and
+      pass --no-update in pipelines.
+    required: false
+    default: ''
+  from-betterleaks:
+    description: >-
+      Path to a Betterleaks JSON report to ingest, resolved against
+      working-directory. Use the dir or git subcommand, and generate the
+      report without the Betterleaks --redact flag.
+    required: false
+    default: ''
+  upload-sarif:
+    description: >-
+      Upload the SARIF report to GitHub Code Scanning. Requires format sarif
+      and a job with security-events: write.
+    required: false
+    default: 'false'
+  extra-args:
+    description: >-
+      Additional raw flags appended to the command, split on whitespace.
+      Escape hatch for flags this action does not model.
+    required: false
+    default: ''
+
+outputs:
+  exit-code:
+    description: 'Credactor exit code: 0 clean, 1 findings, 2 error.'
+    value: ${{ steps.scan.outputs.exit-code }}
+  findings-count:
+    description: 'Number of findings, when format is json or sarif. Empty otherwise.'
+    value: ${{ steps.scan.outputs.findings-count }}
+  report-file:
+    description: 'Absolute path to the json/sarif report, when one was written.'
+    value: ${{ steps.scan.outputs.report-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Credactor
+      shell: bash
+      env:
+        CREDACTOR_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        PYBIN="$(command -v python || command -v python3)"
+        if [ "$CREDACTOR_VERSION" = "latest" ]; then
+          "$PYBIN" -m pip install --disable-pip-version-check --quiet credactor
+        else
+          "$PYBIN" -m pip install --disable-pip-version-check --quiet "credactor==${CREDACTOR_VERSION}"
+        fi
+        credactor --version
+
+    - name: Run Credactor
+      id: scan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARGET: ${{ inputs.path }}
+        FORMAT: ${{ inputs.format }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        SCAN_JSON: ${{ inputs.scan-json }}
+        SCAN_HISTORY: ${{ inputs.scan-history }}
+        CONFIG_PATH: ${{ inputs.config }}
+        VERBOSE: ${{ inputs.verbose }}
+        FROM_GITLEAKS: ${{ inputs.from-gitleaks }}
+        FROM_TRUFFLEHOG: ${{ inputs.from-trufflehog }}
+        FROM_BETTERLEAKS: ${{ inputs.from-betterleaks }}
+        EXTRA_ARGS: ${{ inputs.extra-args }}
+      run: |
+        set -uo pipefail
+
+        case "$FORMAT" in
+          text|json|sarif) ;;
+          *)
+            echo "::error::format must be text, json or sarif (got '$FORMAT')"
+            exit 2
+            ;;
+        esac
+
+        # --- Preflight: mirror Credactor's documented exit-2 contracts, but
+        # --- fail with a message that names the workflow input at fault.
+        INGEST=""
+        for report in "$FROM_GITLEAKS" "$FROM_TRUFFLEHOG" "$FROM_BETTERLEAKS"; do
+          if [ -n "$report" ]; then
+            INGEST="yes"
+            if [ ! -f "$report" ]; then
+              echo "::error::Ingestion report not found: '$report' (resolved against '$PWD'). Did the scanner step run, and did it write the report to this path?"
+              exit 2
+            fi
+          fi
+        done
+
+        if [ -n "$INGEST" ] && [ "$SCAN_HISTORY" = "true" ]; then
+          echo "::error::scan-history cannot be combined with any from-* ingestion input. External reports reference on-disk files; history scanning references committed content."
+          exit 2
+        fi
+
+        if [ -n "$INGEST" ] && [ ! -d "$TARGET" ]; then
+          echo "::error::Ingestion requires a directory target so report file paths resolve. 'path' is '$TARGET'."
+          exit 2
+        fi
+
+        if [ -n "$INGEST" ]; then
+          echo "::notice::Run the external scanner and Credactor against the same root. A report generated at the repository root but ingested against a subdirectory makes its findings miss, and the run can still exit 0."
+        fi
+
+        if [ "$FAIL_ON_ERROR" = "true" ] && [ "$FORMAT" = "sarif" ]; then
+          echo "::warning::fail-on-error with sarif output: an unreadable file exits 2 and writes an empty report, which the SARIF upload cannot parse. Gate on fail-on-error in a separate step."
+        fi
+
+        # --- Build the command. --ci is always passed: it forces read-only
+        # --- (dry-run) and blocks --fix-all, so this action can never rewrite
+        # --- the checkout.
+        args=( --ci --format "$FORMAT" )
+
+        if [ "$SCAN_JSON" = "true" ]; then args+=( --scan-json ); fi
+        if [ "$SCAN_HISTORY" = "true" ]; then args+=( --scan-history ); fi
+        if [ "$FAIL_ON_ERROR" = "true" ]; then args+=( --fail-on-error ); fi
+        if [ "$VERBOSE" = "true" ]; then args+=( --verbose ); fi
+        if [ -n "$CONFIG_PATH" ]; then args+=( --config "$CONFIG_PATH" ); fi
+        if [ -n "$FROM_GITLEAKS" ]; then args+=( --from-gitleaks "$FROM_GITLEAKS" ); fi
+        if [ -n "$FROM_TRUFFLEHOG" ]; then args+=( --from-trufflehog "$FROM_TRUFFLEHOG" ); fi
+        if [ -n "$FROM_BETTERLEAKS" ]; then args+=( --from-betterleaks "$FROM_BETTERLEAKS" ); fi
+        if [ -n "$EXTRA_ARGS" ]; then
+          read -ra extra <<< "$EXTRA_ARGS"
+          args+=( "${extra[@]}" )
+        fi
+        args+=( "$TARGET" )
+
+        case "$FORMAT" in
+          json)  OUT="${OUTPUT_FILE:-credactor-results.json}"  ;;
+          sarif) OUT="${OUTPUT_FILE:-credactor-results.sarif}" ;;
+          *)
+            # Text belongs in the job log, where somebody will actually read it.
+            # Redirecting it to a file empties the log and helps nobody.
+            if [ -n "$OUTPUT_FILE" ]; then
+              echo "::warning::output-file is ignored for text format; the report stays in the job log. Use format json or sarif to write a file."
+            fi
+            OUT=""
+            ;;
+        esac
+
+        # A redirect into a directory that does not exist fails before Credactor
+        # ever runs, and leaves $? at 1, which is indistinguishable from
+        # "credentials found". Create the directory up front and fail loudly if
+        # that is not possible, rather than reporting a phantom finding.
+        if [ -n "$OUT" ]; then
+          outdir="$(dirname "$OUT")"
+          if ! mkdir -p "$outdir" 2>/dev/null; then
+            echo "::error::Cannot create directory '$outdir' for output-file '$OUT'."
+            exit 2
+          fi
+          if ! : > "$OUT" 2>/dev/null; then
+            echo "::error::Cannot write output-file '$OUT'."
+            exit 2
+          fi
+        fi
+
+        echo "Running: credactor ${args[*]}"
+
+        if [ -n "$OUT" ]; then
+          credactor "${args[@]}" > "$OUT"
+          code=$?
+        else
+          credactor "${args[@]}"
+          code=$?
+        fi
+
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        # --- Findings count and report path, for downstream steps.
+        PYBIN="$(command -v python || command -v python3 || true)"
+        count=""
+        if [ -n "$OUT" ] && [ -s "$OUT" ]; then
+          abs="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+          echo "report-file=$abs" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "$OUT" ] && [ -s "$OUT" ] && [ -n "$PYBIN" ]; then
+          count="$("$PYBIN" -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$OUT" "$FORMAT" 2>/dev/null)" || count=""
+        fi
+        echo "findings-count=$count" >> "$GITHUB_OUTPUT"
+
+        # --- Job summary.
+        {
+          echo "### Credactor"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Target | \`$TARGET\` |"
+          echo "| Exit code | \`$code\` |"
+          if [ -n "$count" ]; then echo "| Findings | \`$count\` |"; fi
+          if [ -n "$INGEST" ]; then echo "| Ingestion | enabled |"; fi
+          echo ""
+          case "$code" in
+            0) echo "No unresolved findings." ;;
+            1) echo "Credentials found. Review the report, then rotate anything real." ;;
+            2) echo "Credactor exited with an error. This is a configuration or input fault, not a findings result." ;;
+            *) echo "Unexpected exit code." ;;
+          esac
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        exit 0
+
+    - name: Upload SARIF to Code Scanning
+      if: inputs.upload-sarif == 'true' && inputs.format == 'sarif' && steps.scan.outputs.report-file != ''
+      uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+      with:
+        sarif_file: ${{ steps.scan.outputs.report-file }}
+
+    - name: Apply gate
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+        FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+        COUNT: ${{ steps.scan.outputs.findings-count }}
+      run: |
+        set -uo pipefail
+
+        if [ "$CODE" = "0" ]; then
+          echo "Credactor found no unresolved credentials."
+          exit 0
+        fi
+
+        # Only 1 means findings. Anything else is an error and always fails:
+        # a gate that silently passes on a broken config is worse than no gate,
+        # and one that calls a crash "credentials found" sends the reader
+        # hunting for a secret that was never there. 127 is the common case,
+        # when the install step left no credactor on PATH.
+        if [ "$CODE" != "1" ]; then
+          echo "::error::Credactor exited $CODE. That is an error rather than a findings result, so the gate did not run to completion."
+          exit 2
+        fi
+
+        if [ "$FAIL_ON_FINDINGS" = "true" ]; then
+          echo "::error::Credactor found credentials${COUNT:+ ($COUNT finding(s))}. Rotate anything real; suppress false positives via .credactorignore."
+          exit 1
+        fi
+
+        echo "::warning::Credactor found credentials${COUNT:+ ($COUNT finding(s))}, but fail-on-findings is false, so the step is not failing."
+        exit 0
