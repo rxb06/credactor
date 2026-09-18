@@ -10,7 +10,14 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [2.7.3] - 2026-09-18
+## [2.7.4] - 2026-09-18
+
+Released as 2.7.4. The `v2.7.3` tag was consumed by a release published before
+its merge commit reached `main`, so the tag was cut from the previous release's
+code and, under GitHub's immutable releases, that tag name cannot be reused. The
+publish workflow's version check caught the mismatch and refused to upload, so
+2.7.3 was never published to PyPI and no artifact was ever built under it. There
+is no functional difference between the two numbers.
 
 ### Added
 
@@ -557,7 +564,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
-[2.7.3]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.3
+[2.7.4]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.4
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0

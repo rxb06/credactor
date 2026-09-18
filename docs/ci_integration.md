@@ -25,7 +25,7 @@ If you use [pre-commit](https://pre-commit.com), add this to `.pre-commit-config
 ```yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.3  # pin to a release tag
+    rev: v2.7.4  # pin to a release tag
     hooks:
       - id: credactor
 ```
@@ -68,7 +68,7 @@ The published action wraps the steps below, so a workflow does not have to write
 its own install and argument plumbing:
 
 ```yaml
-- uses: rxb06/credactor@v2.7.3
+- uses: rxb06/credactor@v2.7.4
 ```
 
 It is a composite action: it installs Credactor from PyPI, runs it, writes a job
@@ -84,7 +84,7 @@ permissions:
 
 steps:
   - uses: actions/checkout@v7
-  - uses: rxb06/credactor@v2.7.3
+  - uses: rxb06/credactor@v2.7.4
     with:
       format: sarif
       upload-sarif: true
@@ -98,7 +98,7 @@ Gating on a combined native and Gitleaks result:
   run: gitleaks dir . -f json -r gitleaks.json
   continue-on-error: true
 
-- uses: rxb06/credactor@v2.7.3
+- uses: rxb06/credactor@v2.7.4
   with:
     from-gitleaks: gitleaks.json
 ```
