@@ -42,6 +42,17 @@ pip install credactor
 Requires Python 3.11+. No other dependencies. Runs on Linux, macOS, and
 Windows (CI-tested on Linux and Windows).
 
+On macOS and Linux you can install it with Homebrew instead:
+
+```bash
+brew install rxb06/tap/credactor
+```
+
+The formula installs into its own virtualenv and includes the optional
+`[encoding]` extra, so a Homebrew install also detects secrets in non-UTF-8
+files. A plain `pip install credactor` leaves that extra out; add it with
+`pip install 'credactor[encoding]'` if you want the same coverage.
+
 From source:
 
 ```bash
@@ -74,7 +85,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.3   # pin to the latest release tag
+    rev: v2.7.4   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
@@ -82,7 +93,7 @@ repos:
 ### GitHub Action
 
 ```yaml
-- uses: rxb06/credactor@v2.7.3
+- uses: rxb06/credactor@v2.7.4
 ```
 
 The action always passes `--ci`, so it reports and gates but never rewrites the
@@ -92,7 +103,7 @@ without gating. An error fails the step either way.
 Upload to Code Scanning instead of failing on findings:
 
 ```yaml
-- uses: rxb06/credactor@v2.7.3
+- uses: rxb06/credactor@v2.7.4
   with:
     format: sarif
     upload-sarif: true
