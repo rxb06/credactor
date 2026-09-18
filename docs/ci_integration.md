@@ -12,9 +12,11 @@ This gives you full control over findings before they enter git history. Review 
 
 Pre-commit hooks and CI pipelines automate this further, but a manual scan is the most reliable first step.
 
-## Pre-commit Hook (Beta)
+## Pre-commit Hook
 
-> Hook-based scanning is in beta. Run `credactor --dry-run .` manually before relying on hooks exclusively.
+> The hook reads the staged index blob, so it gates what you are about to commit
+> and nothing else. A secret already in history is not re-flagged;
+> `credactor --scan-history .` finds those.
 
 ### Pre-commit Framework
 
@@ -23,7 +25,7 @@ If you use [pre-commit](https://pre-commit.com), add this to `.pre-commit-config
 ```yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.2  # pin to a release tag
+    rev: v2.7.3  # pin to a release tag
     hooks:
       - id: credactor
 ```
@@ -60,7 +62,75 @@ chmod +x .git/hooks/pre-commit
 
 `--ci` exits 1 on findings, blocking the commit. `--staged` scans only staged files and is **read-only**: it forces dry-run, so no files are modified or backed up even if `--fix-all` is also passed.
 
+## GitHub Action
+
+The published action wraps the steps below, so a workflow does not have to write
+its own install and argument plumbing:
+
+```yaml
+- uses: rxb06/credactor@v2.7.3
+```
+
+It is a composite action: it installs Credactor from PyPI, runs it, writes a job
+summary, and applies the gate. It always passes `--ci`, so it forces read-only
+and blocks `--fix-all`, and cannot rewrite the checkout.
+
+SARIF upload to Code Scanning, reporting rather than gating:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@v7
+  - uses: rxb06/credactor@v2.7.3
+    with:
+      format: sarif
+      upload-sarif: true
+      fail-on-findings: false
+```
+
+Gating on a combined native and Gitleaks result:
+
+```yaml
+- name: Gitleaks scan
+  run: gitleaks dir . -f json -r gitleaks.json
+  continue-on-error: true
+
+- uses: rxb06/credactor@v2.7.3
+  with:
+    from-gitleaks: gitleaks.json
+```
+
+| Input | Default | Purpose |
+|---|---|---|
+| `path` | `.` | Target to scan. Must be a directory when ingesting. |
+| `working-directory` | `.` | Directory to run from; target and report paths resolve against it. |
+| `version` | current release | Credactor version to install, or `latest`. |
+| `python-version` | `3.11` | Python used to run Credactor. |
+| `format` | `text` | `text`, `json` or `sarif`. |
+| `output-file` | `credactor-results.<ext>` | Where to write a json/sarif report. Ignored for text. |
+| `fail-on-findings` | `true` | Fail the step on findings. Errors fail regardless. |
+| `fail-on-error` | `false` | Pass `--fail-on-error`. Do not combine with `format: sarif`. |
+| `scan-json` | `false` | Pass `--scan-json`. |
+| `scan-history` | `false` | Pass `--scan-history`. Needs `fetch-depth: 0`, excludes ingestion. |
+| `config` | none | Explicit `.credactor.toml` path. |
+| `verbose` | `false` | Pass `--verbose`. |
+| `from-gitleaks` / `from-trufflehog` / `from-betterleaks` | none | Report to ingest. |
+| `upload-sarif` | `false` | Upload to Code Scanning. Needs `format: sarif`. |
+| `extra-args` | none | Raw flags the action does not model. |
+
+Outputs: `exit-code` (0 clean, 1 findings, 2 error), `findings-count` (json and
+sarif only) and `report-file` (absolute path, when one was written).
+
+Only exit 1 counts as a findings result. Any other non-zero code, including a
+failed install, fails the step as an error rather than reporting a credential
+that was never found.
+
 ## CI Pipeline
+
+If you would rather call the CLI directly, or you are not on GitHub Actions:
 
 ### GitHub Actions
 
@@ -114,6 +184,11 @@ credential-scan:
 > GitLab CodeClimate/CodeQuality format, so it is kept as a plain downloadable
 > artifact (`paths:`), not a `reports: codequality:` widget. To drive the Code
 > Quality widget you would first convert each finding to a CodeClimate entry.
+>
+> `--fail-on-error` is safe to keep here because nothing parses the artifact,
+> but note that when it fires the run exits 2 before the report is written, so
+> the artifact is empty on exactly the runs you would want it for. Drop the flag
+> if you would rather have the report than the stricter gate.
 
 ### Generic
 

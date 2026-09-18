@@ -10,6 +10,47 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [2.7.3] - 2026-09-18
+
+### Added
+
+- **A GitHub Action**, published from `action.yml` at the repository root, so a
+  workflow can run the gate without writing its own install and argument
+  plumbing. It is a composite action that installs Credactor from PyPI and runs
+  it, with inputs for the target, output format, ingestion reports, and the
+  usual flags, and outputs for the exit code, the findings count and the report
+  path. It always passes `--ci`, so it forces read-only and blocks `--fix-all`
+  and can never rewrite the checkout. Optional SARIF upload to Code Scanning is
+  built in. Errors fail the step regardless of `fail-on-findings`: only exit 1
+  counts as a findings result, and anything else is reported as a fault rather
+  than as a credential.
+
+### Changed
+
+- **Pre-commit hook support is out of beta.** Both paths were exercised against
+  the published 2.7.2 tag before the label came off: the pre-commit framework
+  hook (built from `rev: v2.7.2`, which installs Credactor into its own hook
+  environment) and the standalone `hooks/pre-commit`. Verified in a real
+  repository that a staged secret blocks the commit and a clean stage does not,
+  that unstaging the secret unblocks it, that `pre-commit run --all-files` and
+  `pre-commit autoupdate` behave, that a commit staging only binary files skips
+  the hook per `types: [text]`, and that a secret in a `.txt` file is caught.
+  The BETA labels are removed from the README and the CI guide, replaced by the
+  one limitation that is permanent rather than provisional: the hook reads the
+  staged index blob, so a secret already in history is not re-flagged and
+  `--scan-history` is the tool for that.
+
+### Fixed
+
+- **Documentation: the SARIF recipe in `docs/examples.md` was wrong.** It passed
+  `--fail-on-error` alongside `--format sarif`, which `docs/ci_integration.md`
+  warns against in the same breath. Reproduced: with an unreadable directory
+  present the run exits 2 before the report is written, leaving a zero-byte
+  `results.sarif` that the upload step cannot parse. The flag is dropped from
+  that recipe and the reason is stated inline. The GitLab JSON example keeps the
+  flag, which is safe because nothing parses the artifact, but now notes that
+  the artifact is empty on exactly the runs you would want it for.
+
 ## [2.7.2] - 2026-09-17
 
 This is the first release published to PyPI since 2.6.0. Neither 2.7.0 nor
@@ -516,6 +557,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[2.7.3]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/rxb06/credactor/compare/v2.4.0...v2.5.0
