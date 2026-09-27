@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import sys
+import tempfile
 
 import pytest
 
@@ -17,6 +18,7 @@ from credactor.redactor import (
     fix_all,
     interactive_review,
 )
+from credactor.utils import preview
 
 # Construct test credentials via concatenation so the tool doesn't self-redact
 _AWS_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -1468,3 +1470,126 @@ class TestGuardPins:
         assert unresolved == 2
         with open(path, 'rb') as fh:
             assert fh.read() == before
+
+    @pytest.mark.parametrize('publisher', ['batch', 'final_sweep'])
+    def test_publication_is_an_atomic_rename(self, make_file, monkeypatch, publisher):
+        # PA-02: both write paths publish by renaming a complete temp file, made
+        # in the target's own directory, over the target. At that moment the
+        # target still holds its original bytes and the temp file the whole new
+        # content, so a run that dies at any point leaves the old file or the
+        # new one, never a partial mix. (That is process death, not power loss:
+        # nothing is fsynced.) A copy-based or in-place publish never makes this
+        # rename.
+        path = make_file('pub.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        real_replace = os.replace
+        seen = []
+
+        def spy(src, dst, *args, **kwargs):
+            if os.path.abspath(dst) == os.path.abspath(path):
+                with open(dst, 'rb') as fh:
+                    target_now = fh.read()
+                with open(src, 'rb') as fh:
+                    temp_now = fh.read()
+                seen.append((os.path.dirname(os.path.abspath(src)), target_now, temp_now))
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'replace', spy)
+        finding = _mk_finding(path, _AWS_KEY)
+        if publisher == 'batch':
+            replaced, failed = batch_replace_in_file(path, [finding], Config(no_backup=True))
+            assert (replaced, failed) == (1, 0)
+        else:
+            _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        with open(path, 'rb') as fh:
+            final = fh.read()
+        assert _AWS_KEY.encode() not in final
+        assert len(seen) == 1
+        temp_dir, target_at_publish, temp_at_publish = seen[0]
+        assert temp_dir == os.path.dirname(os.path.abspath(path))  # same filesystem
+        assert target_at_publish == original
+        assert temp_at_publish == final
+
+    def test_failed_publication_leaves_original_intact(self, make_file, monkeypatch):
+        # PA-02: if the final rename fails, the original stays byte-identical,
+        # the temp file is cleaned up, and the finding counts as unresolved.
+        path = make_file('pubfail.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        real_replace = os.replace
+
+        def failing(src, dst, *args, **kwargs):
+            if os.path.abspath(dst) == os.path.abspath(path):
+                raise OSError('simulated publish failure')
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'replace', failing)
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (0, 1)
+        with open(path, 'rb') as fh:
+            assert fh.read() == original
+        leftovers = [f for f in os.listdir(os.path.dirname(path)) if f.endswith('.credactor.tmp')]
+        assert leftovers == []
+
+    def test_temp_creation_failure_does_not_write_in_place(self, make_file, monkeypatch):
+        # PA-02: when the temp file cannot be created (for example a writable
+        # file in a read-only directory), the rewrite must fail closed rather
+        # than fall back to rewriting the target in place. With no_backup, the
+        # publish step is the only caller of mkstemp, so this injection is
+        # precise.
+        path = make_file('notemp.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+
+        def no_temp(*args, **kwargs):
+            raise OSError(errno.EACCES, 'simulated read-only directory')
+
+        monkeypatch.setattr(tempfile, 'mkstemp', no_temp)
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (0, 1)
+        with open(path, 'rb') as fh:
+            assert fh.read() == original
+
+    def test_interactive_prompt_masks_every_value(self, make_file, monkeypatch, capsys):
+        # PA-02: every prompt shows only the masked value, never the secret, on
+        # either stream. The findings carry realistic raw and value_preview
+        # fields (both hold the plaintext), and the fake input echoes its prompt
+        # the way the real input() does, so a leak through any of them fails.
+        text = f'api_key = "{_AWS_KEY}"\npassword = "{_PASSWORD}"\n'
+        path = make_file('prompt.py', text)
+        findings = []
+        for line, (value, ftype) in enumerate(
+            [(_AWS_KEY, 'variable:api_key'), (_PASSWORD, 'variable:password')], start=1
+        ):
+            f = _mk_finding(path, value, ftype, line=line)
+            f['raw'] = text.splitlines()[line - 1]
+            f['value_preview'] = preview(value)
+            findings.append(f)
+
+        def fake_input(prompt=''):
+            print(prompt, end='')
+            return 'n'
+
+        monkeypatch.setattr('builtins.input', fake_input)
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        captured = capsys.readouterr()
+        for value in (_AWS_KEY, _PASSWORD):
+            assert value not in captured.out + captured.err
+            assert f'  Value    : {value[:4]}[REDACTED]\n' in captured.out
+
+    def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
+        # The prompt sanitizes what it prints. The visible prefix of a masked
+        # value is four characters, which is enough for a complete escape
+        # sequence such as ESC[2J (clear screen), and the type can carry
+        # report-controlled text.
+        value = '\x1b[2J' + 'Zq8vN3pL6tR1'
+        path = make_file('esc.xml', f'<add key="Password" value="{value}" />\n')
+        finding = _mk_finding(path, value, 'xml-attr:\x1b[31mPassword')
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review([finding], os.path.dirname(path), Config(no_backup=True))
+        assert '\x1b' not in capsys.readouterr().out

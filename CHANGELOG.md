@@ -24,9 +24,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   removed or weakened with the whole suite still green: the advisory lock and
   how long it is held, atomic creation of `.bak` backups (beside the file and in
   `--secure-backup-dir`), the abort when a backup cannot be written, the
-  interactive retry of a failed backup, and mode restoration (special bits
-  included) after a rewrite and after the interactive final sweep. Each now has
-  a test that fails when it is broken.
+  interactive retry of a failed backup, mode restoration (special bits
+  included) after a rewrite and after the interactive final sweep, atomic
+  publication of every rewrite (including a failed rename or temp file), and
+  masking and escape stripping in the interactive prompt. Each now has a test
+  that fails when it is broken.
 
 ## [2.7.4] - 2026-09-18
 
