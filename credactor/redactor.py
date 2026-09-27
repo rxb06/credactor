@@ -501,8 +501,11 @@ def batch_replace_in_file(
             # os.replace() which cannot overwrite an open file on Windows.
             lock_fh.close()
             lock_fh = None
-        except OSError:
-            pass  # Lock contention — proceed without lock
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
     except OSError:
         pass
 

@@ -10,6 +10,24 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [Unreleased]
+
+### Changed
+
+- **`--verbose` now says when the advisory file lock could not be taken.** The
+  lock is still best effort, so the rewrite proceeds unlocked as before, but the
+  run now logs the reason instead of continuing silently.
+
+### Notes
+
+- **Tests now pin the write-path guards.** Several guards could previously be
+  removed or weakened with the whole suite still green: the advisory lock and
+  how long it is held, atomic creation of `.bak` backups (beside the file and in
+  `--secure-backup-dir`), the abort when a backup cannot be written, the
+  interactive retry of a failed backup, and mode restoration (special bits
+  included) after a rewrite and after the interactive final sweep. Each now has
+  a test that fails when it is broken.
+
 ## [2.7.4] - 2026-09-18
 
 Released as 2.7.4. The `v2.7.3` tag was consumed by a release published before
@@ -564,6 +582,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[Unreleased]: https://github.com/rxb06/credactor/compare/v2.7.4...HEAD
 [2.7.4]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.4
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0

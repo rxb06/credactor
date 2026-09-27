@@ -1,6 +1,10 @@
 """Tests for the redaction/replacement logic."""
 
+import errno
+import hashlib
 import os
+import shutil
+import stat
 import sys
 
 import pytest
@@ -8,6 +12,7 @@ import pytest
 from credactor.config import Config
 from credactor.redactor import (
     _derive_env_var_name,
+    _final_file_sweep,
     batch_replace_in_file,
     fix_all,
     interactive_review,
@@ -1168,3 +1173,298 @@ class TestPrivateKeyBlockRefusal:
             [self._pem_finding(path)], os.path.dirname(path), Config(no_backup=True)
         )
         assert unresolved == 1
+
+
+class TestGuardPins:
+    """SR-01 and PA-02: each test pins one write-path guard that could once be
+    deleted, or quietly weakened, with the whole suite still green (found by
+    guard mutation). A test here must fail when its guard is broken, not merely
+    run through it."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='fcntl is POSIX only')
+    def test_advisory_lock_held_across_read_and_write(self, make_file, monkeypatch):
+        # SEC-15: the rewrite takes a non-blocking exclusive flock on the very
+        # file it rewrites, and still holds it while reading and while writing.
+        # A probe on a second descriptor must find the file locked at both
+        # points. This spies on the read by its newline='' open, so a change to
+        # how the file is read must update the spy, not drop the check.
+        import fcntl
+
+        import credactor.redactor as redactor
+
+        path = make_file('lock.py', f'api_key = "{_AWS_KEY}"\n')
+        target_ino = os.stat(path).st_ino
+        real_flock = fcntl.flock
+        real_open = open
+        real_write = redactor._write_atomic
+        calls = []
+        held = {}
+
+        def recorder(fd, op):
+            calls.append((os.fstat(fd).st_ino, op))
+            return real_flock(fd, op)
+
+        def locked_elsewhere():
+            with real_open(path, 'rb') as probe:
+                try:
+                    real_flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+                real_flock(probe.fileno(), fcntl.LOCK_UN)
+                return False
+
+        def spy_open(file, *args, **kwargs):
+            if file == path and kwargs.get('newline') == '' and 'encoding' in kwargs:
+                held['read'] = locked_elsewhere()
+            return real_open(file, *args, **kwargs)
+
+        def spy_write(filepath, lines, encoding):
+            held['write'] = locked_elsewhere()
+            return real_write(filepath, lines, encoding)
+
+        monkeypatch.setattr(fcntl, 'flock', recorder)
+        monkeypatch.setattr(redactor, 'open', spy_open, raising=False)
+        monkeypatch.setattr(redactor, '_write_atomic', spy_write)
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (1, 0)
+        assert calls == [(target_ino, fcntl.LOCK_EX | fcntl.LOCK_NB)]
+        assert held == {'read': True, 'write': True}
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='fcntl is POSIX only')
+    def test_lock_contention_proceeds_and_is_logged(self, make_file, monkeypatch, credactor_caplog):
+        # SEC-15 is best effort: a held lock does not block the rewrite, but the
+        # failure to lock is recorded so it shows under --verbose.
+        import fcntl
+
+        def busy(fd, op):
+            raise BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable')
+
+        monkeypatch.setattr(fcntl, 'flock', busy)
+        path = make_file('busy.py', f'api_key = "{_AWS_KEY}"\n')
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        )
+        assert (replaced, failed) == (1, 0)
+        assert any('proceeding unlocked' in r.getMessage() for r in credactor_caplog.records)
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_final_sweep_refuses_symlink(self, tmp_path, credactor_caplog):
+        # The end-of-session sweep publishes with os.replace, which would swap
+        # the link node for a regular file. It must refuse and leave the link.
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        target = outside / 'real.py'
+        original = f'token = "{_AWS_KEY}"\n'
+        target.write_text(original)
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        link = repo / 'link.py'
+        link.symlink_to(target)
+        _final_file_sweep(
+            str(link), [_mk_finding(str(link), _AWS_KEY)], set(), Config(no_backup=True)
+        )
+        assert link.is_symlink()  # the link node was not replaced
+        assert target.read_text() == original
+        assert any(
+            'refusing to sweep symlink' in r.getMessage().lower() for r in credactor_caplog.records
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == 'win32', reason='Windows does not support Unix-style permission bits'
+    )
+    @pytest.mark.parametrize('mode', [0o640, 0o4750])
+    def test_final_sweep_restores_exact_mode(self, make_file, monkeypatch, mode):
+        # The final sweep publishes through mkstemp, which creates files 0600,
+        # so it must put the file's own mode back exactly. 0o640 is neither
+        # mkstemp's 0600 nor the umask default 0644, so restoring "a sensible
+        # default" fails; 0o4750 covers the special bits on this path too.
+        content = f'password = "{_AWS_KEY}"\ntoken = "{_PASSWORD}"  # legacy {_AWS_KEY}\n'
+        path = make_file('mode.py', content)
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pytest.skip('platform refused the mode')
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            pytest.skip('filesystem dropped part of the mode')
+        findings = [
+            _mk_finding(path, _AWS_KEY, 'variable:password', line=1),
+            _mk_finding(path, _PASSWORD, 'variable:token', line=2),
+        ]
+        answers = iter(['y', 'y'])
+        monkeypatch.setattr('builtins.input', lambda *a: next(answers))
+        unresolved = interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        assert unresolved == 0
+        with open(path) as fh:
+            # The legacy copy on line 2 is only cleared by the final sweep, so
+            # this proves the sweep actually rewrote the file.
+            assert _AWS_KEY not in fh.read()
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode
+
+    @pytest.mark.skipif(
+        sys.platform == 'win32', reason='Windows does not support Unix-style permission bits'
+    )
+    @pytest.mark.parametrize('mode', [0o4755, 0o2755, 0o1755])
+    def test_special_mode_bits_preserved(self, make_file, mode):
+        # SEC-22: the rewrite restores the full mode (& 0o7777), not only rwx.
+        # One special bit per case, so a platform that refuses one bit (macOS
+        # clears setgid when the directory's group is not the user's, and
+        # refuses sticky on regular files) skips only that case.
+        path = make_file('suid.py', f'api_key = "{_AWS_KEY}"\n')
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pytest.skip('platform refused the bit')
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            pytest.skip('filesystem dropped the bit')
+        replaced, _ = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        )
+        assert replaced == 1
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode
+
+    def _bak_fixture(self, tmp_path):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        src = repo / 'a.py'
+        original = f'api_key = "{_AWS_KEY}"\n'
+        src.write_text(original)
+        return src, original
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_planted_bak_symlink_not_followed(self, tmp_path):
+        # SEC-09: the backup goes to a fresh temp file that is renamed over
+        # <file>.bak, so a pre-planted .bak symlink is replaced, never written
+        # through to its target.
+        canary = tmp_path / 'canary.txt'
+        canary.write_bytes(b'CANARY-DO-NOT-TOUCH\n')
+        src, original = self._bak_fixture(tmp_path)
+        bak = src.with_name('a.py.bak')
+        bak.symlink_to(canary)
+        replaced, _ = batch_replace_in_file(str(src), [_mk_finding(str(src), _AWS_KEY)], Config())
+        assert replaced == 1
+        assert canary.read_bytes() == b'CANARY-DO-NOT-TOUCH\n'
+        assert not bak.is_symlink()
+        assert bak.read_text() == original
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_bak_symlink_planted_during_backup_not_followed(self, tmp_path, monkeypatch):
+        # SEC-09 exists to close a check-then-copy race: the symlink may appear
+        # after any check and just before the copy. Plant it at that moment.
+        # A return to islink() plus copy2() onto the .bak fails here.
+        canary = tmp_path / 'canary.txt'
+        canary.write_bytes(b'CANARY-DO-NOT-TOUCH\n')
+        src, original = self._bak_fixture(tmp_path)
+        bak = src.with_name('a.py.bak')
+        real_copy2 = shutil.copy2
+
+        def racing_copy2(source, dest, *args, **kwargs):
+            if not os.path.lexists(bak):
+                os.symlink(canary, bak)
+            return real_copy2(source, dest, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, 'copy2', racing_copy2)
+        replaced, _ = batch_replace_in_file(str(src), [_mk_finding(str(src), _AWS_KEY)], Config())
+        assert replaced == 1
+        assert canary.read_bytes() == b'CANARY-DO-NOT-TOUCH\n'
+        assert not bak.is_symlink()
+        assert bak.read_text() == original
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    def test_bak_symlink_to_directory_not_followed(self, tmp_path):
+        # A .bak symlink to a directory must be replaced as a node. shutil.move
+        # would instead drop the plaintext backup inside the outside directory.
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        src, original = self._bak_fixture(tmp_path)
+        bak = src.with_name('a.py.bak')
+        bak.symlink_to(outside, target_is_directory=True)
+        replaced, _ = batch_replace_in_file(str(src), [_mk_finding(str(src), _AWS_KEY)], Config())
+        assert replaced == 1
+        assert os.listdir(outside) == []
+        assert not bak.is_symlink()
+        assert bak.read_text() == original
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need admin on Windows')
+    @pytest.mark.parametrize('target_kind', ['file', 'directory'])
+    def test_secure_dir_planted_dest_symlink_not_followed(self, tmp_path, target_kind):
+        # SEC-09 in the --secure-backup-dir branch. The destination name is
+        # predictable (basename plus a hash of the absolute path), and the
+        # manual's own example puts the directory under /tmp, so a symlink can
+        # be planted there in advance. It must be replaced, never followed.
+        src, original = self._bak_fixture(tmp_path)
+        backup = tmp_path / 'securebak'
+        backup.mkdir()
+        digest = hashlib.sha256(os.path.abspath(str(src)).encode('utf-8')).hexdigest()[:12]
+        dest = backup / f'a.py.{digest}.bak'
+        if target_kind == 'file':
+            target = tmp_path / 'canary.txt'
+            target.write_bytes(b'CANARY-DO-NOT-TOUCH\n')
+            dest.symlink_to(target)
+        else:
+            target = tmp_path / 'outside'
+            target.mkdir()
+            dest.symlink_to(target, target_is_directory=True)
+        replaced, _ = batch_replace_in_file(
+            str(src), [_mk_finding(str(src), _AWS_KEY)], Config(secure_backup_dir=str(backup))
+        )
+        assert replaced == 1
+        if target_kind == 'file':
+            assert target.read_bytes() == b'CANARY-DO-NOT-TOUCH\n'
+        else:
+            assert os.listdir(target) == []
+        assert not dest.is_symlink()
+        assert dest.read_text() == original
+
+    def test_backup_failure_aborts_before_any_write(self, make_file, monkeypatch, credactor_caplog):
+        # S15, narrowed: only the backup step fails. The mkstemp-wide test in
+        # TestWritePathSafety also breaks the later write, so it cannot tell
+        # whether the abort itself ran.
+        path = make_file('abort.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            before = fh.read()
+        monkeypatch.setattr('credactor.redactor._create_backup', lambda *a, **k: None)
+        replaced, failed = batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=False)
+        )
+        assert (replaced, failed) == (0, 1)
+        with open(path, 'rb') as fh:
+            assert fh.read() == before
+        assert any('backup failed' in r.getMessage().lower() for r in credactor_caplog.records)
+
+    def test_real_backup_failure_aborts_before_any_write(self, make_file):
+        # A real backup failure with no monkeypatching, and one that leaves the
+        # write path working: <file>.bak is a non-empty directory, so publishing
+        # the backup fails while the rewrite itself would succeed. The backup
+        # step must report the failure and the file must be left alone.
+        path = make_file('abort2.py', f'api_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            before = fh.read()
+        os.mkdir(path + '.bak')
+        with open(os.path.join(path + '.bak', 'keep'), 'w') as fh:
+            fh.write('x')
+        replaced, failed = batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config())
+        assert (replaced, failed) == (0, 1)
+        with open(path, 'rb') as fh:
+            assert fh.read() == before
+        leftovers = [f for f in os.listdir(os.path.dirname(path)) if f.endswith('.credactor.bak')]
+        assert leftovers == []
+
+    def test_interactive_backup_failure_not_skipped_later(self, make_file, monkeypatch):
+        # Interactive mode backs a file up once, on the first approval that
+        # succeeds. If that first backup fails, a later approval to the same
+        # file must try the backup again, not rewrite with no backup at all.
+        path = make_file('two.py', f'api_key = "{_AWS_KEY}"\npassword = "{_PASSWORD}"\n')
+        with open(path, 'rb') as fh:
+            before = fh.read()
+        findings = [
+            _mk_finding(path, _AWS_KEY, line=1),
+            _mk_finding(path, _PASSWORD, 'variable:password', line=2),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        monkeypatch.setattr('credactor.redactor._create_backup', lambda *a, **k: None)
+        unresolved = interactive_review(findings, os.path.dirname(path), Config(no_backup=False))
+        assert unresolved == 2
+        with open(path, 'rb') as fh:
+            assert fh.read() == before

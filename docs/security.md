@@ -56,7 +56,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-12**: Config injection bounds validation. `entropy_threshold` is validated against 0.0–6.0 and `min_value_length` against 1–200; an out-of-range value warns and reverts to the default.
 - **SEC-13**: Wildcard `.credactorignore` warning. Overly broad patterns trigger a `[WARN]`.
 - **SEC-14**: `--replace-with env` semantic change warning.
-- **SEC-15**: Best-effort advisory file lock (`fcntl.flock(LOCK_EX|LOCK_NB)`) attempted before the read-modify-write; on lock contention it proceeds unlocked, so it is a courtesy marker, not a hard TOCTOU guarantee.
+- **SEC-15**: Best-effort advisory file lock (`fcntl.flock(LOCK_EX|LOCK_NB)`) attempted before the read-modify-write; on lock contention it proceeds unlocked, so it is a courtesy marker, not a hard TOCTOU guarantee. Under `--verbose`, a lock that could not be taken is logged with the reason.
 - **SEC-16**: Terminal escape sequence sanitisation.
 - **SEC-17**: NFS/network mount warning.
 - **SEC-18**: Root user warning.
