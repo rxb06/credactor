@@ -1,0 +1,27 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "encodings-latin1",
+ "exit": 1,
+ "findings": {
+  "latin1.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b78bf8723a77e5d1",
+    "raw": "password = \"<v:b78bf8723a77e5d1>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "b78bf8723a77e5d1"
+   }
+  ]
+ },
+ "log": [],
+ "note": "the detection path differs without charset-normalizer",
+ "reported": true,
+ "tree_after": {
+  "latin1.py": "a86daa011ed641db"
+ }
+}

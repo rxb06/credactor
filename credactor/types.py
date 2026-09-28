@@ -30,8 +30,12 @@ class Finding(TypedDict):
     severity:       one of ``critical`` / ``high`` / ``medium`` / ``low``.
     full_value:     the literal credential text as it appears in the source
                     (used for redaction matching).
-    value_preview:  truncated, safe-for-display version of ``full_value``.
+    value_preview:  ``full_value`` cut to 60 characters. Truncated, NOT
+                    masked: for most keys it is the whole secret. Never
+                    display or log it; use ``utils.mask_secret``.
     raw:            the source line containing the finding (rstripped).
+                    For a ``multiline:`` finding, the whole block, with line
+                    breaks written as ``\\n`` (at most 8 KB).
     commit:         optional 12-char commit prefix when the finding came
                     from git-history scanning or an external scanner's
                     git source metadata.

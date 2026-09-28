@@ -1,0 +1,16 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "symlink-outside-root",
+ "exit": 0,
+ "findings": {},
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "inside.py": "9e26bf369911c45c",
+  "link.py": "symlink"
+ }
+}

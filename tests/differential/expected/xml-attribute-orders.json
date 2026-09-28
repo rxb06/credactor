@@ -1,0 +1,48 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "xml-attribute-orders",
+ "exit": 1,
+ "findings": {
+  "settings.xml": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b3ce66ffcd962d0d",
+    "raw": "<setting name=\"client_secret\" value=\"<v:b3ce66ffcd962d0d>\"/>",
+    "severity": "medium",
+    "type": "xml-attr:client_secret",
+    "value": "b3ce66ffcd962d0d"
+   }
+  ],
+  "web.config": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "5f4b8f793c79706d",
+    "raw": "  <add key=\"Password\" value=\"<v:5f4b8f793c79706d>\" />",
+    "severity": "high",
+    "type": "xml-attr:Password",
+    "value": "5f4b8f793c79706d"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "a96b5ebeea93a150",
+    "raw": "  <add value=\"<v:a96b5ebeea93a150>\" name=\"ApiKey\" />",
+    "severity": "high",
+    "type": "xml-attr:ApiKey",
+    "value": "a96b5ebeea93a150"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "settings.xml": "55c412fd9b93a1bc",
+  "web.config": "f251177140a08704"
+ }
+}

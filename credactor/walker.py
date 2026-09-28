@@ -26,7 +26,7 @@ from .scanner import (
 )
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, sanitize_for_terminal, utf16_variant
+from .utils import is_within_root, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -374,7 +374,7 @@ def scan_staged_files(
                 'if it is UTF-16 or another multibyte encoding the staged scan '
                 'cannot read it reliably. For detection install the encoding '
                 'extra: pip install "credactor[encoding]"',
-                sanitize_for_terminal(line),
+                line,
             )
         try:
             content = raw.decode(variant or 'utf-8', errors='surrogateescape')

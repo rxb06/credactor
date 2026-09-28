@@ -17,11 +17,12 @@ from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
 from .types import Finding
 from .utils import (
+    OutputMasker,
     detect_encoding,
     group_by_file,
     mask_secret,
     relativize,
-    sanitize_for_terminal,
+    sanitize_for_display,
 )
 
 
@@ -501,8 +502,11 @@ def batch_replace_in_file(
             # os.replace() which cannot overwrite an open file on Windows.
             lock_fh.close()
             lock_fh = None
-        except OSError:
-            pass  # Lock contention — proceed without lock
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
     except OSError:
         pass
 
@@ -697,14 +701,18 @@ def interactive_review(
     print(f"  Answer y to replace each value with '{replacement_desc}', n (or Enter) to skip.")
     print(f'{"=" * 70}\n')
 
+    # PA-04, SR-07: the type (an ingested one holds a report's label) and the
+    # path can hold a secret.
+    masker = OutputMasker(f['full_value'] for f in findings)
+
     for i, finding in enumerate(findings, 1):
         rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_terminal(rel)
-        safe_type = sanitize_for_terminal(finding['type'])
-        safe_masked = sanitize_for_terminal(masked)
+        safe_rel = masker.show_name(rel)
+        safe_type = masker.show_name(finding['type'])
+        safe_masked = sanitize_for_display(masked)
 
         print(f'  [{i}/{total}]  {safe_rel}  --  line {finding["line"]}')
         print(f'  Type     : {safe_type}')

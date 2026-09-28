@@ -1,0 +1,46 @@
+{
+ "argv": [
+  "--ci",
+  "--fail-on-error",
+  "."
+ ],
+ "case": "caps-boundaries",
+ "exit": 0,
+ "findings": {},
+ "log": [
+  [
+   "WARNING",
+   "<root>/at_cap.py: 1 line(s) longer than 4096 chars \u2014 content past that limit was not scanned by per-line matching",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/at_cap_crlf.py: 1 line(s) longer than 4096 chars \u2014 content past that limit was not scanned by per-line matching",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/block_straddle.py: 1 line(s) longer than 4096 chars \u2014 content past that limit was not scanned by per-line matching",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/over_cap.py: 1 line(s) longer than 4096 chars \u2014 content past that limit was not scanned by per-line matching",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/straddle.py: 1 line(s) longer than 4096 chars \u2014 content past that limit was not scanned by per-line matching",
+   1
+  ]
+ ],
+ "note": "exact 4096/8192 boundaries; SR-10, SR-32 and PA-07 move them",
+ "reported": true,
+ "tree_after": {
+  "at_cap.py": "e96d83116b3fb351",
+  "at_cap_crlf.py": "42688b60b266fd29",
+  "block_straddle.py": "ab9f3b2980b8c691",
+  "over_cap.py": "7db8728450d56189",
+  "straddle.py": "7721215b2f1a9b00"
+ }
+}

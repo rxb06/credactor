@@ -10,6 +10,76 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [Unreleased]
+
+### Security
+
+- **The text report masks every known secret on a displayed line.** Masking
+  used to cover only the finding's own value, once. Every value found in the
+  run is now masked wherever it appears in the report, including a second
+  credential on the same line or a repeat of the same one, and a line is cut to
+  length only after masking. A multi-line finding now keeps its whole block,
+  so a value past the first 120 characters is masked before the cut too, and a
+  known value cut off at the end of a long line (the scanner keeps 4,096
+  characters of a line) is masked as well.
+- **Text output is safe to print into a terminal or a CI log.** Paths, source
+  lines, types and the values in warnings now have terminal escape sequences
+  removed, and control, line-break and bidirectional characters, and bytes
+  that could not be decoded, shown as `?` (a tab as a space). An undecodable
+  byte on a finding's line no longer stops the text report with an encoding
+  error. CI workflow command markers in them are broken, so a
+  file name or a line of scanned source can no longer be read as a command by
+  the GitHub Actions or Azure Pipelines runner. JSON and SARIF, which escape
+  control characters already, write those markers with a JSON escape
+  (`#\u0023[`), so the data they decode to is unchanged.
+- **A secret in a file or directory name is masked.** If a value found in the
+  run also appears in a path, the path is shown masked in the text, JSON and
+  SARIF reports, the list of files skipped by `.gitignore` and the interactive
+  prompt. The text and SARIF reports add
+  a note to rename the file or directory. A masked SARIF path no longer links
+  to the file. Paths and types are masked only with values of at least 8
+  characters that are not a plain number or a plain word, so a password that
+  is also a word does not mask unrelated paths or rule ids.
+- **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
+  ingested report becomes part of the finding type and, in SARIF, the rule id.
+  A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
+  is now reported as `unknown`, with a warning that counts them; the finding is
+  kept. Secret values are masked in the type in every output format and in the
+  interactive prompt. A non-string `RuleID` no longer stops the run with a
+  traceback. A report's commit id, which JSON prints as is, is kept only if it
+  is 7 to 64 hex characters (SHA-1 or SHA-256) and shares no run of 6
+  characters with the secret; otherwise the finding is ingested without it,
+  with a warning.
+
+### Changed
+
+- **SARIF results for multi-line findings have no columns.** The columns were
+  offsets into the escaped block, not positions on the source line.
+- **The text report follows `sys.stdout` when it is redirected.**
+  `print_report` and `print_gitignore_skipped` looked up `sys.stdout` once, at
+  import, so `contextlib.redirect_stdout` (or pytest's `capsys`) did not capture
+  them. They now look it up on each call.
+- **`--verbose` now says when the advisory file lock could not be taken.** The
+  lock is still best effort, so the rewrite proceeds unlocked as before, but the
+  run now logs the reason instead of continuing silently.
+
+### Notes
+
+- **Tests now pin the write-path guards.** Several guards could previously be
+  removed or weakened with the whole suite still green: the advisory lock and
+  how long it is held, atomic creation of `.bak` backups (beside the file and in
+  `--secure-backup-dir`), the abort when a backup cannot be written, the
+  interactive retry of a failed backup, mode restoration (special bits
+  included) after a rewrite and after the interactive final sweep, atomic
+  publication of every rewrite (including a failed rename or temp file), and
+  masking and escape stripping in the interactive prompt. Each now has a test
+  that fails when it is broken.
+- **Behaviour snapshots.** A differential test runs the real CLI over a fixed
+  corpus of small cases and compares every finding field in order, the exit code,
+  the log messages and the bytes of every file afterwards against committed
+  snapshots, so an unintended change to what Credactor reports or writes fails
+  the suite. Snapshots hold hashes, never secret values.
+
 ## [2.7.4] - 2026-09-18
 
 Released as 2.7.4. The `v2.7.3` tag was consumed by a release published before
@@ -564,6 +634,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[Unreleased]: https://github.com/rxb06/credactor/compare/v2.7.4...HEAD
 [2.7.4]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.4
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0

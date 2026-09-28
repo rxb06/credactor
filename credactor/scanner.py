@@ -797,7 +797,10 @@ def _scan_multiline_strings(
                             type=f'multiline:{label}',
                             severity=severity,
                             value=val,
-                            raw=block.replace('\n', '\\n')[:120],
+                            # The whole block (already capped at
+                            # _MAX_BLOCK_SIZE): the report cuts it for
+                            # display only after masking (SR-05).
+                            raw=block.replace('\n', '\\n'),
                         )
                     )
                     break  # one finding per block is enough
