@@ -231,13 +231,16 @@ class TestKnownSecrets:
     def test_values_that_differ_only_at_the_end_stay_fast(self):
         # Each binary search used to land on the next-shorter value, so one
         # position cost a Python loop per value.
+        # Timed at the one position that matters: scanning the rest of the
+        # text is a plain loop, slow under coverage and not what this pins.
         values = ['Zq9X' + 'b' * k + 'a' for k in range(1, 4001)]
         known = KnownSecrets(values)
         trap = 'Zq9X' + 'b' * 4001
+        assert known.redact(trap + ' x') == trap + ' x'
         start = time.perf_counter()
-        for _ in range(50):
-            assert known.redact(trap + ' x') == trap + ' x'
-        assert time.perf_counter() - start < 2
+        for _ in range(20):
+            assert known._match_at(trap, 0) == 0
+        assert time.perf_counter() - start < 1
 
     def test_longest_match_matches_a_brute_force(self):
         # Values that are prefixes of one another, or differ only at the end.
@@ -258,15 +261,15 @@ class TestKnownSecrets:
         # known-prefix links alone.
         if shape == 'pairs':
             values = [f'Zq9X{"b" * j}{t}' for j in range(1, 4001) for t in ('a', 'aa')]
-            trap = 'Zq9X' + 'b' * 4010
+            trap, expected = 'Zq9X' + 'b' * 4010, 0
         else:
             values = ['Zq9X' + 'b' * k for k in range(1, 4001)]
-            trap = 'Zq9X' + 'b' * 5 + 'c'
+            trap, expected = 'Zq9X' + 'b' * 5 + 'c', 9
         known = KnownSecrets(values)
         start = time.perf_counter()
         for _ in range(200):
-            known.redact(trap + ' x')
-        assert time.perf_counter() - start < 1.5
+            assert known._match_at(trap, 0) == expected
+        assert time.perf_counter() - start < 1
 
     def test_nested_values_pick_the_longest_prefix(self):
         values = ['Zq9X' + 'b' * k for k in range(1, 50)] + ['Zq9X' + 'b' * 10 + 'a']
