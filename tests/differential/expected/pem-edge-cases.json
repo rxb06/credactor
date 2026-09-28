@@ -6,6 +6,17 @@
  "case": "pem-edge-cases",
  "exit": 1,
  "findings": {
+  "allow.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
   "body.py": [
    {
     "commit": null,
@@ -56,6 +67,11 @@
    1
   ],
   [
+   "DEBUG",
+   "<root>/body.py:1 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
    "WARNING",
    ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line \u2014 re-check them after large edits.",
    1
@@ -66,7 +82,7 @@
    1
   ]
  ],
- "note": "allowlisted header and the 500-line unclosed-block cap; SR-08 changes allow.py",
+ "note": "allowlisted header and the 500-line unclosed-block cap; since SR-08 the lines after an allowlisted header are scanned (allow.py)",
  "reported": true,
  "tree_after": {
   ".credactorignore": "00b05df451f2bab4",

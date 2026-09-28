@@ -14,6 +14,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **A suppressed private key header no longer hides the lines after it.** A
+  `-----BEGIN ... PRIVATE KEY-----` line that was ignored inline or allowlisted
+  still started a key block, so the lines after it, up to the END line or 500
+  lines, were not scanned. A suppressed header now opens no block, and an
+  inline-ignored one is logged under `--verbose` like any other suppression.
 - **The text report masks every known secret on a displayed line.** Masking
   used to cover only the finding's own value, once. Every value found in the
   run is now masked wherever it appears in the report, including a second

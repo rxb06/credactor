@@ -123,6 +123,17 @@ class TestMainExitCodes:
             main(['--ci', target])
         assert exc_info.value.code == 1
 
+    def test_suppressed_pem_header_does_not_hide_a_key_after_it(self, make_file):
+        # SR-08: an ignored header used to hide every following line.
+        # credactor:ignore
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file(
+            'k.py', f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{key}"\n'
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+
     def test_dry_run_with_findings_exits_1(self, make_file):
         # credactor:ignore
         key = 'AKIA' + 'IOSFODNN7EXAMPLE'

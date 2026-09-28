@@ -313,7 +313,7 @@ CASES: list[Case] = [
             ),
         },
         argv=('--ci', '.'),
-        note='suppressed_header.py records current behaviour; SR-08 changes it',
+        note='SR-08: an ignored header no longer hides the lines after it (suppressed_header.py)',
     ),
     Case(
         id='pem-edge-cases',
@@ -329,7 +329,8 @@ CASES: list[Case] = [
             ),
         },
         argv=('--ci', '.'),
-        note='allowlisted header and the 500-line unclosed-block cap; SR-08 changes allow.py',
+        note='allowlisted header and the 500-line unclosed-block cap; since SR-08 the lines '
+        'after an allowlisted header are scanned (allow.py)',
     ),
     Case(
         id='multiline-strings',

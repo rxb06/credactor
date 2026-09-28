@@ -682,10 +682,11 @@ def scan_lines(
     pem_block_lines = 0
     for lineno, line in enumerate(lines, start=1):
         if _PEM_KEY_RE.search(line):
-            in_pem_block = True
-            pem_block_lines = 0
-            # Check suppression — still skip body lines even if header suppressed
+            # SR-08: a suppressed header does not open a block, so the lines
+            # after it are still scanned. The body of a suppressed test key is
+            # unquoted base64 with no assignment, which yields no findings.
             if has_inline_suppression(line):
+                logger.debug('%s:%d suppressed by inline credactor:ignore', filepath, lineno)
                 continue
             # L11: the PEM-block suppression was previously absent from the
             # --verbose audit trail — log which allowlist rule fired.
@@ -695,6 +696,8 @@ def scan_lines(
             if reason:
                 logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
                 continue
+            in_pem_block = True
+            pem_block_lines = 0
             findings.append(
                 _make_finding(
                     filepath,

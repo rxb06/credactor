@@ -5,6 +5,7 @@ documentation.  They MUST NOT be redacted — add this directory to
 .credactorignore to prevent self-redaction.
 """
 
+import logging
 import os
 
 import pytest
@@ -17,6 +18,7 @@ from credactor.scanner import (
     scan_lines,
     should_scan_file,
 )
+from credactor.suppressions import AllowList
 
 
 class TestMinValueLengthCriticalExemption:
@@ -514,6 +516,42 @@ class TestScanFile:
         path = make_file('test_key_suppressed.py', content)
         findings = scan_file(path, config=config)
         assert len(findings) == 0
+
+    # SR-08: a suppressed header must not hide the lines after it.
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_inline_suppressed_pem_header_does_not_hide_following_lines(
+        self, make_file, config, caplog
+    ):
+        path = make_file(
+            'k.py',
+            f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{self._KEY}"\n',
+        )
+        with caplog.at_level(logging.DEBUG, logger='credactor'):
+            findings = scan_file(path, config=config)
+        assert [f['full_value'] for f in findings] == [self._KEY]
+        assert [f['line'] for f in findings] == [2]
+        assert f'{path}:1 suppressed by inline credactor:ignore' in [
+            r.getMessage() for r in caplog.records
+        ]
+
+    def test_allowlisted_pem_header_does_not_hide_following_lines(self, tmp_path, config):
+        (tmp_path / '.credactorignore').write_text('k.py:1\n', encoding='utf-8')
+        path = tmp_path / 'k.py'
+        path.write_text(
+            f'-----BEGIN RSA PRIVATE KEY-----\napi_key = "{self._KEY}"\n', encoding='utf-8'
+        )
+        findings = scan_file(str(path), config=config, allowlist=AllowList(str(tmp_path)))
+        assert [f['full_value'] for f in findings] == [self._KEY]
+
+    def test_suppressed_pem_header_body_and_end_give_no_findings(self, make_file, config):
+        body = ['MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB'] * 20
+        content = (
+            '-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\n'
+            + ''.join(line + '\n' for line in body)
+            + '-----END RSA PRIVATE KEY-----\n'
+        )
+        assert scan_file(make_file('k.pem.py', content), config=config) == []
 
     def test_clean_file_no_findings(self, make_file, config):
         content = 'import os\napi_key = os.getenv("API_KEY")\nprint("hello world")\n'
