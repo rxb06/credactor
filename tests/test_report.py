@@ -492,6 +492,49 @@ class TestMaskingAroundEscapes:
         assert _AWS_KEY not in buf.getvalue()
 
 
+class TestMaskingAroundEscapesHarder:
+    """Shapes that defeated masking the raw text and the displayed text in
+    two separate passes."""
+
+    OTHER = 'ghp_' + 'Qq11Ww22Ee33Rr44Tt55Yy66Uu77Ii88Oo99'
+
+    def test_known_value_inside_a_value_an_escape_splits(self):
+        outer = 'ghp_Ab12' + _AWS_KEY + 'Zz99Yy88Xx77'
+        raw = f'note = "ghp_Ab12\x1b[1~{_AWS_KEY}Zz99Yy88Xx77"  other = "{self.OTHER}"'
+        findings = [
+            _finding(outer, f'token = "{outer}"'),
+            _finding(_AWS_KEY, f'aws = "{_AWS_KEY}"', line=2),
+            _finding(self.OTHER, raw, line=3),
+        ]
+        out = _text(findings)
+        assert _fragments(outer, out) == set()
+
+    def test_value_holding_an_escape_where_it_stands_whole(self):
+        # Its escape is kept, so it shows character by character.
+        value = 'Zq8v\x1b[31mN3pL6tR1x9'
+        out = _text([_finding(value, f'k = "{value}"'), _finding(_AWS_KEY, f'x "{value}"', line=2)])
+        assert 'N3pL6tR1x9' not in out
+
+    def test_value_holding_an_escape_shown_without_it(self):
+        # A copy of what the value displays as is masked too.
+        value = 'Zq8v\x1b[31mN3pL6tR1x9'
+        findings = [
+            _finding(value, f'k = "{value}"'),
+            _finding(_AWS_KEY, f'a = "{_AWS_KEY}" shown = "Zq8vN3pL6tR1x9"', line=2),
+        ]
+        assert 'N3pL6tR1x9' not in _text(findings)
+
+    def test_split_value_far_into_a_long_line(self):
+        token = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+        osc = '\x1b]' + 'x' * 4040 + '\x07'
+        raw = f'\\n{_AWS_KEY}\\n{osc}{token[:8]}\x1b[m{token[8:]}\\n'
+        findings = [
+            _finding(_AWS_KEY, raw, ftype='multiline:AWS access key'),
+            _finding(token, f'token = "{token}"', line=5),
+        ]
+        assert _fragments(token, _text(findings)) == set()
+
+
 class TestDistinctiveValuesOnlyInNames:
     """Paths and types are masked only with values that look like secrets,
     not words: a found password such as 'production' must not mask an

@@ -250,23 +250,46 @@ class KnownSecrets:
         i = 0
         n = len(text)
         while i < n and (limit is None or size < limit):
-            length = self._match_at(text, i)
-            if not length:
+            end = self._span_end(text, i)
+            if not end:
                 out.append(text[i])
                 size += 1
                 i += 1
                 continue
-            end = i + length
-            p = i + 1
-            while p < end:
-                end = max(end, p + self._match_at(text, p))
-                p += 1
             masked = mask_secret(text[i:end])
             out.append(masked)
             size += len(masked)
             i = end
         result = ''.join(out)
         return result if limit is None else result[:limit]
+
+    def spans(self, text: str) -> list[tuple[int, int]]:
+        """The ``(start, end)`` spans ``redact`` would mask in *text*, in order."""
+        found: list[tuple[int, int]] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            end = self._span_end(text, i)
+            if end:
+                found.append((i, end))
+                i = end
+            else:
+                i += 1
+        return found
+
+    def _span_end(self, text: str, i: int) -> int:
+        """End of the masked span that starts at ``text[i]``, or 0: the longest
+        known value there, extended over any value that starts inside it and
+        ends past it."""
+        length = self._match_at(text, i)
+        if not length:
+            return 0
+        end = i + length
+        p = i + 1
+        while p < end:
+            end = max(end, p + self._match_at(text, p))
+            p += 1
+        return end
 
 
 # SR-06. Escape sequences are removed whole: CSI, and OSC ended by BEL or ST.
@@ -342,9 +365,6 @@ def sanitize_for_display(s: str) -> str:
 # word: a found password such as 'production' must not mask an unrelated
 # directory (breaking its SARIF link) or change a rule id between runs.
 _NAME_VALUE_MIN = 8
-# Raw text is masked this far before it is made displayable, which bounds the
-# work for a very long line; a value crossing the bound is masked whole first.
-_FIRST_PASS_LIMIT = 4096
 
 
 def _distinctive(value: str) -> bool:
@@ -360,37 +380,75 @@ def name_secrets(values: Iterable[str]) -> KnownSecrets:
     return KnownSecrets(v for v in values if _distinctive(v))
 
 
+def _display_around(text: str, keep: list[tuple[int, int]]) -> str:
+    """``display_chars(text)``, except that an escape sequence overlapping a
+    span in *keep* is left in place (its ESC still shows as '?') instead of
+    being removed, so removal never cuts into a known value."""
+    parts: list[str] = []
+    pos = 0
+    k = 0
+    for m in _ESCAPE_SEQ_RE.finditer(text):
+        start, end = m.span()
+        while k < len(keep) and keep[k][1] <= start:
+            k += 1
+        if k < len(keep) and keep[k][0] < end:
+            continue
+        parts.append(text[pos:start])
+        pos = end
+    parts.append(text[pos:])
+    return ''.join(parts).translate(_DISPLAY_TABLE)
+
+
+class _Displayed:
+    """Masks one set of known values in text for display."""
+
+    def __init__(self, values: set[str]) -> None:
+        self._raw = KnownSecrets(values)
+        # A value shows as display_chars(value) where an escape sequence split
+        # it and its removal joined the parts, and as the per-character image
+        # where it stood whole in the raw text and its escapes were kept.
+        self._shown = KnownSecrets(
+            {display_chars(v) for v in values} | {v.translate(_DISPLAY_TABLE) for v in values}
+        )
+        self._done: dict[tuple[str, int | None], str] = {}
+
+    def show(self, text: str, limit: int | None) -> str:
+        key = (text, limit)
+        if key not in self._done:
+            if '\x1b' in text:  # every sequence display_chars removes starts with ESC
+                shown = _display_around(text, self._raw.spans(text))
+            else:
+                shown = text.translate(_DISPLAY_TABLE)
+            self._done[key] = defuse_ci_commands(self._shown.redact(shown, limit=limit))
+        return self._done[key]
+
+
 class OutputMasker:
     """Masks a run's known secret values wherever a report shows text
     (SR-05, PA-04, SR-07).
 
     Source lines are masked with every known value; paths and types only
-    with distinctive ones. For display, text is masked in its raw form,
-    then made displayable, then masked again in its displayed form, then
-    has CI command markers broken: removing an escape sequence can take the
-    first character of a value (only the raw pass sees it whole) or join the
-    two halves of a value it split (only the second pass sees it whole).
+    with distinctive ones. For display, the known values are found in the
+    raw text first, and an escape sequence that overlaps one is kept rather
+    than removed, so removal cannot take a character from a value. The text
+    is then made displayable and masked once, with each value in both of
+    the forms it can show in, which also catches a value that an escape
+    sequence split and its removal joined. CI command markers are broken
+    last. Results are kept per text, since many findings share one line.
     """
 
     def __init__(self, values: Iterable[str]) -> None:
         every = set(values)
-        self._lines = KnownSecrets(every)
-        self._lines_shown = KnownSecrets(display_chars(v) for v in every)
-        self._names = name_secrets(every)
-        self._names_shown = KnownSecrets(display_chars(v) for v in every if _distinctive(v))
-
-    @staticmethod
-    def _show(raw: KnownSecrets, shown: KnownSecrets, text: str, limit: int | None) -> str:
-        first = raw.redact(text, limit=None if limit is None else _FIRST_PASS_LIMIT)
-        return defuse_ci_commands(shown.redact(display_chars(first), limit=limit))
+        self._lines = _Displayed(every)
+        self._names = _Displayed({v for v in every if _distinctive(v)})
 
     def show_line(self, text: str, *, limit: int | None = None) -> str:
         """*text* (a source line) masked and made safe to display."""
-        return self._show(self._lines, self._lines_shown, text, limit)
+        return self._lines.show(text, limit)
 
     def show_name(self, text: str) -> str:
         """*text* (a path or a type) masked and made safe to display."""
-        return self._show(self._names, self._names_shown, text, None)
+        return self._names.show(text, None)
 
 
 def preview(val: str, n: int = 60) -> str:
