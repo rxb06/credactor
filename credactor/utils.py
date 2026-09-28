@@ -274,9 +274,11 @@ def sanitize_for_display(s: str) -> str:
 
 
 def preview(val: str, n: int = 60) -> str:
-    """Truncated, safe-for-display version of *val* (adds an ellipsis when longer
-    than *n*). Shared by the native scanner and external ingest so every
-    ``value_preview`` is formatted identically, with one truncation length."""
+    """*val* cut to *n* characters, with an ellipsis when longer. Truncated,
+    NOT masked: for most secrets the result is the whole secret, so never
+    display or log it; use ``mask_secret``. Shared by the native scanner and
+    external ingest so every ``value_preview`` is formatted identically, with
+    one truncation length."""
     return val[:n] + ('...' if len(val) > n else '')
 
 
