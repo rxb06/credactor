@@ -396,8 +396,10 @@ CI log: escape sequences are removed; control, line-break and bidirectional
 characters, and bytes that could not be decoded, show as `?` (a tab as a
 space); and CI workflow command markers
 (`::` at the start of a line, `##[` and `##vso[`) are broken with a `?`. The
-same applies to the values in warnings on stderr. JSON and SARIF keep paths
-as they are. Verified output:
+same applies to the values in warnings on stderr. JSON and SARIF are not
+sanitized for terminals: they escape control characters, and write the command
+markers with a JSON escape (`#\u0023[`), so the data is unchanged. Verified
+output:
 
 ```text
 ======================================================================

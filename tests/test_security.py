@@ -869,6 +869,44 @@ class TestDefuseCiCommands:
         )
 
 
+class TestJsonOutputHasNoCommandMarkers:
+    """JSON and SARIF often go to stdout in a pipeline; a marker in a path
+    must not reach the job log as is, and the data must not change."""
+
+    NAMES: ClassVar[list[str]] = [
+        '##[error]boom.py',
+        '##vso[task.setvariable variable=A]b.py',
+        '##VSO[task.prependpath]c.py',
+        '###[warning]d.py',
+    ]
+
+    def _findings(self, root):
+        return [
+            {
+                'file': str(root / name),
+                'line': 1,
+                'type': 'pattern:AWS access key',
+                'severity': 'critical',
+                'full_value': _AKIA,
+                'value_preview': _AKIA,
+                'raw': f'k = "{_AKIA}"',
+            }
+            for name in self.NAMES
+        ]
+
+    def test_json(self, tmp_path):
+        text = json_report(self._findings(tmp_path), str(tmp_path))
+        assert _command_lines(text) == []
+        assert [f['file'] for f in json.loads(text)['findings']] == self.NAMES
+
+    def test_sarif(self, tmp_path):
+        text = sarif_report(self._findings(tmp_path), str(tmp_path))
+        assert _command_lines(text) == []
+        results = json.loads(text)['runs'][0]['results']
+        uris = [r['locations'][0]['physicalLocation']['artifactLocation']['uri'] for r in results]
+        assert uris == self.NAMES
+
+
 class TestLogFormatterSanitizes:
     @staticmethod
     def _format(msg, args):

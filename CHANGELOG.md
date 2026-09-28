@@ -27,7 +27,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   byte on a finding's line no longer stops the text report with an encoding
   error. CI workflow command markers in them are broken, so a
   file name or a line of scanned source can no longer be read as a command by
-  the GitHub Actions or Azure Pipelines runner. JSON and SARIF are unchanged.
+  the GitHub Actions or Azure Pipelines runner. JSON and SARIF, which escape
+  control characters already, write those markers with a JSON escape
+  (`#\u0023[`), so the data they decode to is unchanged.
 - **A secret in a file or directory name is masked.** If a value found in the
   run also appears in a path, the path is shown masked in the text, JSON and
   SARIF reports, the list of files skipped by `.gitignore` and the interactive

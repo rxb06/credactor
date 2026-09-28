@@ -295,6 +295,14 @@ def defuse_ci_commands(s: str) -> str:
     return _LINE_COMMAND_RE.sub(r'\1?', s)
 
 
+def defuse_json_ci_commands(text: str) -> str:
+    """Write the '##' of every '##[' and '##vso[' in JSON *text* as
+    ``#\\u0023``, so no line of it can be read as a CI command while the data
+    it decodes to is unchanged. Only for JSON text: a '#' can only occur
+    inside a string there, and a line cannot start with '::'."""
+    return _CI_MARKER_RE.sub(lambda _: '#\\u0023', text)
+
+
 def sanitize_for_display(s: str) -> str:
     """Make an untrusted string safe to print to a terminal or a CI log (SR-06):
     ``display_chars`` then ``defuse_ci_commands``."""

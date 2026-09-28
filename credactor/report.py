@@ -19,6 +19,7 @@ from .types import Finding
 from .utils import (
     KNOWN_MIN_LEN,
     OutputMasker,
+    defuse_json_ci_commands,
     group_by_file,
     mask_secret,
     name_secrets,
@@ -166,7 +167,8 @@ def json_report(findings: list[Finding], root: str) -> str:
         }
         for f in findings
     ]
-    return json.dumps({'findings': output, 'count': len(output)}, indent=2)
+    # SR-06: JSON often goes to stdout in a pipeline, so a job log reads it.
+    return defuse_json_ci_commands(json.dumps({'findings': output, 'count': len(output)}, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +278,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
             }
         ],
     }
-    return json.dumps(sarif, indent=2)
+    return defuse_json_ci_commands(json.dumps(sarif, indent=2))  # SR-06
 
 
 _SARIF_LEVELS = {
