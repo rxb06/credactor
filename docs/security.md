@@ -116,6 +116,10 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
+### Unreleased
+
+- **Text report masking (extends #2/#29).** Every secret value found in a run is masked wherever it appears in the text report, not only the finding's own value at its first occurrence. A line holding a second credential, or the same one twice, shows none of them in full. Matching is longest value first, so a value that is a prefix of another cannot leave the longer one's tail visible, and masking works on the line as displayed: escape sequences are stripped first, then values are masked, and the line is cut to 120 characters last. A finding whose value is not on its stored line, or is under 4 characters, still shows the masked value alone.
+
 ### v2.7.2 (ingestion correctness)
 
 - **A scanner-redacted report cannot drive a redaction**: Gitleaks and Betterleaks both take a `--redact` flag that rewrites `Secret` inside the report, and at its default the value becomes the literal `REDACTED`. That placeholder was ingested as the value to redact and applied as a plain substring replacement, so every line holding the word was rewritten, Credactor's own `REDACTED_BY_CREDACTOR` sentinel included, and the run reported success and exited 0. Both parsers now refuse such a report: fatal exit 2, no bytes written. The truncated form the flag produces at a percentage is left alone, because it cannot match a line holding the full secret and a trailing `...` is ordinary content that a generic rule captures from an elided token in a README or a test fixture.

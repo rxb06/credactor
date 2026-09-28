@@ -12,6 +12,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ## [Unreleased]
 
+### Security
+
+- **The text report masks every known secret on a displayed line.** Masking
+  used to cover only the finding's own value, once. Every value found in the
+  run is now masked wherever it appears in the report, including a second
+  credential on the same line or a repeat of the same one, and a line is cut to
+  length only after masking.
+
 ### Changed
 
 - **`--verbose` now says when the advisory file lock could not be taken.** The

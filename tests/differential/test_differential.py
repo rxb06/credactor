@@ -39,13 +39,6 @@ _HAS_ENCODING_EXTRA = importlib.util.find_spec('charset_normalizer') is not None
 # (case id, report format) -> the task that removes the leak. When that task
 # lands the entry must go: a listed leak that no longer happens fails too.
 KNOWN_OUTPUT_LEAKS: dict[tuple[str, str], str] = {
-    # The text report prints the raw line with only the finding's own value
-    # masked, so other secrets on the same line show in full.
-    ('multi-secret-lines', 'text'): 'SR-05 (T08)',
-    # The native scan reports the whole connection string; the ingested record
-    # reports only its password, so that finding's line shows the rest of the
-    # other finding's value.
-    ('ingest-fix-all', 'text'): 'SR-05 (T08)',
     # A report-controlled rule id is printed as the finding type.
     ('ingest-labels-and-lines', 'text'): 'PA-04 (T09)',
     ('ingest-labels-and-lines', 'json'): 'PA-04 (T09)',

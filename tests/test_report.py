@@ -2,6 +2,8 @@
 
 import io
 import json
+import random
+import re
 from pathlib import Path
 
 from credactor.report import (
@@ -10,10 +12,11 @@ from credactor.report import (
     print_report,
     sarif_report,
 )
-from credactor.utils import mask_secret
+from credactor.utils import KnownSecrets, mask_secret
 
 # Construct test credential via concatenation to prevent self-redaction
 _AWS_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+_GH_TOKEN = 'ghp_' + 'x9Kq2Lm8Rt4Wv6Yb1Nc3Pd5Fg7Hj0Sa2Ue4Io'
 
 
 class TestMaskSecret:
@@ -81,6 +84,147 @@ class TestTextReport:
         output = buf.getvalue()
         assert on_disk not in output  # no unmasked secret
         assert '[REDACTED]' in output  # masked value shown instead
+
+
+def _finding(value, raw, *, line=1, ftype='pattern:AWS access key', path='/tmp/multi.py'):
+    return {
+        'file': path,
+        'line': line,
+        'type': ftype,
+        'severity': 'critical',
+        'full_value': value,
+        'value_preview': value,
+        'raw': raw,
+    }
+
+
+def _text(findings):
+    buf = io.StringIO()
+    print_report(findings, '/tmp', no_color=True, stream=buf)
+    return buf.getvalue()
+
+
+class TestKnownSecrets:
+    def test_masks_every_occurrence(self):
+        assert KnownSecrets([_AWS_KEY]).redact(f'{_AWS_KEY} and {_AWS_KEY}') == (
+            'AKIA[REDACTED] and AKIA[REDACTED]'
+        )
+
+    def test_longest_value_first(self):
+        # A value that is a prefix of another must not split the longer one.
+        longer = _AWS_KEY + 'EXTRA99'
+        out = KnownSecrets([_AWS_KEY, longer]).redact(f'{longer} {_AWS_KEY}')
+        assert out == 'AKIA[REDACTED] AKIA[REDACTED]'
+
+    def test_single_pass(self):
+        # The mask's own visible prefix is never masked again.
+        assert KnownSecrets([_AWS_KEY, 'AKIA']).redact(f'x {_AWS_KEY} y') == 'x AKIA[REDACTED] y'
+
+    def test_short_values_ignored(self):
+        # Values under four characters would mask ordinary text.
+        assert KnownSecrets(['a', 'abc']).redact('a b abc') == 'a b abc'
+
+    def test_limit_cuts_after_masking(self):
+        # A value straddling the cut is masked, never shown in part.
+        text = 'x' * 110 + _AWS_KEY
+        assert KnownSecrets([_AWS_KEY]).redact(text, limit=120) == 'x' * 110 + 'AKIA[REDAC'
+
+    def test_limit_reads_past_masked_values(self):
+        # Masking shortens long values, so the displayed text can come from
+        # beyond the first *limit* characters of the input.
+        first = 'A' * 200
+        text = f'{first} {_GH_TOKEN}'
+        out = KnownSecrets([first, _GH_TOKEN]).redact(text, limit=120)
+        assert out == 'AAAA[REDACTED] ghp_[REDACTED]'
+
+    def test_matches_a_regex_reference(self):
+        # Same result as a longest-first regex alternation, and the same as
+        # slicing the full result when a limit is given.
+        rng = random.Random(5)
+        alphabet = 'ab_AB12'
+        for _ in range(300):
+            values = [
+                ''.join(rng.choice(alphabet) for _ in range(rng.randint(1, 9)))
+                for _ in range(rng.randint(0, 6))
+            ]
+            text = ''.join(rng.choice(alphabet + ' ') for _ in range(rng.randint(0, 60)))
+            long_enough = sorted({v for v in values if len(v) >= 4}, key=lambda v: (-len(v), v))
+            expected = text
+            if long_enough:
+                pattern = re.compile('|'.join(map(re.escape, long_enough)))
+                expected = pattern.sub(lambda m: mask_secret(m.group(0)), text)
+            assert KnownSecrets(values).redact(text) == expected
+            cut = rng.randint(0, 80)
+            assert KnownSecrets(values).redact(text, limit=cut) == expected[:cut]
+
+
+class TestTextReportMasksEveryValue:
+    """SR-05: the text report masks every known secret in a displayed line,
+    not only the first occurrence of the finding's own value."""
+
+    def test_same_value_twice_on_one_line(self):
+        raw = f'a = "{_AWS_KEY}"; b = "{_AWS_KEY}"'
+        out = _text([_finding(_AWS_KEY, raw)])
+        assert _AWS_KEY not in out
+        assert out.count('AKIA[REDACTED]') == 2
+
+    def test_two_secrets_on_one_line(self):
+        raw = f'a = "{_AWS_KEY}"; b = "{_GH_TOKEN}"'
+        findings = [
+            _finding(_AWS_KEY, raw),
+            _finding(_GH_TOKEN, raw, ftype='pattern:GitHub token'),
+        ]
+        out = _text(findings)
+        assert _AWS_KEY not in out
+        assert _GH_TOKEN not in out
+
+    def test_value_that_prefixes_another(self):
+        longer = _GH_TOKEN + 'Zz9'
+        raw = f'a = "{_GH_TOKEN}"; b = "{longer}"; c = "{_AWS_KEY}"'
+        findings = [
+            _finding(_GH_TOKEN, raw, ftype='pattern:GitHub token'),
+            _finding(longer, raw, ftype='pattern:GitHub token'),
+            _finding(_AWS_KEY, raw),
+        ]
+        out = _text(findings)
+        for value in (_GH_TOKEN, longer, _AWS_KEY):
+            assert value not in out
+        assert 'Zz9' not in out  # the longer value's tail is not left behind
+
+    def test_value_known_from_another_file(self):
+        # A secret found in one file is masked wherever it is displayed.
+        findings = [
+            _finding(_AWS_KEY, f'key = "{_AWS_KEY}"', path='/tmp/a.py'),
+            _finding(_GH_TOKEN, f'token = "{_GH_TOKEN}"  # old {_AWS_KEY}', path='/tmp/b.py'),
+        ]
+        out = _text(findings)
+        assert _AWS_KEY not in out
+        assert _GH_TOKEN not in out
+
+    def test_escape_inside_a_value_is_masked_as_displayed(self):
+        # The terminal sanitizer removes escape sequences, which would join a
+        # split copy of the value back together after masking.
+        raw = f'a = "{_AWS_KEY[:8]}\x1b[0m{_AWS_KEY[8:]}"; b = "{_AWS_KEY}"'
+        out = _text([_finding(_AWS_KEY, raw)])
+        assert _AWS_KEY not in out
+        assert out.count('AKIA[REDACTED]') == 2
+
+    def test_value_at_the_display_cut_is_masked_before_cutting(self):
+        raw = 'x' * 110 + _AWS_KEY
+        out = _text([_finding(_AWS_KEY, raw)])
+        assert _AWS_KEY[:6] not in out
+        assert 'x' * 110 + 'AKIA[REDAC\n' in out
+
+    def test_value_too_short_to_mask_in_line(self):
+        # Fails closed: the masked value alone, not the raw line.
+        out = _text([_finding('abc', 'x = "abc"; y = "abc"')])
+        assert 'abc' not in out
+        assert '           [REDACTED]\n' in out
+
+    def test_multiline_raw_with_the_value_twice(self):
+        raw = f'\\n  token: {_GH_TOKEN}\\n  again: {_GH_TOKEN}\\n'
+        out = _text([_finding(_GH_TOKEN, raw, ftype='multiline:GitHub token')])
+        assert _GH_TOKEN not in out
 
 
 class TestJsonReport:

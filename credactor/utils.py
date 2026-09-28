@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 from ._log import logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .types import Finding
 
 # Optional encoding-detection libraries, resolved ONCE at import. The previous
@@ -155,6 +157,64 @@ def mask_secret(value: str, *, visible: int = 4) -> str:
     if len(value) <= visible:
         return '[REDACTED]'
     return value[:visible] + '[REDACTED]'
+
+
+# Shorter known values are not masked inside other text: they would match
+# ordinary words, and mask_secret shows nothing of them anyway.
+KNOWN_MIN_LEN = 4
+
+
+class KnownSecrets:
+    """Every known secret value, indexed once so it can be masked in any
+    number of texts (SR-05).
+
+    A regex alternation of the values costs O(len(text) x len(values)) per
+    text. The index keys each value by its first ``KNOWN_MIN_LEN`` characters,
+    so the cost per character of text does not grow with the number of values.
+    """
+
+    def __init__(self, values: Iterable[str]) -> None:
+        by_prefix: dict[str, dict[int, set[str]]] = {}
+        for v in values:
+            if len(v) >= KNOWN_MIN_LEN:
+                by_prefix.setdefault(v[:KNOWN_MIN_LEN], {}).setdefault(len(v), set()).add(v)
+        self._index = {
+            prefix: [(length, by_len[length]) for length in sorted(by_len, reverse=True)]
+            for prefix, by_len in by_prefix.items()
+        }
+
+    def redact(self, text: str, *, limit: int | None = None) -> str:
+        """Return *text* with every occurrence of every known value masked.
+
+        Matches are leftmost-longest and never rescanned, so a short value
+        cannot split a longer one that contains it, and a mask is never masked
+        again. With *limit*, the result is the first *limit* characters of the
+        fully masked text, and only as much of *text* is read as those need;
+        truncating after masking means a value cut at the edge never shows in
+        part.
+        """
+        index = self._index
+        out: list[str] = []
+        size = 0
+        i = 0
+        n = len(text)
+        while i < n and (limit is None or size < limit):
+            match = None
+            for length, candidates in index.get(text[i : i + KNOWN_MIN_LEN], ()):
+                if text[i : i + length] in candidates:
+                    match = text[i : i + length]
+                    break
+            if match is None:
+                out.append(text[i])
+                size += 1
+                i += 1
+            else:
+                masked = mask_secret(match)
+                out.append(masked)
+                size += len(masked)
+                i += len(match)
+        result = ''.join(out)
+        return result if limit is None else result[:limit]
 
 
 _CONTROL_CHAR_TABLE = str.maketrans(

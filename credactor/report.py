@@ -15,7 +15,14 @@ from typing import Any, TextIO
 
 from . import __version__
 from .types import Finding
-from .utils import group_by_file, mask_secret, relativize, sanitize_for_terminal
+from .utils import (
+    KNOWN_MIN_LEN,
+    KnownSecrets,
+    group_by_file,
+    mask_secret,
+    relativize,
+    sanitize_for_terminal,
+)
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers (#31)
@@ -76,6 +83,9 @@ def print_report(
     color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
+    # SR-05: every value in the report is masked wherever it shows, so a line
+    # holding a second secret, or the same one twice, prints none in full.
+    known = KnownSecrets(sanitize_for_terminal(f['full_value']) for f in findings)
 
     print(f'\n{"=" * 70}', file=stream)
     header = f'  CREDENTIAL SCAN REPORT  --  {len(findings)} finding(s) in {len(by_file)} file(s)'
@@ -90,11 +100,15 @@ def print_report(
             severity = finding['severity']
             sev_color = _SEVERITY_COLOR.get(severity, 'dim')
 
-            # #2/#29 — mask the credential in the raw line display
-            masked_raw = _mask_in_line(finding['raw'], finding['full_value'])
-
+            # #2/#29 — mask the credential in the raw line display. Masking
+            # works on the text as displayed: sanitizing afterwards could
+            # join the pieces of a split value back together.
+            safe_raw = _mask_in_line(
+                sanitize_for_terminal(finding['raw']),
+                sanitize_for_terminal(finding['full_value']),
+                known,
+            )
             safe_type = sanitize_for_terminal(finding['type'])
-            safe_raw = sanitize_for_terminal(masked_raw[:120])
             sev_label = _c(f'[{severity.upper()}]', sev_color, use_color=color)
             print(f'  Line {finding["line"]:>4}  {sev_label}  [{safe_type}]', file=stream)
             print(f'           {safe_raw}', file=stream)
@@ -106,27 +120,36 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
 
-def _mask_in_line(raw_line: str, full_value: str) -> str:
-    """Replace the credential in the raw line with a masked version.
+_RAW_DISPLAY = 120
 
-    If ``full_value`` is not a verbatim substring of ``raw_line`` the substring
-    replace would silently no-op and print the raw line WITH the secret. This
-    happens for ingested findings whose stored value differs from the on-disk
-    form (e.g. a TruffleHog URL-decoded value vs the encoded source). Fail
-    closed: show only the masked value rather than the raw line, so a credential
-    is never emitted unmasked.
+
+def _mask_in_line(raw_line: str, full_value: str, known: KnownSecrets) -> str:
+    """Return the raw line for display with every value in *known* masked,
+    cut to ``_RAW_DISPLAY`` characters after masking. *raw_line*,
+    *full_value* and *known* are all in their sanitized, displayed form.
+
+    If ``full_value`` is not a verbatim substring of ``raw_line``, masking
+    would silently no-op and print the raw line WITH the secret. This happens
+    for ingested findings whose stored value differs from the on-disk form
+    (e.g. a TruffleHog URL-decoded value vs the encoded source). Fail closed:
+    show only the masked value rather than the raw line, so a credential is
+    never emitted unmasked. The same holds for a value too short for
+    ``KnownSecrets`` to mask inside other text.
     """
-    masked = mask_secret(full_value)
-    if full_value and full_value in raw_line:
-        return raw_line.replace(full_value, masked, 1)
-    return masked
+    if len(full_value) >= KNOWN_MIN_LEN and full_value in raw_line:
+        return known.redact(raw_line, limit=_RAW_DISPLAY)
+    return mask_secret(full_value)
 
 
 # ---------------------------------------------------------------------------
 # JSON output (#7)
 # ---------------------------------------------------------------------------
 def json_report(findings: list[Finding], root: str) -> str:
-    """Return findings as a JSON string."""
+    """Return findings as a JSON string.
+
+    The raw source line is not emitted. It must never be added without the
+    masking the text report applies to it (``_mask_in_line``).
+    """
     root_path = Path(root).resolve()
     output = []
     for f in findings:
@@ -148,7 +171,12 @@ def json_report(findings: list[Finding], root: str) -> str:
 # SARIF output (#7)
 # ---------------------------------------------------------------------------
 def sarif_report(findings: list[Finding], root: str) -> str:
-    """Return findings as a SARIF 2.1.0 JSON string."""
+    """Return findings as a SARIF 2.1.0 JSON string.
+
+    The raw source line is read only to compute columns and is not emitted.
+    It must never be added without the masking the text report applies to it
+    (``_mask_in_line``).
+    """
     root_path = Path(root).resolve()
 
     rules: dict[str, dict[str, Any]] = {}
