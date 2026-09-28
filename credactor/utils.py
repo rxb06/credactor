@@ -287,6 +287,16 @@ class KnownSecrets:
         k = bisect.bisect_left(values, rest)
         return k < len(values) and values[k].startswith(rest)
 
+    def tail_start(self, text: str) -> int | None:
+        """Where the longest tail of *text* that is a proper start of a known
+        value (``KNOWN_MIN_LEN`` characters or more) begins, or None."""
+        n = len(text)
+        longest = max(self._longest.values(), default=0)
+        for p in range(max(0, n - longest + 1), n - KNOWN_MIN_LEN + 1):
+            if self._starts_a_value(text, p):
+                return p
+        return None
+
     def spans(self, text: str) -> list[tuple[int, int]]:
         """The ``(start, end)`` spans ``redact`` would mask in *text*, in order."""
         found: list[tuple[int, int]] = []
@@ -405,23 +415,43 @@ def name_secrets(values: Iterable[str]) -> KnownSecrets:
     return KnownSecrets(v for v in values if _distinctive(v))
 
 
-def _display_around(text: str, keep: list[tuple[int, int]]) -> str:
-    """``display_chars(text)``, except that an escape sequence overlapping a
-    span in *keep* is left in place (its ESC still shows as '?') instead of
-    being removed, so removal never cuts into a known value."""
+# An escape sequence left unfinished at the very end of a text, as a cut can
+# leave one.
+_PARTIAL_ESC_TAIL_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?\Z')
+
+
+def _joined(text: str) -> tuple[str, list[int], list[int]]:
+    """``display_chars(text)``, with a map back to *text*: the k-th run of
+    *text* kept between escape sequences starts at ``raw_starts[k]`` in
+    *text* and at ``joined_starts[k]`` in the result."""
     parts: list[str] = []
-    pos = 0
-    k = 0
+    raw_starts: list[int] = []
+    joined_starts: list[int] = []
+    pos = size = 0
     for m in _ESCAPE_SEQ_RE.finditer(text):
-        start, end = m.span()
-        while k < len(keep) and keep[k][1] <= start:
-            k += 1
-        if k < len(keep) and keep[k][0] < end:
-            continue
-        parts.append(text[pos:start])
-        pos = end
-    parts.append(text[pos:])
-    return ''.join(parts).translate(_DISPLAY_TABLE)
+        if m.start() > pos:
+            raw_starts.append(pos)
+            joined_starts.append(size)
+            parts.append(text[pos : m.start()])
+            size += m.start() - pos
+        pos = m.end()
+    if pos < len(text):
+        raw_starts.append(pos)
+        joined_starts.append(size)
+        parts.append(text[pos:])
+    return ''.join(parts).translate(_DISPLAY_TABLE), raw_starts, joined_starts
+
+
+def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort *spans* and merge the ones that overlap (touching ones stay apart,
+    as in ``KnownSecrets.redact``)."""
+    out: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if out and start < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
 
 
 class _Displayed:
@@ -430,24 +460,55 @@ class _Displayed:
     def __init__(self, values: set[str], *, mask_tail: bool = False) -> None:
         self._tail = mask_tail
         self._raw = KnownSecrets(values)
-        # A value shows as display_chars(value) where an escape sequence split
-        # it and its removal joined the parts, and as the per-character image
-        # where it stood whole in the raw text and its escapes were kept.
-        self._shown = KnownSecrets(
-            {display_chars(v) for v in values} | {v.translate(_DISPLAY_TABLE) for v in values}
-        )
+        self._shown = KnownSecrets(display_chars(v) for v in values)
         self._done: dict[tuple[str, int | None], str] = {}
 
     def show(self, text: str, limit: int | None) -> str:
         key = (text, limit)
         if key not in self._done:
-            if '\x1b' in text:  # every sequence display_chars removes starts with ESC
-                shown = _display_around(text, self._raw.spans(text))
-            else:
-                shown = text.translate(_DISPLAY_TABLE)
-            masked = self._shown.redact(shown, limit=limit, mask_tail=self._tail)
-            self._done[key] = defuse_ci_commands(masked)
+            self._done[key] = defuse_ci_commands(self._mask(text, limit))
         return self._done[key]
+
+    def _mask(self, text: str, limit: int | None) -> str:
+        if self._tail:
+            text = _PARTIAL_ESC_TAIL_RE.sub('', text)
+        if '\x1b' not in text:
+            # Every sequence display_chars removes starts with ESC. Without
+            # one it maps each character on its own, so the displayed forms
+            # of the values find every occurrence.
+            shown = text.translate(_DISPLAY_TABLE)
+            return self._shown.redact(shown, limit=limit, mask_tail=self._tail)
+        # Mask each span where a value stands in the raw text (an escape
+        # sequence next to it cannot take a character from it) and each span
+        # where a value's displayed form shows once escapes are removed (one
+        # may have split it), merged; render everything else for display.
+        joined, raw_starts, joined_starts = _joined(text)
+
+        def to_raw(j: int) -> int:
+            k = bisect.bisect_right(joined_starts, j) - 1
+            return raw_starts[k] + j - joined_starts[k]
+
+        spans = self._raw.spans(text)
+        spans += [(to_raw(a), to_raw(b - 1) + 1) for a, b in self._shown.spans(joined)]
+        if self._tail:
+            start = self._shown.tail_start(joined)
+            if start is not None:
+                spans.append((to_raw(start), len(text)))
+        out: list[str] = []
+        size = 0
+        pos = 0
+        for start, end in _merged(spans):
+            if limit is not None and size >= limit:
+                break
+            before = display_chars(text[pos:start])
+            masked = mask_secret(display_chars(text[start:end]))
+            out += [before, masked]
+            size += len(before) + len(masked)
+            pos = end
+        else:
+            out.append(display_chars(text[pos:]))
+        result = ''.join(out)
+        return result if limit is None else result[:limit]
 
 
 class OutputMasker:

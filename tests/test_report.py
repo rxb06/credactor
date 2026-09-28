@@ -3,6 +3,7 @@
 import io
 import json
 import random
+import string
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from credactor.report import (
     sarif_report,
 )
 from credactor.scanner import scan_file
-from credactor.utils import KnownSecrets, mask_secret
+from credactor.utils import KnownSecrets, OutputMasker, mask_secret
 
 # Construct test credential via concatenation to prevent self-redaction
 _AWS_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
@@ -541,6 +542,51 @@ class TestMaskingAroundEscapesHarder:
         ]
         assert 'N3pL6tR1x9' not in _text(findings)
 
+    def test_escape_inside_one_value_splitting_another(self):
+        # The password holds the escape that splits the token.
+        token = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+        password = 'b12\x1b[mCd34Ef5'
+        raw = f'note ghp_Ab12\x1b[mCd34Ef56Gh78Ij90Kl12Mn34Op56Qr78 aws = "{_AWS_KEY}"'
+        findings = [
+            _finding(token, f'token = "{token}"'),
+            _finding(_AWS_KEY, raw, line=2),
+            _finding(password, f'password = "{password}"', line=3),
+        ]
+        assert _fragments(token, _text(findings)) == set()
+
+    def test_fuzz_no_value_shows_in_any_form(self):
+        # Lines built from values, values split by escape sequences, stray
+        # escapes and filler: no value shows, in raw or displayed form, and no
+        # ESC reaches the output.
+        rng = random.Random(7)
+        alnum = string.ascii_letters + string.digits
+        escapes = ['\x1b[m', '\x1b[31m', '\x1b[', '\x1b]0;t\x07', '\x1b[?25l', '\x1b']
+        for _ in range(400):
+            values = [
+                ''.join(rng.choice(alnum) for _ in range(rng.randint(8, 14))) for _ in range(3)
+            ]
+            pieces = []
+            for _ in range(rng.randint(1, 8)):
+                kind = rng.randrange(4)
+                v = rng.choice(values)
+                if kind == 0:
+                    pieces.append(v)
+                elif kind == 1:
+                    cut = rng.randint(1, len(v) - 1)
+                    pieces.append(v[:cut] + rng.choice(escapes[:2] + escapes[3:5]) + v[cut:])
+                elif kind == 2:
+                    pieces.append(rng.choice(escapes))
+                else:
+                    pieces.append(
+                        ''.join(rng.choice(alnum + ' ') for _ in range(rng.randint(0, 6)))
+                    )
+            line = ''.join(pieces)
+            masker = OutputMasker(values)
+            out = masker.show_line(line)
+            assert '\x1b' not in out
+            for v in values:
+                assert v not in out, (line, values, out)
+
     def test_split_value_far_into_a_long_line(self):
         token = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
         osc = '\x1b]' + 'x' * 4040 + '\x07'
@@ -562,6 +608,12 @@ class TestLineCutBeforeTheReport:
         assert known.redact('x = "' + _AWS_KEY[:15], mask_tail=True) == 'x = "AKIA[REDACTED]'
         assert known.redact('x = "' + _AWS_KEY[:15]) == 'x = "' + _AWS_KEY[:15]
         assert known.redact('x = AKIZ', mask_tail=True) == 'x = AKIZ'
+
+    def test_cut_inside_a_trailing_escape(self):
+        # The cut left an unterminated escape right after the start of a value.
+        raw = f'x = "{_GH_TOKEN}" ' + _AWS_KEY[:19] + '\x1b['
+        findings = [_finding(_GH_TOKEN, raw), _finding(_AWS_KEY, f'k = "{_AWS_KEY}"', line=2)]
+        assert _fragments(_AWS_KEY, _text(findings)) == set()
 
     def test_value_cut_at_the_end_of_a_long_line(self, tmp_path):
         line = f'x = "{_GH_TOKEN}" ' + '\x1b[m' * 1400
@@ -645,6 +697,19 @@ class TestDistinctiveValuesOnlyInNames:
         data = json.loads(json_report(findings, str(tmp_path)))['findings'][0]
         assert data['file'] == 'Corr[REDACTED].txt'
         assert data['type'] == 'external:gitleaks:Corr[REDACTED]'
+
+    def test_value_split_by_an_escape_in_a_name_after_its_tab(self, tmp_path):
+        # The name shows the value's display form (tab as a space) only once
+        # the escape that splits it is removed.
+        value = 'Zq7w\tPx2mTr9vLk3nQ8sB'
+        path = tmp_path / 'Zq7w\tPx2m\x1b[0mTr9vLk3nQ8sB.py'
+        findings = [
+            _finding(value, f'k = "{value}"', path=str(tmp_path / 'a.py')),
+            _finding(_AWS_KEY, f'k = "{_AWS_KEY}"', path=str(path)),
+        ]
+        buf = io.StringIO()
+        print_report(findings, str(tmp_path), no_color=True, stream=buf)
+        assert _fragments('Zq7w Px2mTr9vLk3nQ8sB', buf.getvalue()) == set()
 
     def test_distinctive_values_still_mask_names(self, tmp_path):
         findings = [
