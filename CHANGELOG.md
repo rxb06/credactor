@@ -36,8 +36,8 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   prompt. The text and SARIF reports add
   a note to rename the file or directory. A masked SARIF path no longer links
   to the file. Paths and types are masked only with values of at least 8
-  characters that hold a letter and a digit, so a password that is also a
-  word does not mask unrelated paths or rule ids.
+  characters that are not a plain number or a plain word, so a password that
+  is also a word does not mask unrelated paths or rule ids.
 - **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
   ingested report becomes part of the finding type and, in SARIF, the rule id.
   A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)

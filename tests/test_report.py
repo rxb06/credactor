@@ -562,6 +562,8 @@ class TestDistinctiveValuesOnlyInNames:
             ),
             _finding('20260928', 'pin = "20260928"', path=str(root / 'logs/20260928/app.py')),
             _finding('ab12cd', 'k = "ab12cd"', path=str(root / 'src/ab12cd/x.py')),
+            _finding('Production', 'pw = "Production"', path=str(root / 'Production/a.py')),
+            _finding('STAGINGENV', 'pw = "STAGINGENV"', path=str(root / 'STAGINGENV/b.py')),
         ]
 
     def test_text(self, tmp_path):
@@ -572,6 +574,8 @@ class TestDistinctiveValuesOnlyInNames:
         assert 'Note:' not in out
         assert f'  FILE: {Path("logs/20260928/app.py")}\n' in out  # no letter
         assert f'  FILE: {Path("src/ab12cd/x.py")}\n' in out  # under 8 characters
+        assert f'  FILE: {Path("Production/a.py")}\n' in out  # a capitalised word
+        assert f'  FILE: {Path("STAGINGENV/b.py")}\n' in out  # one case, letters only
         assert '[pattern:GitHub token]' in out
         assert '[external:gitleaks:github-token]' in out
         assert 'db_password = "prod[REDACTED]"' in out  # lines still use every value
@@ -586,6 +590,21 @@ class TestDistinctiveValuesOnlyInNames:
         assert uri == str(Path('config/production/app.py'))
         assert run['results'][1]['ruleId'] == 'pattern-GitHub token'
         assert 'holds a secret' not in run['results'][1]['message']['text']
+
+    def test_mixed_case_letters_mask_names(self, tmp_path):
+        # A passphrase of letters only is not a plain word.
+        value = 'CorrectHorseBatteryStaple'
+        findings = [
+            _finding(
+                value,
+                f'note {value} here',
+                path=str(tmp_path / f'{value}.txt'),
+                ftype=f'external:gitleaks:{value}',
+            )
+        ]
+        data = json.loads(json_report(findings, str(tmp_path)))['findings'][0]
+        assert data['file'] == 'Corr[REDACTED].txt'
+        assert data['type'] == 'external:gitleaks:Corr[REDACTED]'
 
     def test_distinctive_values_still_mask_names(self, tmp_path):
         findings = [

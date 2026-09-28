@@ -361,18 +361,19 @@ def sanitize_for_display(s: str) -> str:
     return defuse_ci_commands(display_chars(s))
 
 
-# A known value masks a path or a type only if it looks like a secret, not a
-# word: a found password such as 'production' must not mask an unrelated
-# directory (breaking its SARIF link) or change a rule id between runs.
+# A known value masks a path or a type only if it looks like a secret rather
+# than a word or a number: a found password such as 'production' must not
+# mask an unrelated directory (breaking its SARIF link) or change a rule id
+# between runs.
 _NAME_VALUE_MIN = 8
 
 
 def _distinctive(value: str) -> bool:
-    return (
-        len(value) >= _NAME_VALUE_MIN
-        and any(c.isdigit() for c in value)
-        and any(c.isalpha() for c in value)
-    )
+    """At least ``_NAME_VALUE_MIN`` characters, and neither a plain number
+    nor a plain word (letters only, in one case or capitalised)."""
+    if len(value) < _NAME_VALUE_MIN or value.isdigit():
+        return False
+    return not (value.isalpha() and (value.islower() or value.isupper() or value.istitle()))
 
 
 def name_secrets(values: Iterable[str]) -> KnownSecrets:
