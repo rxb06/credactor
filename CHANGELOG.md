@@ -19,7 +19,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   run is now masked wherever it appears in the report, including a second
   credential on the same line or a repeat of the same one, and a line is cut to
   length only after masking. A multi-line finding now keeps its whole block,
-  so a value past the first 120 characters is masked before the cut too.
+  so a value past the first 120 characters is masked before the cut too, and a
+  known value cut off at the end of a long line (the scanner keeps 4,096
+  characters of a line) is masked as well.
 - **Text output is safe to print into a terminal or a CI log.** Paths, source
   lines, types and the values in warnings now have terminal escape sequences
   removed, and control, line-break and bidirectional characters, and bytes

@@ -535,6 +535,29 @@ class TestMaskingAroundEscapesHarder:
         assert _fragments(token, _text(findings)) == set()
 
 
+class TestLineCutBeforeTheReport:
+    """The scanner keeps at most 4,096 characters of a line. A known value
+    cut off at the end of that must not show in part once masking or escape
+    removal brings the end of the line into view."""
+
+    def test_tail_that_starts_a_known_value_is_masked(self):
+        known = KnownSecrets([_AWS_KEY])
+        assert known.redact('x = "' + _AWS_KEY[:15], mask_tail=True) == 'x = "AKIA[REDACTED]'
+        assert known.redact('x = "' + _AWS_KEY[:15]) == 'x = "' + _AWS_KEY[:15]
+        assert known.redact('x = AKIZ', mask_tail=True) == 'x = AKIZ'
+
+    def test_value_cut_at_the_end_of_a_long_line(self, tmp_path):
+        line = f'x = "{_GH_TOKEN}" ' + '\x1b[m' * 1400
+        line = (line + ' ' * 4096)[: 4096 - 15] + _AWS_KEY + '"'
+        (tmp_path / 'a.py').write_text(line + '\n', encoding='utf-8')
+        (tmp_path / 'b.py').write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        findings = scan_file(str(tmp_path / 'a.py'), config=Config())
+        findings += scan_file(str(tmp_path / 'b.py'), config=Config())
+        buf = io.StringIO()
+        print_report(findings, str(tmp_path), no_color=True, stream=buf)
+        assert _fragments(_AWS_KEY, buf.getvalue()) == set()
+
+
 class TestDistinctiveValuesOnlyInNames:
     """Paths and types are masked only with values that look like secrets,
     not words: a found password such as 'production' must not mask an

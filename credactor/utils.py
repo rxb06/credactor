@@ -234,7 +234,7 @@ class KnownSecrets:
                 return len(parent)
             s = s[:common]
 
-    def redact(self, text: str, *, limit: int | None = None) -> str:
+    def redact(self, text: str, *, limit: int | None = None, mask_tail: bool = False) -> str:
         """Return *text* with every occurrence of every known value masked.
 
         Matches are leftmost-longest, and a value that starts inside a match
@@ -243,7 +243,9 @@ class KnownSecrets:
         never masked again. With *limit*, the result is the first *limit*
         characters of the fully masked text, and only as much of *text* is
         read as those need; truncating after masking means a value cut at the
-        edge never shows in part.
+        edge never shows in part. With *mask_tail*, text that ends with the
+        start of a known value (``KNOWN_MIN_LEN`` characters or more) has that
+        tail masked too, for text that was cut before it got here.
         """
         out: list[str] = []
         size = 0
@@ -251,6 +253,8 @@ class KnownSecrets:
         n = len(text)
         while i < n and (limit is None or size < limit):
             end = self._span_end(text, i)
+            if not end and mask_tail and self._starts_a_value(text, i):
+                end = n
             if not end:
                 out.append(text[i])
                 size += 1
@@ -262,6 +266,17 @@ class KnownSecrets:
             i = end
         result = ''.join(out)
         return result if limit is None else result[:limit]
+
+    def _starts_a_value(self, text: str, i: int) -> bool:
+        """Whether ``text[i:]`` (at least KNOWN_MIN_LEN characters) is a proper
+        start of a known value."""
+        prefix = text[i : i + KNOWN_MIN_LEN]
+        values = self._index.get(prefix)
+        if values is None or len(text) - i >= self._longest[prefix]:
+            return False
+        rest = text[i:]
+        k = bisect.bisect_left(values, rest)
+        return k < len(values) and values[k].startswith(rest)
 
     def spans(self, text: str) -> list[tuple[int, int]]:
         """The ``(start, end)`` spans ``redact`` would mask in *text*, in order."""
@@ -403,7 +418,8 @@ def _display_around(text: str, keep: list[tuple[int, int]]) -> str:
 class _Displayed:
     """Masks one set of known values in text for display."""
 
-    def __init__(self, values: set[str]) -> None:
+    def __init__(self, values: set[str], *, mask_tail: bool = False) -> None:
+        self._tail = mask_tail
         self._raw = KnownSecrets(values)
         # A value shows as display_chars(value) where an escape sequence split
         # it and its removal joined the parts, and as the per-character image
@@ -420,7 +436,8 @@ class _Displayed:
                 shown = _display_around(text, self._raw.spans(text))
             else:
                 shown = text.translate(_DISPLAY_TABLE)
-            self._done[key] = defuse_ci_commands(self._shown.redact(shown, limit=limit))
+            masked = self._shown.redact(shown, limit=limit, mask_tail=self._tail)
+            self._done[key] = defuse_ci_commands(masked)
         return self._done[key]
 
 
@@ -440,7 +457,9 @@ class OutputMasker:
 
     def __init__(self, values: Iterable[str]) -> None:
         every = set(values)
-        self._lines = _Displayed(every)
+        # A source line may have been cut before it got here (the scanner
+        # keeps 4,096 characters), so a value cut off at its end is masked.
+        self._lines = _Displayed(every, mask_tail=True)
         self._names = _Displayed({v for v in every if _distinctive(v)})
 
     def show_line(self, text: str, *, limit: int | None = None) -> str:
