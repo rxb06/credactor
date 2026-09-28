@@ -176,6 +176,26 @@ runs:
             ;;
         esac
 
+        # SR-04: these values end up in $GITHUB_OUTPUT, in error messages and in
+        # the argument list. A CR or LF could add forged output lines or
+        # workflow commands, and "read -ra" below would silently drop every
+        # line of extra-args after the first, so refuse line breaks outright.
+        reject_line_breaks() {
+          case "$2" in
+            *$'\n'* | *$'\r'*)
+              echo "::error::The $1 input contains a line break, which is not allowed."
+              exit 2
+              ;;
+          esac
+        }
+        reject_line_breaks path "$TARGET"
+        reject_line_breaks output-file "$OUTPUT_FILE"
+        reject_line_breaks config "$CONFIG_PATH"
+        reject_line_breaks from-gitleaks "$FROM_GITLEAKS"
+        reject_line_breaks from-trufflehog "$FROM_TRUFFLEHOG"
+        reject_line_breaks from-betterleaks "$FROM_BETTERLEAKS"
+        reject_line_breaks extra-args "$EXTRA_ARGS"
+
         # --- Preflight: mirror Credactor's documented exit-2 contracts, but
         # --- fail with a message that names the workflow input at fault.
         INGEST=""
@@ -313,8 +333,6 @@ runs:
           rm -f "$OUT"
         fi
 
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-
         # --- Findings count and report path, for downstream steps.
         count=""
         if [ -n "$DEST" ] && [ -s "$DEST" ]; then
@@ -329,6 +347,9 @@ runs:
           count="$("$PYBIN" -I -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$DEST" "$FORMAT" 2>/dev/null)" || count=""
         fi
         echo "findings-count=$count" >> "$GITHUB_OUTPUT"
+        # Written last, so no other output line can shadow it (SR-04). The gate
+        # step reads this value.
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
         # --- Job summary.
         {

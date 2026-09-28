@@ -226,3 +226,22 @@ jobs:
           [ -L symlink-fixture/credactor-results.sarif ] || { echo "::error::the report symlink was replaced"; exit 1; }
           [ "$DIR" = "failure" ] || { echo "::error::output-file outside the workspace did not fail the step ($DIR)"; exit 1; }
           [ -z "$(ls -A "$HOME/credactor-outside")" ] || { echo "::error::a report was written outside the workspace"; exit 1; }
+
+      # SR-04: a line break in output-file must fail the step before any
+      # output is written, not append a second, forged exit-code line.
+      - id: newline-output
+        uses: ./
+        continue-on-error: true
+        with:
+          working-directory: findings-fixture
+          format: json
+          output-file: "report.json\nexit-code=0"
+
+      - name: Assert a line break in an input is refused
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.newline-output.outcome }}
+          CODE: ${{ steps.newline-output.outputs.exit-code }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::a line break in output-file did not fail the step ($OUTCOME)"; exit 1; }
+          [ -z "$CODE" ] || { echo "::error::exit-code was set to '$CODE' despite the refused input"; exit 1; }

@@ -123,7 +123,8 @@ Gating on a combined native and Gitleaks result:
 
 Outputs: `exit-code` (0 clean, 1 findings, 2 error), `findings-count` (json and
 sarif only) and `report-file` (absolute path, when one was written). Read the
-report through `report-file` rather than assuming its location.
+report through `report-file` rather than assuming its location. Path and
+argument inputs that contain a line break fail the step.
 
 Only exit 1 counts as a findings result. Any other non-zero code, including a
 failed install, fails the step as an error rather than reporting a credential

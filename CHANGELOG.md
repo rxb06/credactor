@@ -24,6 +24,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   unchanged) only if that path is not a symlink, is a regular file or absent,
   and resolves inside the workspace or the runner temp directory. Otherwise
   the step fails. Nothing in the checkout is modified while it is scanned.
+- **The GitHub Action refuses line breaks in its path and argument inputs.**
+  `path`, `output-file`, `config`, the `from-*` reports and `extra-args` fail
+  the step if they contain a CR or LF, and `exit-code` is now the last output
+  the step writes, so no other output line can override it.
 
 ### Fixed
 

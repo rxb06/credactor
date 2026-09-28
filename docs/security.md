@@ -120,6 +120,7 @@ This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 
 - **GitHub Action isolation.** The install step runs from `$RUNNER_TEMP`, and every Python call in the action uses isolated mode (`-I`), so the current directory is never on `sys.path` and a module in the checkout cannot shadow pip or the standard library. The `credactor` console script is called directly, since a console script puts its own `bin/` directory first on `sys.path`, not the current directory. Pinned by the `action-selftest` CI job.
 - **GitHub Action report path.** The report destination can be a path the checkout controls, so it is never written while the scan runs and never through a symlink. The scan writes to a fresh file in `$RUNNER_TEMP`; the report is then copied to `output-file` only if the destination is not a symlink, is a regular file or absent, and resolves inside the workspace or the runner temp directory, checked before the scan and again right before the write. Otherwise the step fails with exit 2. Pinned by `action-selftest` (a symlinked default report name and a directory symlink out of the workspace).
+- **GitHub Action outputs.** `path`, `output-file`, `config`, the `from-*` inputs and `extra-args` are rejected (exit 2) if they contain a CR or LF, before any output is written, and `exit-code` is written last so no other line in `$GITHUB_OUTPUT` can shadow the value the gate reads.
 
 ### v2.7.2 (ingestion correctness)
 
