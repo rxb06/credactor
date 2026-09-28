@@ -20,7 +20,7 @@
     "commit": null,
     "line": 2,
     "preview": "d631f4d08459385d",
-    "raw": "\\n  token: <v:8c5a659e7f42eb95>~109",
+    "raw": "\\n  token: <v:8c5a659e7f42eb95>\\n",
     "severity": "high",
     "type": "multiline:JWT token",
     "value": "8c5a659e7f42eb95"
@@ -40,7 +40,7 @@
     "commit": null,
     "line": 2,
     "preview": "d631f4d08459385d",
-    "raw": "\\n  token: <v:8c5a659e7f42eb95>~109",
+    "raw": "\\n  token: <v:8c5a659e7f42eb95>\\n",
     "severity": "high",
     "type": "multiline:JWT token",
     "value": "8c5a659e7f42eb95"

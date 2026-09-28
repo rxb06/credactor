@@ -226,10 +226,12 @@ def sarif_report(findings: list[Finding], root: str) -> str:
         name_note = f'. {_NAME_NOTE.capitalize()}.' if uri != rel else ''
 
         # Column positions for precise annotation. Omit them when the value
-        # isn't found on the stored line rather than pointing at a wrong column.
+        # isn't found on the stored line rather than pointing at a wrong column,
+        # and for a multi-line finding, whose raw is the whole block.
         raw_line = f['raw']
         full_val = f['full_value']
-        idx = raw_line.find(full_val) if full_val else -1
+        multiline = f['type'].startswith('multiline:')
+        idx = raw_line.find(full_val) if full_val and not multiline else -1
 
         region: dict[str, Any] = {
             'startLine': f['line'],

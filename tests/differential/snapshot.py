@@ -92,7 +92,7 @@ def _mask(text: str, values: set[str], *, truncated_tail: bool = False) -> str:
     """Replace every known value in *text* with its hash token.
 
     With ``truncated_tail``, also mask a value cut off at the very end of the
-    text (raw fields of multi-line findings keep 120 characters), down to
+    text (a multi-line block over the scanner's size cap is cut), down to
     ``_MIN_TAIL`` characters; shorter tails are left as they are. The kept
     length is recorded (``~k``) so a change in where the cut falls still shows.
     """

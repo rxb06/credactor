@@ -5,12 +5,14 @@ import json
 import random
 from pathlib import Path
 
+from credactor.config import Config
 from credactor.report import (
     json_report,
     print_gitignore_skipped,
     print_report,
     sarif_report,
 )
+from credactor.scanner import scan_file
 from credactor.utils import KnownSecrets, mask_secret
 
 # Construct test credential via concatenation to prevent self-redaction
@@ -377,6 +379,45 @@ class TestSecretInFileName:
         assert 'file name' not in self._text_at(findings, tmp_path)
         sarif = json.loads(sarif_report(findings, str(tmp_path)))
         assert sarif['runs'][0]['results'][0]['message']['text'].endswith('(AKIA[REDACTED])')
+
+
+class TestMultilineRawIsWhole:
+    """A multi-line finding's raw holds the whole block, so the report can
+    mask a value that sits past the first 120 characters before cutting."""
+
+    TOKEN = 'ghp_' + 'Mn34Op56Qr78St90Uv12Wx34Yz56Ab78Cd90'
+
+    def _scan(self, tmp_path):
+        path = tmp_path / 'cfg.js'
+        path.write_text(
+            'const cfg = `\n'
+            f'primary: {self.TOKEN}\n'
+            'note: rotate this one every ninety\n'
+            f'backup: {self.TOKEN}\n'
+            '`;\n',
+            encoding='utf-8',
+        )
+        return scan_file(str(path), config=Config())
+
+    def test_no_part_of_a_value_past_the_cut_shows(self, tmp_path):
+        # The second copy starts before character 120 of the escaped block
+        # and ends after it.
+        findings = self._scan(tmp_path)
+        buf = io.StringIO()
+        print_report(findings, str(tmp_path), no_color=True, stream=buf)
+        out = buf.getvalue()
+        leaked = {self.TOKEN[i : i + 8] for i in range(4, len(self.TOKEN) - 7)} & {
+            out[j : j + 8] for j in range(len(out) - 7)
+        }
+        assert leaked == set()
+        (block,) = [f for f in findings if f['type'].startswith('multiline:')]
+        assert block['raw'].count(self.TOKEN) == 2
+
+    def test_sarif_omits_columns_for_a_block(self, tmp_path):
+        findings = [f for f in self._scan(tmp_path) if f['type'].startswith('multiline:')]
+        run = json.loads(sarif_report(findings, str(tmp_path)))['runs'][0]
+        region = run['results'][0]['locations'][0]['physicalLocation']['region']
+        assert 'startColumn' not in region
 
 
 class TestJsonReport:
