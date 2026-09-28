@@ -18,10 +18,12 @@ from .types import Finding
 from .utils import (
     KNOWN_MIN_LEN,
     KnownSecrets,
+    defuse_ci_commands,
+    display_chars,
     group_by_file,
     mask_secret,
     relativize,
-    sanitize_for_terminal,
+    sanitize_for_display,
 )
 
 # ---------------------------------------------------------------------------
@@ -54,7 +56,7 @@ def _c(text: str, color: str, *, use_color: bool = True) -> str:
     return f'{code}{text}{_COLORS["reset"]}' if code else text
 
 
-def _should_use_color(no_color: bool, stream: TextIO = sys.stdout) -> bool:
+def _should_use_color(no_color: bool, stream: TextIO) -> bool:
     """Determine whether to use ANSI color output on *stream*."""
     if no_color:
         return False
@@ -69,7 +71,7 @@ def print_report(
     root: str,
     *,
     no_color: bool = False,
-    stream: TextIO = sys.stdout,
+    stream: TextIO | None = None,
 ) -> None:
     """Print the human-readable text report (secrets masked, paths sanitized).
 
@@ -80,12 +82,14 @@ def print_report(
     """
     if not findings:
         return
+    if stream is None:
+        stream = sys.stdout  # looked up per call, so redirection is honoured
     color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
     # SR-05/PA-04: every value in the report is masked wherever it shows, in
     # the line and in the type (an ingested type holds a report's label).
-    known = KnownSecrets(sanitize_for_terminal(f['full_value']) for f in findings)
+    known = KnownSecrets(display_chars(f['full_value']) for f in findings)
 
     print(f'\n{"=" * 70}', file=stream)
     header = f'  CREDENTIAL SCAN REPORT  --  {len(findings)} finding(s) in {len(by_file)} file(s)'
@@ -93,7 +97,7 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
     for filepath, file_findings in sorted(by_file.items()):
-        safe_rel = sanitize_for_terminal(relativize(filepath, root_path))
+        safe_rel = sanitize_for_display(relativize(filepath, root_path))
         print(_c(f'  FILE: {safe_rel}', 'bold', use_color=color), file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
@@ -101,14 +105,17 @@ def print_report(
             sev_color = _SEVERITY_COLOR.get(severity, 'dim')
 
             # #2/#29 — mask the credential in the raw line display. Masking
-            # works on the text as displayed: sanitizing afterwards could
-            # join the pieces of a split value back together.
-            safe_raw = _mask_in_line(
-                sanitize_for_terminal(finding['raw']),
-                sanitize_for_terminal(finding['full_value']),
-                known,
+            # works on the characters as displayed (removing an escape
+            # sequence afterwards could join a split value back together);
+            # workflow command markers are broken after masking (SR-06).
+            safe_raw = defuse_ci_commands(
+                _mask_in_line(
+                    display_chars(finding['raw']),
+                    display_chars(finding['full_value']),
+                    known,
+                )
             )
-            safe_type = known.redact(sanitize_for_terminal(finding['type']))
+            safe_type = defuse_ci_commands(known.redact(display_chars(finding['type'])))
             sev_label = _c(f'[{severity.upper()}]', sev_color, use_color=color)
             print(f'  Line {finding["line"]:>4}  {sev_label}  [{safe_type}]', file=stream)
             print(f'           {safe_raw}', file=stream)
@@ -289,11 +296,13 @@ def _sarif_level(severity: str) -> str:
 # Gitignore skip report
 # ---------------------------------------------------------------------------
 def print_gitignore_skipped(
-    skipped: list[str], root: str, *, no_color: bool = False, stream: TextIO = sys.stdout
+    skipped: list[str], root: str, *, no_color: bool = False, stream: TextIO | None = None
 ) -> None:
     """List the files a ``.gitignore`` pattern excluded from the scan."""
     if not skipped:
         return
+    if stream is None:
+        stream = sys.stdout
     root_path = Path(root).resolve()
     color = _should_use_color(no_color, stream)
     print(
@@ -306,5 +315,5 @@ def print_gitignore_skipped(
     )
     for s in sorted(skipped):
         rel = relativize(s, root_path)
-        print(f'    {sanitize_for_terminal(rel)}', file=stream)
+        print(f'    {sanitize_for_display(rel)}', file=stream)
     print(file=stream)

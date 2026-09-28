@@ -19,6 +19,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   run is now masked wherever it appears in the report, including a second
   credential on the same line or a repeat of the same one, and a line is cut to
   length only after masking.
+- **Text output is safe to print into a terminal or a CI log.** Paths, source
+  lines, types and the values in warnings now have terminal escape sequences
+  removed, and control, line-break and bidirectional characters shown as `?`
+  (a tab as a space). CI workflow command markers in them are broken, so a
+  file name or a line of scanned source can no longer be read as a command by
+  the GitHub Actions or Azure Pipelines runner. JSON and SARIF are unchanged.
 - **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
   ingested report becomes part of the finding type and, in SARIF, the rule id.
   A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
@@ -29,6 +35,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **The text report follows `sys.stdout` when it is redirected.**
+  `print_report` and `print_gitignore_skipped` looked up `sys.stdout` once, at
+  import, so `contextlib.redirect_stdout` (or pytest's `capsys`) did not capture
+  them. They now look it up on each call.
 - **`--verbose` now says when the advisory file lock could not be taken.** The
   lock is still best effort, so the rewrite proceeds unlocked as before, but the
   run now logs the reason instead of continuing silently.

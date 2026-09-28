@@ -18,11 +18,13 @@ from .config import DEFAULT_REPLACEMENT, Config
 from .types import Finding
 from .utils import (
     KnownSecrets,
+    defuse_ci_commands,
     detect_encoding,
+    display_chars,
     group_by_file,
     mask_secret,
     relativize,
-    sanitize_for_terminal,
+    sanitize_for_display,
 )
 
 
@@ -702,16 +704,16 @@ def interactive_review(
     print(f'{"=" * 70}\n')
 
     # PA-04: an ingested type holds a report's label, which can hold a secret.
-    known = KnownSecrets(sanitize_for_terminal(f['full_value']) for f in findings)
+    known = KnownSecrets(display_chars(f['full_value']) for f in findings)
 
     for i, finding in enumerate(findings, 1):
         rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_terminal(rel)
-        safe_type = known.redact(sanitize_for_terminal(finding['type']))
-        safe_masked = sanitize_for_terminal(masked)
+        safe_rel = sanitize_for_display(rel)
+        safe_type = defuse_ci_commands(known.redact(display_chars(finding['type'])))
+        safe_masked = sanitize_for_display(masked)
 
         print(f'  [{i}/{total}]  {safe_rel}  --  line {finding["line"]}')
         print(f'  Type     : {safe_type}')

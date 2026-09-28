@@ -391,7 +391,12 @@ journaling filesystems.
 
 Human-readable report; the credential is masked to its first 4 characters +
 `[REDACTED]`. `--no-color` strips ANSI codes (auto-disabled when stdout is not a
-terminal). Verified output:
+terminal). Paths, source lines and types are printed safe for a terminal or a
+CI log: escape sequences are removed; control, line-break and bidirectional
+characters show as `?` (a tab as a space); and CI workflow command markers
+(`::` at the start of a line, `##[` and `##vso[`) are broken with a `?`. The
+same applies to the values in warnings on stderr. JSON and SARIF keep paths
+as they are. Verified output:
 
 ```text
 ======================================================================

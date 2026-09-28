@@ -20,7 +20,7 @@ from .report import json_report, print_gitignore_skipped, print_report, sarif_re
 from .scanner import scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import group_by_file, sanitize_for_terminal
+from .utils import group_by_file, sanitize_for_display
 from .walker import (
     GitUnavailableError,
     scan_git_history,
@@ -323,10 +323,12 @@ def _handle_errored_files(errored_files: list[str], config: Config) -> None:
     """Report files that errored during scan; honour ``--fail-on-error``."""
     if not errored_files:
         return
+    # One argument per path, so the log formatter sanitizes each (SR-06);
+    # the line breaks belong to the template.
     logger.warning(
-        '%d file(s) could not be scanned:\n%s',
+        '%d file(s) could not be scanned:' + '\n  - %s' * len(errored_files),
         len(errored_files),
-        '\n'.join(f'  - {sanitize_for_terminal(fp)}' for fp in errored_files),
+        *errored_files,
     )
     if config.fail_on_error:
         _fatal('Exiting due to --fail-on-error.')
@@ -516,7 +518,7 @@ def _validate_target(target: str) -> Path:
 
 def _print_banner(target_resolved_path: Path) -> None:
     """Emit the scan-start banner and the network-mount warning if relevant."""
-    print(f'Scanning: {target_resolved_path}', file=sys.stderr)
+    print(f'Scanning: {sanitize_for_display(str(target_resolved_path))}', file=sys.stderr)
     print('  Note: Credactor scans forward (into subdirectories) only.', file=sys.stderr)
     print('  For best results, point it at your project root directory.', file=sys.stderr)
     resolved = str(target_resolved_path)

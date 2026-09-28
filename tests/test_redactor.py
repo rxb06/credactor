@@ -1598,6 +1598,20 @@ class TestGuardPins:
         assert f'  Type     : external:gitleaks:{_PASSWORD[:4]}[REDACTED]\n' in out
         assert f'  Type     : external:gitleaks:rule-{_AWS_KEY[:4]}[REDACTED]\n' in out
 
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Windows file names cannot hold these')
+    def test_interactive_prompt_sanitizes_paths(self, tmp_path, monkeypatch, capsys):
+        # SR-06: the prompt prints the path; a name can carry a line break and
+        # a CI workflow command.
+        path = tmp_path / 'x\n::error::y ##[warning]z.py'
+        path.write_text(f'api_key = "{_AWS_KEY}"\n', encoding='utf-8')
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(
+            [_mk_finding(str(path), _AWS_KEY)], str(tmp_path), Config(no_backup=True)
+        )
+        out = capsys.readouterr().out
+        assert '  [1/1]  x?::error::y #?[warning]z.py  --  line 1\n' in out
+        assert not [ln for ln in out.split('\n') if ln.lstrip().startswith('::') or '##[' in ln]
+
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked
         # value is four characters, which is enough for a complete escape

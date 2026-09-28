@@ -125,7 +125,7 @@ def detect_encoding(filepath: str) -> str:
         'could not confirm encoding of %s; reading as latin-1 — if it is UTF-16 '
         'or another multibyte encoding, secrets may be missed. For reliable '
         'detection install the encoding extra: pip install "credactor[encoding]"',
-        sanitize_for_terminal(filepath),
+        filepath,
     )
     return 'latin-1'
 
@@ -217,17 +217,60 @@ class KnownSecrets:
         return result if limit is None else result[:limit]
 
 
-_CONTROL_CHAR_TABLE = str.maketrans(
-    {c: '?' for c in range(32) if c not in (9, 10, 13)}  # keep tab, LF, CR
+# SR-06. Escape sequences are removed whole: CSI, and OSC ended by BEL or ST.
+# A lone or unknown ESC is left to the table below.
+_ESCAPE_SEQ_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+# Every C0 control (LF and CR included), DEL, every C1 control (NEL and the
+# one-byte CSI included), the Unicode line and paragraph separators, and the
+# bidirectional embedding, override and isolate controls, which can make a
+# name display in a different order than its bytes. TAB becomes a space: it
+# cannot break a line, and source lines are often indented with it.
+_DISPLAY_TABLE = str.maketrans(
+    dict.fromkeys(
+        [
+            *range(0x09),
+            *range(0x0A, 0x20),
+            0x7F,
+            *range(0x80, 0xA0),
+            0x2028,
+            0x2029,
+            *range(0x202A, 0x202F),
+            *range(0x2066, 0x206A),
+        ],
+        '?',
+    )
+    | {0x09: ' '}
 )
-_ANSI_ESC_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+# CI workflow command markers. The GitHub runner reads '::' at the start of a
+# line after trimming leading whitespace, and '##[' anywhere in a line; Azure
+# Pipelines reads '##vso[' anywhere.
+_CI_MARKER_RE = re.compile(r'##(?=\[|vso\[)', re.IGNORECASE)
+_LINE_COMMAND_RE = re.compile(r'^([^\S\r\n]*):(?=:)', re.MULTILINE)
 
 
-def sanitize_for_terminal(s: str) -> str:
-    """Strip ANSI escape sequences and control characters to prevent terminal
-    injection via crafted filenames or values."""
-    s = _ANSI_ESC_RE.sub('', s)
-    return s.translate(_CONTROL_CHAR_TABLE)
+def display_chars(s: str) -> str:
+    """Remove terminal escape sequences from *s*, replace every control,
+    line-break and bidi character with '?', and TAB with a space.
+
+    Apart from whole escape sequences, each character maps on its own, so a
+    secret and a line that holds it stay consistent: mask the output of this
+    (``KnownSecrets``), then pass the result through ``defuse_ci_commands``.
+    """
+    return _ESCAPE_SEQ_RE.sub('', s).translate(_DISPLAY_TABLE)
+
+
+def defuse_ci_commands(s: str) -> str:
+    """Break CI workflow command markers in *s*, so that no line of it can be
+    read as a command: '##[' and '##vso[' anywhere, and '::' at the start of a
+    line after whitespace."""
+    s = _CI_MARKER_RE.sub('#?', s)
+    return _LINE_COMMAND_RE.sub(r'\1?', s)
+
+
+def sanitize_for_display(s: str) -> str:
+    """Make an untrusted string safe to print to a terminal or a CI log (SR-06):
+    ``display_chars`` then ``defuse_ci_commands``."""
+    return defuse_ci_commands(display_chars(s))
 
 
 def preview(val: str, n: int = 60) -> str:
