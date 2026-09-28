@@ -6,6 +6,7 @@ Addresses: #16 (encoding detection), #28 (optimized entropy)
 
 from __future__ import annotations
 
+import bisect
 import math
 import os
 import re
@@ -169,50 +170,72 @@ class KnownSecrets:
     number of texts (SR-05).
 
     A regex alternation of the values costs O(len(text) x len(values)) per
-    text. The index keys each value by its first ``KNOWN_MIN_LEN`` characters,
-    so the cost per character of text does not grow with the number of values.
+    text. Here the values are grouped by their first ``KNOWN_MIN_LEN``
+    characters and kept sorted, so finding the longest value at a position
+    is a dict lookup and a binary search, whatever the number of values.
     """
 
     def __init__(self, values: Iterable[str]) -> None:
-        by_prefix: dict[str, dict[int, set[str]]] = {}
+        by_prefix: dict[str, set[str]] = {}
         for v in values:
             if len(v) >= KNOWN_MIN_LEN:
-                by_prefix.setdefault(v[:KNOWN_MIN_LEN], {}).setdefault(len(v), set()).add(v)
-        self._index = {
-            prefix: [(length, by_len[length]) for length in sorted(by_len, reverse=True)]
-            for prefix, by_len in by_prefix.items()
-        }
+                by_prefix.setdefault(v[:KNOWN_MIN_LEN], set()).add(v)
+        self._index = {prefix: sorted(vs) for prefix, vs in by_prefix.items()}
+        self._longest = {prefix: max(map(len, vs)) for prefix, vs in by_prefix.items()}
+
+    def _match_at(self, text: str, i: int) -> int:
+        """Length of the longest known value that starts at ``text[i]``, or 0."""
+        prefix = text[i : i + KNOWN_MIN_LEN]
+        values = self._index.get(prefix)
+        if values is None:
+            return 0
+        s = text[i : i + self._longest[prefix]]
+        # The largest value <= s is the longest one that s starts with, if s
+        # starts with it. If not, no known value longer than their common
+        # prefix can start s either, so search again for that prefix.
+        while True:
+            k = bisect.bisect_right(values, s)
+            if k == 0:
+                return 0
+            v = values[k - 1]
+            if s.startswith(v):
+                return len(v)
+            common = 0
+            while s[common] == v[common]:
+                common += 1
+            s = s[:common]
 
     def redact(self, text: str, *, limit: int | None = None) -> str:
         """Return *text* with every occurrence of every known value masked.
 
-        Matches are leftmost-longest and never rescanned, so a short value
-        cannot split a longer one that contains it, and a mask is never masked
-        again. With *limit*, the result is the first *limit* characters of the
-        fully masked text, and only as much of *text* is read as those need;
-        truncating after masking means a value cut at the edge never shows in
-        part.
+        Matches are leftmost-longest, and a value that starts inside a match
+        and ends past it extends the match, so no value's tail is left
+        showing; the masked span shows only its first characters. A mask is
+        never masked again. With *limit*, the result is the first *limit*
+        characters of the fully masked text, and only as much of *text* is
+        read as those need; truncating after masking means a value cut at the
+        edge never shows in part.
         """
-        index = self._index
         out: list[str] = []
         size = 0
         i = 0
         n = len(text)
         while i < n and (limit is None or size < limit):
-            match = None
-            for length, candidates in index.get(text[i : i + KNOWN_MIN_LEN], ()):
-                if text[i : i + length] in candidates:
-                    match = text[i : i + length]
-                    break
-            if match is None:
+            length = self._match_at(text, i)
+            if not length:
                 out.append(text[i])
                 size += 1
                 i += 1
-            else:
-                masked = mask_secret(match)
-                out.append(masked)
-                size += len(masked)
-                i += len(match)
+                continue
+            end = i + length
+            p = i + 1
+            while p < end:
+                end = max(end, p + self._match_at(text, p))
+                p += 1
+            masked = mask_secret(text[i:end])
+            out.append(masked)
+            size += len(masked)
+            i = end
         result = ''.join(out)
         return result if limit is None else result[:limit]
 

@@ -3,7 +3,6 @@
 import io
 import json
 import random
-import re
 from pathlib import Path
 
 from credactor.report import (
@@ -104,6 +103,43 @@ def _text(findings):
     return buf.getvalue()
 
 
+def _reference_redact(text, values):
+    """Mask every occurrence span of every value of 4+ characters, merging
+    spans that overlap, the slow and obvious way."""
+    spans = []
+    for v in {v for v in values if len(v) >= 4}:
+        start = text.find(v)
+        while start >= 0:
+            spans.append((start, start + len(v)))
+            start = text.find(v, start + 1)
+    merged: list[list[int]] = []
+    for s, e in sorted(spans):
+        if merged and s < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    out, pos = [], 0
+    for s, e in merged:
+        out += [text[pos:s], mask_secret(text[s:e])]
+        pos = e
+    return ''.join(out) + text[pos:]
+
+
+class _ReadProbe(str):
+    """A str that records how far, and how much, indexing read from it."""
+
+    max_read = 0
+    chars_read = 0
+
+    def __getitem__(self, key):
+        part = str.__getitem__(self, key)
+        stop = key.stop if isinstance(key, slice) else key + 1
+        if stop is not None:
+            self.max_read = max(self.max_read, min(stop, len(self)))
+        self.chars_read += len(part)
+        return part
+
+
 class TestKnownSecrets:
     def test_masks_every_occurrence(self):
         assert KnownSecrets([_AWS_KEY]).redact(f'{_AWS_KEY} and {_AWS_KEY}') == (
@@ -137,25 +173,58 @@ class TestKnownSecrets:
         out = KnownSecrets([first, _GH_TOKEN]).redact(text, limit=120)
         assert out == 'AAAA[REDACTED] ghp_[REDACTED]'
 
-    def test_matches_a_regex_reference(self):
-        # Same result as a longest-first regex alternation, and the same as
-        # slicing the full result when a limit is given.
+    def test_matches_a_reference(self):
+        # Same result as masking every occurrence span of every value, with
+        # overlapping spans merged, and the same as slicing the full result
+        # when a limit is given.
         rng = random.Random(5)
-        alphabet = 'ab_AB12'
-        for _ in range(300):
-            values = [
-                ''.join(rng.choice(alphabet) for _ in range(rng.randint(1, 9)))
-                for _ in range(rng.randint(0, 6))
-            ]
-            text = ''.join(rng.choice(alphabet + ' ') for _ in range(rng.randint(0, 60)))
-            long_enough = sorted({v for v in values if len(v) >= 4}, key=lambda v: (-len(v), v))
-            expected = text
-            if long_enough:
-                pattern = re.compile('|'.join(map(re.escape, long_enough)))
-                expected = pattern.sub(lambda m: mask_secret(m.group(0)), text)
-            assert KnownSecrets(values).redact(text) == expected
-            cut = rng.randint(0, 80)
-            assert KnownSecrets(values).redact(text, limit=cut) == expected[:cut]
+        for alphabet in ('ab', 'ab_AB12'):  # two letters make overlaps common
+            for _ in range(600):
+                self._check_reference(rng, alphabet)
+
+    @staticmethod
+    def _check_reference(rng, alphabet):
+        values = [
+            ''.join(rng.choice(alphabet) for _ in range(rng.randint(1, 9)))
+            for _ in range(rng.randint(0, 6))
+        ]
+        text = ''.join(rng.choice(alphabet + ' ') for _ in range(rng.randint(0, 60)))
+        expected = _reference_redact(text, values)
+        assert KnownSecrets(values).redact(text) == expected, (text, values)
+        cut = rng.randint(0, 80)
+        assert KnownSecrets(values).redact(text, limit=cut) == expected[:cut]
+
+    def test_overlapping_values_are_masked_as_one(self):
+        # Neither value's tail may show when one starts inside the other.
+        token = 'ghp_' + 'Zy98Xw76Vu54Ts32Rq10Po98Nm76Lk54Ji32'
+        known = KnownSecrets([token, 'Bearer ghp_Zy98'])
+        assert known.redact(f'auth = "Bearer {token}"') == 'auth = "Bear[REDACTED]"'
+        known = KnownSecrets([_AWS_KEY + 'ghp_', _GH_TOKEN])
+        assert known.redact(f'creds {_AWS_KEY}{_GH_TOKEN} end') == 'creds AKIA[REDACTED] end'
+
+    def test_touching_values_are_masked_separately(self):
+        assert KnownSecrets(['aaaa1111', 'bbbb2222']).redact('aaaa1111bbbb2222') == (
+            'aaaa[REDACTED]bbbb[REDACTED]'
+        )
+
+    def test_longest_of_many_lengths_sharing_a_prefix(self):
+        values = ['Zq9X' + 'b' * k for k in range(1, 300)]
+        known = KnownSecrets(values)
+        assert known.redact('Zq9X' + 'b' * 150 + 'c') == 'Zq9X[REDACTED]c'
+        assert known.redact('Zq9Xc') == 'Zq9Xc'
+
+    def test_many_lengths_sharing_a_prefix_do_bounded_work(self):
+        # Trying every length at a candidate position read about a
+        # length-squared number of characters; the work stays linear.
+        values = ['Zq9X' + 'b' * k for k in range(1, 3001)]
+        text = _ReadProbe('Zq9Xbbbbb' + 'c' * 3000)
+        assert KnownSecrets(values).redact(text) == 'Zq9X[REDACTED]' + 'c' * 3000
+        assert text.chars_read < 50_000
+
+    def test_limit_stops_reading(self):
+        text = _ReadProbe('x' * 10_000 + _AWS_KEY)
+        KnownSecrets([_AWS_KEY]).redact(text, limit=120)
+        assert text.max_read < 200
 
 
 class TestTextReportMasksEveryValue:
