@@ -250,6 +250,23 @@ class TestKnownSecrets:
             expected = max((len(v) for v in values if text.startswith(v)), default=0)
             assert KnownSecrets(values)._match_at(text, 0) == expected, (text, values)
 
+    @pytest.mark.parametrize('shape', ['pairs', 'chain'])
+    def test_prefix_families_stay_fast(self, shape):
+        # Pairs P+b^j+'a' and P+b^j+'aa' defeat searching again for the
+        # common prefix; a chain P+b^k for every k defeats walking the
+        # known-prefix links alone.
+        if shape == 'pairs':
+            values = [f'Zq9X{"b" * j}{t}' for j in range(1, 4001) for t in ('a', 'aa')]
+            trap = 'Zq9X' + 'b' * 4010
+        else:
+            values = ['Zq9X' + 'b' * k for k in range(1, 4001)]
+            trap = 'Zq9X' + 'b' * 5 + 'c'
+        known = KnownSecrets(values)
+        start = time.perf_counter()
+        for _ in range(200):
+            known.redact(trap + ' x')
+        assert time.perf_counter() - start < 1.5
+
     def test_nested_values_pick_the_longest_prefix(self):
         values = ['Zq9X' + 'b' * k for k in range(1, 50)] + ['Zq9X' + 'b' * 10 + 'a']
         known = KnownSecrets(values)

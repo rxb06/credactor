@@ -165,6 +165,10 @@ def mask_secret(value: str, *, visible: int = 4) -> str:
 KNOWN_MIN_LEN = 4
 
 
+# Known-prefix links _match_at follows before it searches again.
+_LINK_STEPS = 8
+
+
 def _common_prefix_len(a: str, b: str) -> int:
     """Length of the common prefix of *a* and *b*, by binary search over
     slice comparisons rather than a character loop."""
@@ -227,11 +231,16 @@ class KnownSecrets:
             if s.startswith(v):
                 return len(v)
             common = _common_prefix_len(s, v)
-            parent = self._parent[v]
-            if parent is None:
-                return 0
-            if len(parent) <= common:
-                return len(parent)
+            # Walk a few links first (pairs of values one character apart
+            # would cost a search each), then search again for the common
+            # prefix (a long chain of prefixes would cost a link each).
+            link = self._parent[v]
+            for _ in range(_LINK_STEPS):
+                if link is None:
+                    return 0
+                if len(link) <= common:
+                    return len(link)
+                link = self._parent[link]
             s = s[:common]
 
     def redact(self, text: str, *, limit: int | None = None, mask_tail: bool = False) -> str:
