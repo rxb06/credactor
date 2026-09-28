@@ -98,16 +98,27 @@ jobs:
     # Runs the local composite action (uses: ./) on real runners and asserts
     # its behaviour. Fixtures are created at runtime and never committed: a
     # pip.py at the repository root would break "python -m pip" for anyone
-    # working in this checkout.
+    # working in this checkout. Steps named "Expected failure" fail on purpose
+    # (continue-on-error), so their error annotations on a green run are
+    # intended.
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+    env:
+      # The CLI release the action installs here. Pinned rather than taken from
+      # the action's default, which a release PR bumps before the release is
+      # on PyPI. Move it forward after each release.
+      SELFTEST_CREDACTOR_VERSION: '2.7.4'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Plant import canaries (SR-02)
+      - name: Plant import canaries
         shell: bash
         run: |
           mkdir -p action-fixture
@@ -119,8 +130,10 @@ jobs:
           echo 'x = 1' > action-fixture/app.py
 
       - id: isolated
+        name: Scan a clean tree with import canaries present
         uses: ./
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: action-fixture
           format: json
 
@@ -149,16 +162,20 @@ jobs:
       # With findings, the scan step must record the exit code and let the
       # gate decide; it must not stop on credactor's exit 1 under bash -e.
       - id: report-only
+        name: Scan a tree with a finding, report only
         uses: ./
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: findings-fixture
           format: json
           fail-on-findings: 'false'
 
       - id: gated
+        name: Expected failure, the gate stops on a finding
         uses: ./
         continue-on-error: true
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: findings-fixture
           format: json
 
@@ -173,17 +190,22 @@ jobs:
         run: |
           [ "$RO_CODE" = "1" ] || { echo "::error::report-only exit-code '$RO_CODE', expected 1"; exit 1; }
           [ "$RO_COUNT" = "1" ] || { echo "::error::report-only findings-count '$RO_COUNT', expected 1"; exit 1; }
-          [ -s "$RO_FILE" ] || { echo "::error::report-only wrote no report at '$RO_FILE'"; exit 1; }
+          [ -n "$RO_FILE" ] || { echo "::error::report-only set no report-file"; exit 1; }
           [ "$G_OUTCOME" = "failure" ] || { echo "::error::gated run outcome '$G_OUTCOME', expected failure"; exit 1; }
           [ "$G_CODE" = "1" ] || { echo "::error::gated exit-code '$G_CODE', expected 1"; exit 1; }
 
-      - name: Assert the report path is usable by native tools
-        shell: bash
+      # report-file is read by native tools (the SARIF upload among them), so
+      # open it from a process no shell has rewritten the path for.
+      - name: Assert report-file is a native path to the report
+        shell: python
         env:
           RO_FILE: ${{ steps.report-only.outputs.report-file }}
-        run: python -I -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$RO_FILE"
+        run: |
+          import json, os
+          with open(os.environ['RO_FILE'], encoding='utf-8') as fh:
+              assert json.load(fh)['count'] == 1
 
-      - name: Plant report-path symlinks (SR-03)
+      - name: Plant report-path symlinks
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -194,54 +216,128 @@ jobs:
           ln -s app.py symlink-fixture/credactor-results.sarif
           ln -s "$outside" symlink-fixture/escape
 
-      # The default report name is a symlink to the file being scanned: the
-      # action must refuse, not empty app.py and then report it clean.
+      # The default report name is a symlink to a scanned file: the action
+      # must fail and leave both the file and the link untouched.
+      # fail-on-findings is off so only the refusal can fail these steps.
       - id: sym-leaf
+        name: Expected failure, the report name is a symlink
         if: runner.os != 'Windows'
         uses: ./
         continue-on-error: true
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: symlink-fixture
           format: sarif
+          fail-on-findings: 'false'
 
-      # An output-file routed through a directory symlink out of the workspace.
       - id: sym-dir
+        name: Expected failure, the report path leaves the workspace through a symlink
         if: runner.os != 'Windows'
         uses: ./
         continue-on-error: true
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: symlink-fixture
           format: json
           output-file: escape/out.json
+          fail-on-findings: 'false'
 
-      - name: Assert the report never followed a symlink
+      - name: Assert the report never went to a symlink
         if: runner.os != 'Windows'
         shell: bash
         env:
           LEAF: ${{ steps.sym-leaf.outcome }}
+          LEAF_CODE: ${{ steps.sym-leaf.outputs.exit-code }}
           DIR: ${{ steps.sym-dir.outcome }}
+          DIR_CODE: ${{ steps.sym-dir.outputs.exit-code }}
         run: |
-          [ "$LEAF" = "failure" ] || { echo "::error::symlinked default report did not fail the step ($LEAF)"; exit 1; }
-          sha256sum -c "$RUNNER_TEMP/app.sha256" || { echo "::error::the scanned file was modified through the report symlink"; exit 1; }
+          [ "$LEAF" = "failure" ] && [ -z "$LEAF_CODE" ] || { echo "::error::a symlinked report name was not refused ($LEAF, exit-code '$LEAF_CODE')"; exit 1; }
+          sha256sum -c "$RUNNER_TEMP/app.sha256" || { echo "::error::the scanned file changed"; exit 1; }
           [ -L symlink-fixture/credactor-results.sarif ] || { echo "::error::the report symlink was replaced"; exit 1; }
-          [ "$DIR" = "failure" ] || { echo "::error::output-file outside the workspace did not fail the step ($DIR)"; exit 1; }
+          [ "$DIR" = "failure" ] && [ -z "$DIR_CODE" ] || { echo "::error::a report path out of the workspace was not refused ($DIR, exit-code '$DIR_CODE')"; exit 1; }
           [ -z "$(ls -A "$HOME/credactor-outside")" ] || { echo "::error::a report was written outside the workspace"; exit 1; }
 
-      # SR-04: a line break in output-file must fail the step before any
-      # output is written, not append a second, forged exit-code line.
-      - id: newline-output
+      # The same containment rule without symlinks, so Windows runs it too.
+      - id: outside-path
+        name: Expected failure, the report path is outside the workspace
         uses: ./
         continue-on-error: true
         with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
           working-directory: findings-fixture
+          format: json
+          output-file: ../../credactor-outside.json
+          fail-on-findings: 'false'
+
+      - name: Assert a report path outside the workspace is refused
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.outside-path.outcome }}
+          CODE: ${{ steps.outside-path.outputs.exit-code }}
+        run: |
+          [ "$OUTCOME" = "failure" ] && [ -z "$CODE" ] || { echo "::error::outside path not refused ($OUTCOME, exit-code '$CODE')"; exit 1; }
+          [ ! -e ../credactor-outside.json ] || { echo "::error::a report was written outside the workspace"; exit 1; }
+
+      # A line break in output-file must fail the step before any output is
+      # written. The clean fixture keeps the gate out of the way.
+      - id: newline-output
+        name: Expected failure, output-file contains a line break
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
+          working-directory: action-fixture
           format: json
           output-file: "report.json\nexit-code=0"
 
-      - name: Assert a line break in an input is refused
+      - name: Plant a working directory whose name has a line break
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$(printf 'odd\nname')"
+          echo 'x = 1' > "$(printf 'odd\nname')/app.py"
+          ln -s "$(printf 'odd\nname')" newline-dir
+
+      - id: newline-dir
+        name: Expected failure, the working directory resolves to a name with a line break
+        if: runner.os == 'Linux'
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
+          working-directory: newline-dir
+          format: json
+
+      - name: Assert line breaks are refused
         shell: bash
         env:
-          OUTCOME: ${{ steps.newline-output.outcome }}
-          CODE: ${{ steps.newline-output.outputs.exit-code }}
+          OUT_OUTCOME: ${{ steps.newline-output.outcome }}
+          OUT_CODE: ${{ steps.newline-output.outputs.exit-code }}
+          DIR_OUTCOME: ${{ steps.newline-dir.outcome }}
+          DIR_CODE: ${{ steps.newline-dir.outputs.exit-code }}
+          IS_LINUX: ${{ runner.os == 'Linux' }}
         run: |
-          [ "$OUTCOME" = "failure" ] || { echo "::error::a line break in output-file did not fail the step ($OUTCOME)"; exit 1; }
-          [ -z "$CODE" ] || { echo "::error::exit-code was set to '$CODE' despite the refused input"; exit 1; }
+          [ "$OUT_OUTCOME" = "failure" ] && [ -z "$OUT_CODE" ] || { echo "::error::a line break in output-file was not refused ($OUT_OUTCOME, exit-code '$OUT_CODE')"; exit 1; }
+          if [ "$IS_LINUX" = "true" ]; then
+            [ "$DIR_OUTCOME" = "failure" ] && [ -z "$DIR_CODE" ] || { echo "::error::a working directory with a line break was not refused ($DIR_OUTCOME, exit-code '$DIR_CODE')"; exit 1; }
+          fi
+
+      # extra-args written as a YAML block ends in a line break; it must still
+      # work, with every line's flags passed.
+      - id: block-extra-args
+        name: Scan with extra-args written as a YAML block
+        uses: ./
+        with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
+          working-directory: action-fixture
+          format: json
+          extra-args: |
+            --verbose
+            --scan-json
+
+      - name: Assert block extra-args were accepted
+        shell: bash
+        env:
+          CODE: ${{ steps.block-extra-args.outputs.exit-code }}
+        run: |
+          [ "$CODE" = "0" ] || { echo "::error::extra-args block scan exit-code '$CODE', expected 0"; exit 1; }
