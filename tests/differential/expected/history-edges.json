@@ -1,0 +1,41 @@
+{
+ "argv": [
+  "--scan-history",
+  "."
+ ],
+ "case": "history-edges",
+ "exit": 1,
+ "findings": {
+  "base.py (commit c2)": [
+   {
+    "commit": "c2",
+    "line": 3,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "fake.py (commit c1)": [
+   {
+    "commit": "c1",
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [],
+ "note": "context-line numbering, a header-like content line (SR-31) and a form feed line (PA-07)",
+ "reported": true,
+ "tree_after": {
+  "README.txt": "5891b5b522d5df08",
+  "a.py": "3c51a34ae07456b3",
+  "base.py": "2f1a3d18bdad4d4d",
+  "sep.py": "c2ca40221778e56b"
+ }
+}

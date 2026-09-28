@@ -1,0 +1,33 @@
+{
+ "argv": [
+  "--ci",
+  "--fail-on-error",
+  "."
+ ],
+ "case": "fail-on-error-unreadable",
+ "exit": 2,
+ "findings": null,
+ "log": [
+  [
+   "ERROR",
+   "Exiting due to --fail-on-error.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 file(s) could not be scanned:\n  - <root>/locked.py",
+   1
+  ],
+  [
+   "WARNING",
+   "Error scanning <root>/locked.py: [Errno 13] Permission denied: '<root>/locked.py'",
+   1
+  ]
+ ],
+ "note": "skipped when running as root, which can read a mode-0 file",
+ "reported": false,
+ "tree_after": {
+  "locked.py": "unreadable",
+  "open.py": "9e26bf369911c45c"
+ }
+}

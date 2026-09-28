@@ -1,0 +1,37 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "."
+ ],
+ "case": "fix-backup-collision-and-hardlink",
+ "exit": 0,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "Plaintext backup created beside original file.\n  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.",
+   1
+  ]
+ ],
+ "note": "records current behaviour; SR-26 and SR-27 change it",
+ "reported": true,
+ "tree_after": {
+  "app.py": "284f4c29bf3be045",
+  "app.py.bak": "aef561de5aaa378b",
+  "copy.dat": "aef561de5aaa378b",
+  "tmp*.credactor.bak": "36d0d03c35e9758b"
+ }
+}

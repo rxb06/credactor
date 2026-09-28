@@ -1,0 +1,36 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "suppress-config",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/app.py:1 suppressed by safe value heuristic",
+   1
+  ]
+ ],
+ "note": "records current behaviour; SR-09 adds signals",
+ "reported": true,
+ "tree_after": {
+  ".credactor.toml": "467ce27a11294396",
+  "app.py": "bec574e73506992f",
+  "skipped.py": "aef561de5aaa378b",
+  "vendor/lib.py": "aef561de5aaa378b"
+ }
+}
