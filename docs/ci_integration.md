@@ -110,7 +110,7 @@ Gating on a combined native and Gitleaks result:
 | `version` | current release | Credactor version to install, or `latest`. |
 | `python-version` | `3.11` | Python used to run Credactor. |
 | `format` | `text` | `text`, `json` or `sarif`. |
-| `output-file` | `credactor-results.<ext>` | Where to write a json/sarif report. Ignored for text. |
+| `output-file` | `credactor-results.<ext>` | Where to write a json/sarif report, after the scan. Must not be a symlink and must resolve inside the workspace or the runner temp directory, or the step fails. Ignored for text. |
 | `fail-on-findings` | `true` | Fail the step on findings. Errors fail regardless. |
 | `fail-on-error` | `false` | Pass `--fail-on-error`. Do not combine with `format: sarif`. |
 | `scan-json` | `false` | Pass `--scan-json`. |
@@ -122,7 +122,8 @@ Gating on a combined native and Gitleaks result:
 | `extra-args` | none | Raw flags the action does not model. |
 
 Outputs: `exit-code` (0 clean, 1 findings, 2 error), `findings-count` (json and
-sarif only) and `report-file` (absolute path, when one was written).
+sarif only) and `report-file` (absolute path, when one was written). Read the
+report through `report-file` rather than assuming its location.
 
 Only exit 1 counts as a findings result. Any other non-zero code, including a
 failed install, fails the step as an error rather than reporting a credential

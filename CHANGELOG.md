@@ -18,6 +18,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   installs Credactor from the runner's temp directory and runs its helper
   Python in isolated mode (`python -I`), so a module in the repository being
   scanned can never be imported in place of pip or the standard library.
+- **The GitHub Action writes its report only after the scan, and only to a
+  safe place.** The scan writes to a fresh file in the runner's temp
+  directory. The report is then copied to `output-file` (default name
+  unchanged) only if that path is not a symlink, is a regular file or absent,
+  and resolves inside the workspace or the runner temp directory. Otherwise
+  the step fails. Nothing in the checkout is modified while it is scanned.
 
 ### Fixed
 
@@ -27,6 +33,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   failed as an error, `fail-on-findings: false` could not report without
   failing, and the SARIF upload never ran on the runs that had something to
   upload. The step now keeps the exit code and lets the gate decide.
+- **The Action's `report-file` output is a native path on Windows.** Git Bash
+  reported `/d/a/...` paths that the SARIF upload and other native tools
+  cannot open.
 
 ### Changed
 

@@ -34,7 +34,9 @@ inputs:
   output-file:
     description: >-
       Where to write a json/sarif report. Defaults to credactor-results.<ext>.
-      Ignored for text format, which goes to the job log.
+      The report is written after the scan, never through a symlink, and only
+      inside the workspace or the runner temp directory; otherwise the step
+      fails. Ignored for text format, which goes to the job log.
     required: false
     default: ''
   fail-on-findings:
@@ -225,30 +227,64 @@ runs:
         args+=( "$TARGET" )
 
         case "$FORMAT" in
-          json)  OUT="${OUTPUT_FILE:-credactor-results.json}"  ;;
-          sarif) OUT="${OUTPUT_FILE:-credactor-results.sarif}" ;;
+          json)  DEST="${OUTPUT_FILE:-credactor-results.json}"  ;;
+          sarif) DEST="${OUTPUT_FILE:-credactor-results.sarif}" ;;
           *)
             # Text belongs in the job log, where somebody will actually read it.
             # Redirecting it to a file empties the log and helps nobody.
             if [ -n "$OUTPUT_FILE" ]; then
               echo "::warning::output-file is ignored for text format; the report stays in the job log. Use format json or sarif to write a file."
             fi
-            OUT=""
+            DEST=""
             ;;
         esac
 
-        # A redirect into a directory that does not exist fails before Credactor
-        # ever runs, and leaves $? at 1, which is indistinguishable from
-        # "credentials found". Create the directory up front and fail loudly if
-        # that is not possible, rather than reporting a phantom finding.
-        if [ -n "$OUT" ]; then
-          outdir="$(dirname "$OUT")"
-          if ! mkdir -p "$outdir" 2>/dev/null; then
-            echo "::error::Cannot create directory '$outdir' for output-file '$OUT'."
+        PYBIN="$(command -v python || command -v python3 || true)"
+
+        # SR-03: the report destination can be a path the checkout controls, so
+        # it is never written while the scan runs and never through a symlink.
+        # The scan writes to a fresh file in $RUNNER_TEMP; afterwards the report
+        # is copied to DEST, but only if DEST is not a symlink, is a regular file
+        # or absent, and resolves inside the workspace or the runner temp
+        # directory. A symlink named like the report in a pull request is
+        # suspicious in itself, so it fails the step instead of being worked
+        # around.
+        dest_is_safe() {
+          if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
+            echo "::error::output-file '$DEST' is a symlink or not a regular file; refusing to write the report there."
+            return 1
+          fi
+          if ! "$PYBIN" -I -c '
+        import os, sys
+        dest = os.path.normcase(os.path.realpath(sys.argv[1]))
+        roots = [os.path.normcase(os.path.realpath(r)) for r in sys.argv[2:] if r]
+        sys.exit(0 if any(dest.startswith(r.rstrip(os.sep) + os.sep) for r in roots) else 1)
+        ' "$DEST" "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; then
+            echo "::error::output-file '$DEST' resolves outside the workspace and the runner temp directory; refusing to write the report there."
+            return 1
+          fi
+        }
+
+        OUT=""
+        if [ -n "$DEST" ]; then
+          if [ -z "$PYBIN" ]; then
+            echo "::error::No python found to validate output-file '$DEST'."
             exit 2
           fi
-          if ! : > "$OUT" 2>/dev/null; then
-            echo "::error::Cannot write output-file '$OUT'."
+          dest_is_safe || exit 2
+          # A redirect into a directory that does not exist fails before
+          # Credactor ever runs, and leaves $? at 1, which is indistinguishable
+          # from "credentials found". Create the directory up front and fail
+          # loudly if that is not possible, rather than reporting a phantom
+          # finding. The containment check above has already run, so this
+          # cannot create a directory outside the workspace.
+          outdir="$(dirname "$DEST")"
+          if ! mkdir -p "$outdir" 2>/dev/null; then
+            echo "::error::Cannot create directory '$outdir' for output-file '$DEST'."
+            exit 2
+          fi
+          if ! OUT="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/credactor-report.XXXXXX")"; then
+            echo "::error::Cannot create a temporary report file."
             exit 2
           fi
         fi
@@ -266,18 +302,31 @@ runs:
           credactor "${args[@]}" || code=$?
         fi
 
+        if [ -n "$DEST" ]; then
+          # Check again right before the one write into the checkout. cat into
+          # DEST (not cp from the 0600 temp file) keeps the report's usual mode.
+          dest_is_safe || exit 2
+          if ! cat "$OUT" > "$DEST"; then
+            echo "::error::Cannot write output-file '$DEST'."
+            exit 2
+          fi
+          rm -f "$OUT"
+        fi
+
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
         # --- Findings count and report path, for downstream steps.
-        PYBIN="$(command -v python || command -v python3 || true)"
         count=""
-        if [ -n "$OUT" ] && [ -s "$OUT" ]; then
-          abs="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+        if [ -n "$DEST" ] && [ -s "$DEST" ]; then
+          abs="$(cd "$(dirname "$DEST")" && pwd)/$(basename "$DEST")"
+          # Git Bash on Windows prints /d/a/... paths, which native programs
+          # (the SARIF upload, Python) cannot open. Hand them a native path.
+          if command -v cygpath >/dev/null 2>&1; then
+            abs="$(cygpath -w "$abs")"
+          fi
           echo "report-file=$abs" >> "$GITHUB_OUTPUT"
-        fi
-        if [ -n "$OUT" ] && [ -s "$OUT" ] && [ -n "$PYBIN" ]; then
           # SR-02: -I so a json.py in the working directory cannot be imported.
-          count="$("$PYBIN" -I -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$OUT" "$FORMAT" 2>/dev/null)" || count=""
+          count="$("$PYBIN" -I -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$DEST" "$FORMAT" 2>/dev/null)" || count=""
         fi
         echo "findings-count=$count" >> "$GITHUB_OUTPUT"
 
