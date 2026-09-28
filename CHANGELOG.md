@@ -30,7 +30,8 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   the GitHub Actions or Azure Pipelines runner. JSON and SARIF are unchanged.
 - **A secret in a file or directory name is masked.** If a value found in the
   run also appears in a path, the path is shown masked in the text, JSON and
-  SARIF reports and in the interactive prompt. The text and SARIF reports add
+  SARIF reports, the list of files skipped by `.gitignore` and the interactive
+  prompt. The text and SARIF reports add
   a note to rename the file or directory. A masked SARIF path no longer links
   to the file. Paths and types are masked only with values of at least 8
   characters that hold a letter and a digit, so a password that is also a

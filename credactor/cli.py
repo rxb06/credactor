@@ -580,19 +580,19 @@ def _collect_findings(
     target: str,
     config: Config,
     allowlist: AllowList,
-) -> tuple[list[Finding], list[str]]:
+) -> tuple[list[Finding], list[str], list[str]]:
     """Dispatch the native scan based on ``staged_only``/``scan_history``/walk.
 
-    Returns ``(findings, errored_files)``. Also runs the JSON-file
-    side-walk when ``--scan-json`` is set in directory mode.
+    Returns ``(findings, errored_files, gitignore_skipped)``. Also runs the
+    JSON-file side-walk when ``--scan-json`` is set in directory mode.
     """
     # L4: a not-a-repo / git-unavailable failure for --staged/--scan-history is a
     # hard error (exit 2), never a false-clean exit 0.
     try:
         if config.staged_only:
-            return scan_staged_files(target, config=config, allowlist=allowlist)
+            return (*scan_staged_files(target, config=config, allowlist=allowlist), [])
         if config.scan_history:
-            return scan_git_history(target, config=config, allowlist=allowlist), []
+            return scan_git_history(target, config=config, allowlist=allowlist), [], []
     except GitUnavailableError as exc:
         _fatal('%s', exc)
 
@@ -611,13 +611,13 @@ def _collect_findings(
                 '"# credactor:ignore", or scan the directory.'
             )
         try:
-            return scan_file(target, config=config, allowlist=allowlist), []
+            return scan_file(target, config=config, allowlist=allowlist), [], []
         except (OSError, UnicodeDecodeError) as exc:
             # UnicodeDecodeError: a confidently-detected multibyte encoding
             # (e.g. truncated UTF-16) that fails mid-stream is an unreadable
             # file, not a crash — same errored-files contract as OSError.
             logger.warning('Cannot read %s: %s', target, exc)
-            return [], [target]
+            return [], [target], []
 
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
         target,
@@ -625,16 +625,14 @@ def _collect_findings(
         allowlist=allowlist,
     )
 
-    if config.output_format == 'text':
-        print_gitignore_skipped(gitignore_skipped, target, no_color=config.no_color)
-        # Avoid a false-clean impression: .json files are collected but only
-        # scanned under --scan-json, so flag that the type was held back.
-        if not config.scan_json and json_files:
-            print(
-                f'  [note] {len(json_files)} .json file(s) present but not scanned — '
-                f'pass --scan-json to include them.',
-                file=sys.stderr,
-            )
+    # Avoid a false-clean impression: .json files are collected but only
+    # scanned under --scan-json, so flag that the type was held back.
+    if config.output_format == 'text' and not config.scan_json and json_files:
+        print(
+            f'  [note] {len(json_files)} .json file(s) present but not scanned — '
+            f'pass --scan-json to include them.',
+            file=sys.stderr,
+        )
 
     if config.scan_json and json_files:
         # --scan-json is already the explicit opt-in, so scan every collected
@@ -648,7 +646,7 @@ def _collect_findings(
                 logger.warning('Cannot read %s: %s', path, exc)
                 errored_files.append(path)
 
-    return findings, errored_files
+    return findings, errored_files, gitignore_skipped
 
 
 def _ingest_external(
@@ -837,9 +835,18 @@ def _main_inner(argv: list[str] | None = None) -> None:
     allowlist = AllowList(target)
     _print_banner(target_resolved_path)
 
-    findings, errored_files = _collect_findings(target, config, allowlist)
+    findings, errored_files, gitignore_skipped = _collect_findings(target, config, allowlist)
     findings = _ingest_external(findings, target, config, allowlist)
     _handle_errored_files(errored_files, config)
+    if config.output_format == 'text':
+        # SR-07: printed once the findings are final, so a skipped name that
+        # holds a secret found in the run is masked.
+        print_gitignore_skipped(
+            gitignore_skipped,
+            target,
+            no_color=config.no_color,
+            values=[f['full_value'] for f in findings],
+        )
 
     _emit_report(findings, target, config)
     if not findings:

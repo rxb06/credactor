@@ -15,7 +15,7 @@ from typing import Any
 
 from ._log import logger
 from .types import SEVERITY_RANK, Finding
-from .utils import KnownSecrets, is_within_root, preview, read_lines
+from .utils import KnownSecrets, is_within_root, name_secrets, preview, read_lines
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
@@ -1252,7 +1252,7 @@ def deduplicate_findings(
     # Pass 2: deduplicate in order; first occurrence wins.
     result: list[Finding] = []
     seen: dict[tuple[str, int, str, str | None], int] = {}
-    known: KnownSecrets | None = None  # built on first use (PA-04)
+    known: KnownSecrets | None = None  # built on first use (PA-04, SR-07)
 
     for f in findings:
         base = _base(f)
@@ -1275,12 +1275,12 @@ def deduplicate_findings(
                 survivor.get('severity', 'medium'), 1
             ):
                 if known is None:
-                    known = KnownSecrets(x['full_value'] for x in findings)
+                    known = name_secrets(x['full_value'] for x in findings)
                 logger.info(
                     'Dedup raised severity %s -> %s at %s:%s (kept %s, merged %s).',
                     survivor.get('severity'),
                     dropped_sev,
-                    survivor.get('file'),
+                    known.redact(survivor.get('file', '')),
                     survivor.get('line'),
                     known.redact(survivor.get('type', '')),
                     known.redact(f.get('type', '')),

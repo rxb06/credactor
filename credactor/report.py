@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -295,9 +296,15 @@ def _sarif_level(severity: str) -> str:
 # Gitignore skip report
 # ---------------------------------------------------------------------------
 def print_gitignore_skipped(
-    skipped: list[str], root: str, *, no_color: bool = False, stream: TextIO | None = None
+    skipped: list[str],
+    root: str,
+    *,
+    no_color: bool = False,
+    stream: TextIO | None = None,
+    values: Iterable[str] = (),
 ) -> None:
-    """List the files a ``.gitignore`` pattern excluded from the scan."""
+    """List the files a ``.gitignore`` pattern excluded from the scan, with
+    the secret *values* found in the run masked in their names (SR-07)."""
     if not skipped:
         return
     if stream is None:
@@ -312,7 +319,7 @@ def print_gitignore_skipped(
         ),
         file=stream,
     )
+    masker = OutputMasker(values)
     for s in sorted(skipped):
-        rel = relativize(s, root_path)
-        print(f'    {sanitize_for_display(rel)}', file=stream)
+        print(f'    {masker.show_name(relativize(s, root_path))}', file=stream)
     print(file=stream)

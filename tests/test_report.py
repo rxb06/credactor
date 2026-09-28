@@ -5,6 +5,9 @@ import json
 import random
 from pathlib import Path
 
+import pytest
+
+from credactor.cli import main
 from credactor.config import Config
 from credactor.report import (
     json_report,
@@ -676,6 +679,28 @@ class TestPrintGitignoreSkipped:
         buf = io.StringIO()
         print_gitignore_skipped([], '/tmp', stream=buf)
         assert buf.getvalue() == ''
+
+    def test_masks_known_values_in_names(self, tmp_path):
+        # SR-07: a skipped file can be a copy of a file whose name holds a
+        # secret, such as a .bak beside it.
+        buf = io.StringIO()
+        skipped = str(tmp_path / f'{_GH_TOKEN}.py.bak')
+        print_gitignore_skipped(
+            [skipped], str(tmp_path), no_color=True, stream=buf, values=[_GH_TOKEN]
+        )
+        out = buf.getvalue()
+        assert _GH_TOKEN not in out
+        assert '    ghp_[REDACTED].py.bak\n' in out
+
+    def test_cli_masks_the_skip_list_with_the_final_findings(self, tmp_path, capsys):
+        (tmp_path / '.gitignore').write_text('*.bak\n', encoding='utf-8')
+        for name in (f'{_GH_TOKEN}.py', f'{_GH_TOKEN}.py.bak'):
+            (tmp_path / name).write_text(f'token = "{_GH_TOKEN}"\n', encoding='utf-8')
+        with pytest.raises(SystemExit):
+            main(['--ci', '--no-color', str(tmp_path)])
+        out = capsys.readouterr().out
+        assert 'not scanned -- covered by .gitignore' in out
+        assert _GH_TOKEN not in out
 
     def test_sarif_rule_fields(self):
         """SARIF rules should include fullDescription and help."""

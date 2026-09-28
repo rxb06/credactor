@@ -3486,9 +3486,10 @@ def test_dedup_severity_log_masks_secrets_in_types(caplog):
     # report's label.
     secret = 'AKIAIOSFODNN7EXAMPLE'
     other = 'ghp_' + 'x9Kq2Lm8Rt4Wv6Yb1Nc3Pd5Fg7Hj0Sa2Ue4Io'
+    path = f'/repo/{secret}/app.py'  # SR-07: the path can hold one too
     findings = [
-        _make_finding(ftype=f'external:gitleaks:{other}', severity='medium'),
-        _make_finding(ftype=f'external:trufflehog:{secret}', severity='critical'),
+        _make_finding(file=path, ftype=f'external:gitleaks:{other}', severity='medium'),
+        _make_finding(file=path, ftype=f'external:trufflehog:{secret}', severity='critical'),
         _make_finding(full_value=other, line=11),
     ]
     with caplog.at_level(logging.INFO, logger='credactor'):
@@ -3500,3 +3501,4 @@ def test_dedup_severity_log_masks_secrets_in_types(caplog):
     assert other not in message
     assert 'external:gitleaks:ghp_[REDACTED]' in message
     assert 'external:trufflehog:AKIA[REDACTED]' in message
+    assert '/repo/AKIA[REDACTED]/app.py:10' in message
