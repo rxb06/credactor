@@ -3,6 +3,7 @@
 import io
 import json
 import random
+import time
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,36 @@ class TestKnownSecrets:
         text = _ReadProbe('Zq9Xbbbbb' + 'c' * 3000)
         assert KnownSecrets(values).redact(text) == 'Zq9X[REDACTED]' + 'c' * 3000
         assert text.chars_read < 50_000
+
+    def test_values_that_differ_only_at_the_end_stay_fast(self):
+        # Each binary search used to land on the next-shorter value, so one
+        # position cost a Python loop per value.
+        values = ['Zq9X' + 'b' * k + 'a' for k in range(1, 4001)]
+        known = KnownSecrets(values)
+        trap = 'Zq9X' + 'b' * 4001
+        start = time.perf_counter()
+        for _ in range(50):
+            assert known.redact(trap + ' x') == trap + ' x'
+        assert time.perf_counter() - start < 2
+
+    def test_longest_match_matches_a_brute_force(self):
+        # Values that are prefixes of one another, or differ only at the end.
+        rng = random.Random(1)
+        for _ in range(3000):
+            values = {
+                'abab' + ''.join(rng.choice('ab') for _ in range(rng.randint(0, 8)))
+                for _ in range(rng.randint(1, 12))
+            }
+            text = 'abab' + ''.join(rng.choice('ab') for _ in range(rng.randint(0, 12)))
+            expected = max((len(v) for v in values if text.startswith(v)), default=0)
+            assert KnownSecrets(values)._match_at(text, 0) == expected, (text, values)
+
+    def test_nested_values_pick_the_longest_prefix(self):
+        values = ['Zq9X' + 'b' * k for k in range(1, 50)] + ['Zq9X' + 'b' * 10 + 'a']
+        known = KnownSecrets(values)
+        assert known.redact('Zq9X' + 'b' * 20 + 'c') == 'Zq9X[REDACTED]c'
+        assert known.redact('Zq9X' + 'b' * 10 + 'ac') == 'Zq9X[REDACTED]c'
+        assert known.redact('Zq9X' + 'b' * 10 + 'c') == 'Zq9X[REDACTED]c'
 
     def test_limit_stops_reading(self):
         text = _ReadProbe('x' * 10_000 + _AWS_KEY)

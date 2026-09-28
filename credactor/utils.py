@@ -165,14 +165,28 @@ def mask_secret(value: str, *, visible: int = 4) -> str:
 KNOWN_MIN_LEN = 4
 
 
+def _common_prefix_len(a: str, b: str) -> int:
+    """Length of the common prefix of *a* and *b*, by binary search over
+    slice comparisons rather than a character loop."""
+    lo, hi = 0, min(len(a), len(b))
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if a[:mid] == b[:mid]:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 class KnownSecrets:
     """Every known secret value, indexed once so it can be masked in any
     number of texts (SR-05).
 
     A regex alternation of the values costs O(len(text) x len(values)) per
     text. Here the values are grouped by their first ``KNOWN_MIN_LEN``
-    characters and kept sorted, so finding the longest value at a position
-    is a dict lookup and a binary search, whatever the number of values.
+    characters and kept sorted, each with a link to its longest known
+    prefix, so finding the longest value at a position is a dict lookup and
+    a few binary searches.
     """
 
     def __init__(self, values: Iterable[str]) -> None:
@@ -182,6 +196,17 @@ class KnownSecrets:
                 by_prefix.setdefault(v[:KNOWN_MIN_LEN], set()).add(v)
         self._index = {prefix: sorted(vs) for prefix, vs in by_prefix.items()}
         self._longest = {prefix: max(map(len, vs)) for prefix, vs in by_prefix.items()}
+        # The longest known value that is a proper prefix of each value. In
+        # sorted order every such prefix comes before the value, so a stack
+        # holding the current chain of prefixes finds it.
+        self._parent: dict[str, str | None] = {}
+        for ordered in self._index.values():
+            chain: list[str] = []
+            for v in ordered:
+                while chain and not v.startswith(chain[-1]):
+                    chain.pop()
+                self._parent[v] = chain[-1] if chain else None
+                chain.append(v)
 
     def _match_at(self, text: str, i: int) -> int:
         """Length of the longest known value that starts at ``text[i]``, or 0."""
@@ -190,19 +215,23 @@ class KnownSecrets:
         if values is None:
             return 0
         s = text[i : i + self._longest[prefix]]
-        # The largest value <= s is the longest one that s starts with, if s
-        # starts with it. If not, no known value longer than their common
-        # prefix can start s either, so search again for that prefix.
         while True:
+            # The largest value <= s is the longest one s starts with, if s
+            # starts with it. If not, the answer is the longest known prefix
+            # of that value no longer than their common prefix: its parent,
+            # if short enough, or else the answer for the common prefix.
             k = bisect.bisect_right(values, s)
             if k == 0:
                 return 0
             v = values[k - 1]
             if s.startswith(v):
                 return len(v)
-            common = 0
-            while s[common] == v[common]:
-                common += 1
+            common = _common_prefix_len(s, v)
+            parent = self._parent[v]
+            if parent is None:
+                return 0
+            if len(parent) <= common:
+                return len(parent)
             s = s[:common]
 
     def redact(self, text: str, *, limit: int | None = None) -> str:
