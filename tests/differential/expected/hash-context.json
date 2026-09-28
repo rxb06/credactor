@@ -1,0 +1,47 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "hash-context",
+ "exit": 1,
+ "findings": {
+  "lock.py": [
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "6721246223140285",
+    "raw": "api_key_rev = \"<v:6721246223140285>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "6721246223140285"
+   },
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "6721246223140285",
+    "raw": "token = \"<v:6721246223140285>\"",
+    "severity": "high",
+    "type": "variable:token",
+    "value": "6721246223140285"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/lock.py:1 suppressed by hash context",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/lock.py:3 suppressed by hash context",
+   1
+  ]
+ ],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "lock.py": "630e278596a84286"
+ }
+}

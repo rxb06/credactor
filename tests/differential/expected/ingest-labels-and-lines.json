@@ -1,0 +1,72 @@
+{
+ "argv": [
+  "--ci",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-labels-and-lines",
+ "exit": 1,
+ "findings": {
+  "notes.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "key <v:1a5d44a2dca19669>",
+    "severity": "medium",
+    "type": "external:gitleaks:<v:1a5d44a2dca19669>",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "token <v:b8498412b57d7cac>",
+    "severity": "medium",
+    "type": "external:gitleaks:x <v:b8498412b57d7cac>",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "5f4b8f793c79706d",
+    "raw": "pw <v:5f4b8f793c79706d>",
+    "severity": "medium",
+    "type": "external:gitleaks:bad\u001b[31m",
+    "value": "5f4b8f793c79706d"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "5f4b8f793c79706d",
+    "raw": "key <v:1a5d44a2dca19669>",
+    "severity": "medium",
+    "type": "external:gitleaks:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+    "value": "5f4b8f793c79706d"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "key <v:1a5d44a2dca19669>",
+    "severity": "medium",
+    "type": "external:gitleaks:ok",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "INFO",
+   "Deduplicated 1 finding(s).",
+   1
+  ]
+ ],
+ "note": "report-controlled labels and invalid line numbers; PA-04 and PA-05 change type and line, and the outputs leak the labels until PA-04",
+ "reported": true,
+ "tree_after": {
+  "notes.md": "ec400e779a3eee28",
+  "report/gl.json": "03e89d80a080c016"
+ }
+}

@@ -1,0 +1,29 @@
+{
+ "argv": [
+  "--ci",
+  "--scan-json",
+  "."
+ ],
+ "case": "json-opted-in",
+ "exit": 1,
+ "findings": {
+  "creds.json": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "{\"api_key\": \"<v:1a5d44a2dca19669>\"}",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "app.py": "9e26bf369911c45c",
+  "creds.json": "98c141d81ac5e7fb"
+ }
+}

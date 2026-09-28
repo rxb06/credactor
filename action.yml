@@ -34,7 +34,10 @@ inputs:
   output-file:
     description: >-
       Where to write a json/sarif report. Defaults to credactor-results.<ext>.
-      Ignored for text format, which goes to the job log.
+      Written after the scan. The destination must not be a symlink, must be a
+      regular file or absent, and must resolve inside the workspace or the
+      runner temp directory, or the step fails. Ignored for text format, which
+      goes to the job log.
     required: false
     default: ''
   fail-on-findings:
@@ -113,7 +116,7 @@ outputs:
     description: 'Number of findings, when format is json or sarif. Empty otherwise.'
     value: ${{ steps.scan.outputs.findings-count }}
   report-file:
-    description: 'Absolute path to the json/sarif report, when one was written.'
+    description: 'Physical path to the json/sarif report, as a native path, when one was written.'
     value: ${{ steps.scan.outputs.report-file }}
 
 runs:
@@ -126,16 +129,22 @@ runs:
 
     - name: Install Credactor
       shell: bash
+      # Run from the runner's temp directory in isolated mode (-I), so only
+      # the installed pip and the standard library can be imported (SR-02).
+      working-directory: ${{ runner.temp }}
       env:
         CREDACTOR_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         PYBIN="$(command -v python || command -v python3)"
         if [ "$CREDACTOR_VERSION" = "latest" ]; then
-          "$PYBIN" -m pip install --disable-pip-version-check --quiet credactor
+          "$PYBIN" -I -m pip install --disable-pip-version-check --quiet credactor
         else
-          "$PYBIN" -m pip install --disable-pip-version-check --quiet "credactor==${CREDACTOR_VERSION}"
+          "$PYBIN" -I -m pip install --disable-pip-version-check --quiet "credactor==${CREDACTOR_VERSION}"
         fi
+        # A console script puts its own bin/ directory first on sys.path, not
+        # the current directory, so calling "credactor" directly is safe. Do
+        # not replace it with "python -m credactor", which is not.
         credactor --version
 
     - name: Run Credactor
@@ -157,6 +166,29 @@ runs:
         EXTRA_ARGS: ${{ inputs.extra-args }}
       run: |
         set -uo pipefail
+
+        # Values that reach messages, $GITHUB_OUTPUT or the argument list must
+        # be single lines (SR-04). The working directory is checked both as
+        # given and as resolved on disk. extra-args is split on whitespace, so
+        # its line breaks (for example from a YAML block) become spaces.
+        reject_line_breaks() {
+          case "$2" in
+            *$'\n'* | *$'\r'*)
+              echo "::error::The $1 input contains a line break, which is not allowed."
+              exit 2
+              ;;
+          esac
+        }
+        reject_line_breaks format "$FORMAT"
+        reject_line_breaks working-directory "$PWD"
+        reject_line_breaks working-directory "$(pwd -P)"
+        reject_line_breaks path "$TARGET"
+        reject_line_breaks output-file "$OUTPUT_FILE"
+        reject_line_breaks config "$CONFIG_PATH"
+        reject_line_breaks from-gitleaks "$FROM_GITLEAKS"
+        reject_line_breaks from-trufflehog "$FROM_TRUFFLEHOG"
+        reject_line_breaks from-betterleaks "$FROM_BETTERLEAKS"
+        EXTRA_ARGS="${EXTRA_ARGS//[$'\r\n']/ }"
 
         case "$FORMAT" in
           text|json|sarif) ;;
@@ -217,57 +249,111 @@ runs:
         args+=( "$TARGET" )
 
         case "$FORMAT" in
-          json)  OUT="${OUTPUT_FILE:-credactor-results.json}"  ;;
-          sarif) OUT="${OUTPUT_FILE:-credactor-results.sarif}" ;;
+          json)  DEST="${OUTPUT_FILE:-credactor-results.json}"  ;;
+          sarif) DEST="${OUTPUT_FILE:-credactor-results.sarif}" ;;
           *)
             # Text belongs in the job log, where somebody will actually read it.
             # Redirecting it to a file empties the log and helps nobody.
             if [ -n "$OUTPUT_FILE" ]; then
               echo "::warning::output-file is ignored for text format; the report stays in the job log. Use format json or sarif to write a file."
             fi
-            OUT=""
+            DEST=""
             ;;
         esac
 
-        # A redirect into a directory that does not exist fails before Credactor
-        # ever runs, and leaves $? at 1, which is indistinguishable from
-        # "credentials found". Create the directory up front and fail loudly if
-        # that is not possible, rather than reporting a phantom finding.
-        if [ -n "$OUT" ]; then
-          outdir="$(dirname "$OUT")"
-          if ! mkdir -p "$outdir" 2>/dev/null; then
-            echo "::error::Cannot create directory '$outdir' for output-file '$OUT'."
+        PYBIN="$(command -v python || command -v python3 || true)"
+
+        # The scan writes to a fresh file in $RUNNER_TEMP. The report is copied
+        # to DEST afterwards, and only if DEST is not a symlink, is a regular
+        # file or absent, and resolves inside the workspace or the runner temp
+        # directory (a directory symlink on the way must resolve there too).
+        # A destination that fails the check fails the step (SR-03).
+        dest_is_safe() {
+          if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
+            echo "::error::output-file '$DEST' is a symlink or not a regular file; refusing to write the report there."
+            return 1
+          fi
+          if ! "$PYBIN" -I -c '
+        import os, sys
+        dest = os.path.normcase(os.path.realpath(sys.argv[1]))
+        roots = [os.path.normcase(os.path.realpath(r)) for r in sys.argv[2:] if r]
+        sys.exit(0 if any(dest.startswith(r.rstrip(os.sep) + os.sep) for r in roots) else 1)
+        ' "$DEST" "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; then
+            echo "::error::output-file '$DEST' resolves outside the workspace and the runner temp directory; refusing to write the report there."
+            return 1
+          fi
+        }
+
+        OUT=""
+        if [ -n "$DEST" ]; then
+          if [ -z "$PYBIN" ]; then
+            echo "::error::No python found to validate output-file '$DEST'."
             exit 2
           fi
-          if ! : > "$OUT" 2>/dev/null; then
-            echo "::error::Cannot write output-file '$OUT'."
+          dest_is_safe || exit 2
+          # A redirect into a directory that does not exist fails before
+          # Credactor ever runs, and leaves $? at 1, which is indistinguishable
+          # from "credentials found". Create the directory up front and fail
+          # loudly if that is not possible, rather than reporting a phantom
+          # finding. The containment check above has already run, so this
+          # cannot create a directory outside the workspace.
+          outdir="$(dirname -- "$DEST")"
+          if ! mkdir -p -- "$outdir" 2>/dev/null; then
+            echo "::error::Cannot create directory '$outdir' for output-file '$DEST'."
+            exit 2
+          fi
+          if ! OUT="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/credactor-report.XXXXXX")"; then
+            echo "::error::Cannot create a temporary report file."
             exit 2
           fi
         fi
 
         echo "Running: credactor ${args[*]}"
 
+        # The runner starts this shell with "bash -eo pipefail", so a bare
+        # "credactor ...; code=$?" would stop the step on exit 1 (findings)
+        # before any output is written, and the gate below would never run.
+        # "|| code=$?" keeps the exit code without tripping -e.
+        code=0
         if [ -n "$OUT" ]; then
-          credactor "${args[@]}" > "$OUT"
-          code=$?
+          credactor "${args[@]}" > "$OUT" || code=$?
         else
-          credactor "${args[@]}"
-          code=$?
+          credactor "${args[@]}" || code=$?
         fi
 
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ -n "$DEST" ]; then
+          # Check again right before the copy. cat into DEST (not cp from the
+          # 0600 temp file) keeps the report's usual file mode.
+          dest_is_safe || exit 2
+          if ! cat "$OUT" > "$DEST"; then
+            echo "::error::Cannot write output-file '$DEST'."
+            exit 2
+          fi
+          rm -f "$OUT"
+        fi
 
         # --- Findings count and report path, for downstream steps.
-        PYBIN="$(command -v python || command -v python3 || true)"
         count=""
-        if [ -n "$OUT" ] && [ -s "$OUT" ]; then
-          abs="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+        if [ -n "$DEST" ] && [ -s "$DEST" ]; then
+          # The physical path of the file written, as a native path on every
+          # OS (Git Bash's pwd gives /d/a/... on Windows, which native tools
+          # such as the SARIF upload cannot open).
+          abs="$("$PYBIN" -I -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$DEST")"
+          reject_line_breaks output-file "$abs"
           echo "report-file=$abs" >> "$GITHUB_OUTPUT"
-        fi
-        if [ -n "$OUT" ] && [ -s "$OUT" ] && [ -n "$PYBIN" ]; then
-          count="$("$PYBIN" -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$OUT" "$FORMAT" 2>/dev/null)" || count=""
+          # -I so no module in the working directory can be imported (SR-02).
+          count="$("$PYBIN" -I -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$DEST" "$FORMAT" 2>/dev/null)" || count=""
         fi
         echo "findings-count=$count" >> "$GITHUB_OUTPUT"
+        # Exit 1 means findings only when there is a report of them. An uncaught
+        # error in the CLI also exits 1; with json/sarif there is then no valid
+        # report, so treat it as the error it is rather than as findings.
+        if [ "$code" = "1" ] && [ -n "$DEST" ] && [ -z "$count" ]; then
+          echo "::error::Credactor exited 1 without writing a valid $FORMAT report; treating this as an error, not a findings result."
+          code=2
+        fi
+        # Written last (SR-04); the gate step reads this value.
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
         # --- Job summary.
         {

@@ -56,7 +56,7 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **SEC-12**: Config injection bounds validation. `entropy_threshold` is validated against 0.0–6.0 and `min_value_length` against 1–200; an out-of-range value warns and reverts to the default.
 - **SEC-13**: Wildcard `.credactorignore` warning. Overly broad patterns trigger a `[WARN]`.
 - **SEC-14**: `--replace-with env` semantic change warning.
-- **SEC-15**: Best-effort advisory file lock (`fcntl.flock(LOCK_EX|LOCK_NB)`) attempted before the read-modify-write; on lock contention it proceeds unlocked, so it is a courtesy marker, not a hard TOCTOU guarantee.
+- **SEC-15**: Best-effort advisory file lock (`fcntl.flock(LOCK_EX|LOCK_NB)`) attempted before the read-modify-write; on lock contention it proceeds unlocked, so it is a courtesy marker, not a hard TOCTOU guarantee. Under `--verbose`, a lock that could not be taken is logged with the reason.
 - **SEC-16**: Terminal escape sequence sanitisation.
 - **SEC-17**: NFS/network mount warning.
 - **SEC-18**: Root user warning.
@@ -115,6 +115,13 @@ Credactor is a **developer-side static analysis tool** that scans source files f
 - **Suppression visibility**: value-literal and positional `file:line` suppressions warn at load time (the latter matches by line number only and can be defeated by line drift), and overly broad globs are flagged (`fnmatch` has no globstar, so `**` behaves as `*`). `.credactorignore` gains a `value:<literal>` prefix for values containing glob metacharacters.
 
 This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
+
+### Unreleased
+
+- **GitHub Action isolation.** The install step runs from `$RUNNER_TEMP`, and every python invocation in the action uses isolated mode (`-I`), so the current directory is never on `sys.path` and only the installed pip and the standard library can be imported. The `credactor` console script is called directly, since a console script puts its own `bin/` directory first on `sys.path`, not the current directory. Pinned by the `action-selftest` CI job.
+- **GitHub Action report path.** The report is never written while the scan runs, and never to a symlink. The scan writes to a fresh file in `$RUNNER_TEMP`; the report is then copied to `output-file` only if the destination is not a symlink, is a regular file or absent, and resolves inside the workspace or the runner temp directory (a directory symlink on the way must resolve there too), checked before the scan and again before the copy. Otherwise the step fails with exit 2. `report-file` is the physical path of the file written. Pinned by `action-selftest` (the containment rule on both OSes, the symlink cases on Linux).
+- **GitHub Action inputs and outputs.** `format`, the working directory (as given and as resolved on disk), `path`, `output-file`, `config` and the `from-*` inputs are rejected (exit 2) if they contain a CR or LF, before any output is written; `report-file` is checked the same way, and `exit-code` is written last. Line breaks in `extra-args` become spaces.
+- **GitHub Action exit codes.** With `format: json` or `sarif`, an exit 1 without a valid report is treated as an error (exit 2), not as findings.
 
 ### v2.7.2 (ingestion correctness)
 
