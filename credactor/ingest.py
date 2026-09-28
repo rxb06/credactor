@@ -133,9 +133,11 @@ def _report_label(value: object, stats: dict[str, Any] | None) -> str:
 
 
 # A report's commit id is emitted verbatim in JSON, so the same holds: only a
-# hex id is kept, and not one found inside the secret (a hex secret would pass
-# the charset check). The finding is kept without it.
-_COMMIT_RE = re.compile(r'[0-9a-fA-F]{7,40}')
+# hex id is kept (SHA-1 or SHA-256), and not one that shares a run of
+# _COMMIT_SHARED characters with the secret (a hex secret would pass the
+# charset check). The finding is kept without it.
+_COMMIT_RE = re.compile(r'[0-9a-fA-F]{7,64}')
+_COMMIT_SHARED = 6
 
 
 def _report_commit(value: object, secret: str, stats: dict[str, Any] | None) -> str:
@@ -144,8 +146,12 @@ def _report_commit(value: object, secret: str, stats: dict[str, Any] | None) -> 
     non-string commit is ``''`` without being counted."""
     if not isinstance(value, str) or not value:
         return ''
-    if _COMMIT_RE.fullmatch(value) and value[:12] not in secret:
-        return value[:12]
+    kept = value[:12]
+    shares = any(
+        kept[i : i + _COMMIT_SHARED] in secret for i in range(len(kept) - _COMMIT_SHARED + 1)
+    )
+    if _COMMIT_RE.fullmatch(value) and not shares:
+        return kept
     if stats is not None:
         stats['bad_commit'] += 1
     return ''
@@ -155,8 +161,8 @@ def _warn_bad_commits(stats: dict[str, Any], start: int, scanner_name: str) -> N
     count = stats['bad_commit'] - start
     if count:
         logger.warning(
-            '%d %s finding(s) had a commit id that is not 7 to 40 hex characters, '
-            'or is part of the secret; ingested without it.',
+            '%d %s finding(s) had a commit id that is not 7 to 64 hex characters, '
+            'or shares part of the secret; ingested without it.',
             count,
             scanner_name,
         )
@@ -967,7 +973,7 @@ def _parse_trufflehog_record(
 
     file_path_raw: str = ''
     line_num: int = 1
-    commit: str = ''
+    raw_commit: object = ''
     source_found = False
 
     if isinstance(data, dict):
@@ -983,9 +989,7 @@ def _parse_trufflehog_record(
             if isinstance(git, dict):
                 file_path_raw = git.get('file', '') or ''
                 line_num = git.get('line', 1) or 1
-                # Non-string commits (int, list) are dropped: slicing one
-                # would crash deduplicate_findings.
-                commit = _report_commit(git.get('commit', '') or '', raw_secret, stats)
+                raw_commit = git.get('commit', '') or ''
                 source_found = True
 
     if not source_found:
@@ -1080,6 +1084,10 @@ def _parse_trufflehog_record(
         'raw': raw_ctx,
     }
 
+    # Checked only now, so a record skipped above is not counted, and against
+    # the form of the secret that was chosen. A non-string commit (int, list)
+    # is dropped: slicing one would crash deduplicate_findings.
+    commit = _report_commit(raw_commit, raw_secret, stats)
     if commit:
         finding['commit'] = commit
 

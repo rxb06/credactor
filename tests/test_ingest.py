@@ -3546,7 +3546,9 @@ class TestReportCommits:
         warned = [r.getMessage() for r in caplog.records if 'commit id' in r.getMessage()]
         return findings[0], warned
 
-    @pytest.mark.parametrize('commit', ['abc1234', 'ABCDEF0123456789abcdef0123456789abcdef01'])
+    @pytest.mark.parametrize(
+        'commit', ['abc1234', 'ABCDEF0123456789abcdef0123456789abcdef01', 'a1' * 32]
+    )
     def test_hex_commit_is_kept(self, tmp_path, parser, commit, caplog):
         finding, warned = self._ingest(tmp_path, parser, commit, caplog)
         assert finding['commit'] == commit[:12]
@@ -3554,7 +3556,7 @@ class TestReportCommits:
 
     @pytest.mark.parametrize(
         'commit',
-        ['##[error]abc', 'abc 1234', 'abc123', 'g' * 12, 'a' * 41, 'AKIAIOSFODNN'],
+        ['##[error]abc', 'abc 1234', 'abc123', 'g' * 12, 'a' * 65, 'AKIAIOSFODNN'],
         ids=['marker', 'space', 'short', 'not-hex', 'long', 'secret'],
     )
     def test_anything_else_is_dropped_and_counted(self, tmp_path, parser, commit, caplog):
@@ -3562,20 +3564,39 @@ class TestReportCommits:
         assert 'commit' not in finding
         name = {'gitleaks': 'Gitleaks', 'betterleaks': 'Betterleaks', 'trufflehog': 'TruffleHog'}
         assert warned == [
-            f'1 {name[parser]} finding(s) had a commit id that is not 7 to 40 hex characters, '
-            'or is part of the secret; ingested without it.'
+            f'1 {name[parser]} finding(s) had a commit id that is not 7 to 64 hex characters, '
+            'or shares part of the secret; ingested without it.'
         ]
 
-    def test_part_of_a_hex_secret_is_dropped(self, tmp_path, parser, caplog):
+    @pytest.mark.parametrize(
+        ('secret', 'commit', 'kept'),
+        [
+            ('deadbeefcafe0123456789ab', 'deadbeefcafe0123456789ab', False),  # the secret
+            ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
+            ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
+            ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
+        ],
+        ids=['equal', 'inside', 'overlap', 'short-overlap'],
+    )
+    def test_commit_sharing_the_secret_is_dropped(self, tmp_path, parser, secret, commit, kept):
         if parser != 'gitleaks':
             pytest.skip('one parser is enough for the secret check with a custom secret')
         target, config_py = _make_target(tmp_path)
-        secret = 'deadbeefcafe0123456789ab'
         config_py.write_text(f'token = "{secret}"\n', encoding='utf-8')
-        record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=secret)
+        record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=commit)
         report = _write_report(tmp_path, [record])
         (finding,) = ingest_gitleaks(str(report), str(target), new_ingest_stats())
-        assert 'commit' not in finding
+        assert ('commit' in finding) is kept
+
+
+def test_skipped_trufflehog_record_does_not_count_its_commit(tmp_path, caplog):
+    target, _ = _make_th_target(tmp_path)
+    git = {'file': 'missing.py', 'line': 1, 'commit': 'not-a-commit'}
+    record = _make_trufflehog_finding(SourceMetadata={'Data': {'Git': git}})
+    with caplog.at_level(logging.WARNING, logger='credactor'):
+        findings = ingest_trufflehog(str(_write_ndjson(tmp_path, [record])), str(target))
+    assert findings == []
+    assert not [r for r in caplog.records if 'commit id' in r.getMessage()]
 
 
 def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):

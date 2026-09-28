@@ -426,7 +426,7 @@ message says the same. Paths and types are masked only with values of at
 least 8 characters that are not a plain number or a plain word (letters in
 one case, or capitalised), so a password that is also a word does not change
 unrelated paths or rule ids. Such a path no longer points at the file (in SARIF, the
-annotation link breaks); rename the file as part of the fix. File names are
+annotation link breaks); rename the file or directory as part of the fix. File names are
 not scanned, so a secret that appears only in a name is neither found nor
 masked.
 

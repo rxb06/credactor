@@ -45,8 +45,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   kept. Secret values are masked in the type in every output format and in the
   interactive prompt. A non-string `RuleID` no longer stops the run with a
   traceback. A report's commit id, which JSON prints as is, is kept only if it
-  is 7 to 40 hex characters and not part of the secret; otherwise the finding
-  is ingested without it, with a warning.
+  is 7 to 64 hex characters (SHA-1 or SHA-256) and shares no run of 6
+  characters with the secret; otherwise the finding is ingested without it,
+  with a warning.
 
 ### Changed
 
