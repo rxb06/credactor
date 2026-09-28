@@ -3423,6 +3423,12 @@ class TestReportLabels:
             {'a': 1},
             7,
             None,
+            '##[error]x',
+            'a:b',
+            'a/b',
+            '<b>',
+            'caf' + chr(0xE9),
+            'a' + chr(0x202E) + 'b',
         ],
         ids=[
             'escape',
@@ -3435,6 +3441,12 @@ class TestReportLabels:
             'dict',
             'int',
             'null',
+            'marker',
+            'colon',
+            'slash',
+            'markup',
+            'non-ascii',
+            'bidi',
         ],
     )
     def test_anything_but_a_plain_label_becomes_unknown(self, tmp_path, parser, label, caplog):

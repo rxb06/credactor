@@ -629,7 +629,7 @@ def _collect_findings(
     # scanned under --scan-json, so flag that the type was held back.
     if config.output_format == 'text' and not config.scan_json and json_files:
         print(
-            f'  [note] {len(json_files)} .json file(s) present but not scanned — '
+            f'  [note] {len(json_files)} .json file(s) present but not scanned; '
             f'pass --scan-json to include them.',
             file=sys.stderr,
         )

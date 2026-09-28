@@ -921,6 +921,11 @@ class TestLogFormatterSanitizes:
         _, out = self._format('files:\n%s', ('::error::x',))
         assert _command_lines(out) == []
 
+    def test_marker_split_across_arguments_after_a_template_newline(self):
+        # Each argument is harmless alone; together they start a line.
+        _, out = self._format('files:\n%s%s', (':', ':error::y'))
+        assert _command_lines(out) == []
+
     def test_command_marker_split_across_template_and_argument(self):
         _, out = self._format('a #%s', ('#[error]x',))
         assert _command_lines(out) == []
