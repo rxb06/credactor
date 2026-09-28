@@ -12,6 +12,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ## [Unreleased]
 
+### Security
+
+- **The GitHub Action no longer runs Python from the scanned checkout.** It
+  installs Credactor from the runner's temp directory and runs its helper
+  Python in isolated mode (`python -I`), so a module in the repository being
+  scanned can never be imported in place of pip or the standard library.
+
 ### Changed
 
 - **`--verbose` now says when the advisory file lock could not be taken.** The

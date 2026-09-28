@@ -93,3 +93,49 @@ jobs:
 
       - name: Audit wheel for supply chain attacks
         run: python scripts/audit_wheel.py
+
+  action-selftest:
+    # Runs the local composite action (uses: ./) on real runners and asserts
+    # its behaviour. Fixtures are created at runtime and never committed: a
+    # pip.py at the repository root would break "python -m pip" for anyone
+    # working in this checkout.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Plant import canaries (SR-02)
+        shell: bash
+        run: |
+          mkdir -p action-fixture
+          canary='import os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "pwned-%s").write_text("x")\n'
+          for dir in . action-fixture; do
+            printf "$canary" pip > "$dir/pip.py"
+            printf "$canary" json > "$dir/json.py"
+          done
+          echo 'x = 1' > action-fixture/app.py
+
+      - id: isolated
+        uses: ./
+        with:
+          working-directory: action-fixture
+          format: json
+
+      - name: Assert no module from the checkout ran
+        shell: bash
+        env:
+          CODE: ${{ steps.isolated.outputs.exit-code }}
+          COUNT: ${{ steps.isolated.outputs.findings-count }}
+        run: |
+          for m in pip json; do
+            if [ -e "$RUNNER_TEMP/pwned-$m" ]; then
+              echo "::error::the action executed the checkout's $m.py"
+              exit 1
+            fi
+          done
+          [ "$CODE" = "0" ] || { echo "::error::expected exit-code 0, got '$CODE'"; exit 1; }
+          [ "$COUNT" = "0" ] || { echo "::error::expected findings-count 0, got '$COUNT'"; exit 1; }
+          rm -f pip.py json.py action-fixture/pip.py action-fixture/json.py

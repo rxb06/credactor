@@ -126,16 +126,24 @@ runs:
 
     - name: Install Credactor
       shell: bash
+      # SR-02: run from the runner's temp directory, never the checkout, and
+      # use isolated mode (-I): "python -m pip" puts the current directory
+      # first on sys.path, so a pip.py committed to the scanned repository
+      # would run instead of pip.
+      working-directory: ${{ runner.temp }}
       env:
         CREDACTOR_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         PYBIN="$(command -v python || command -v python3)"
         if [ "$CREDACTOR_VERSION" = "latest" ]; then
-          "$PYBIN" -m pip install --disable-pip-version-check --quiet credactor
+          "$PYBIN" -I -m pip install --disable-pip-version-check --quiet credactor
         else
-          "$PYBIN" -m pip install --disable-pip-version-check --quiet "credactor==${CREDACTOR_VERSION}"
+          "$PYBIN" -I -m pip install --disable-pip-version-check --quiet "credactor==${CREDACTOR_VERSION}"
         fi
+        # A console script puts its own bin/ directory first on sys.path, not
+        # the current directory, so calling "credactor" directly is safe. Do
+        # not replace it with "python -m credactor", which is not.
         credactor --version
 
     - name: Run Credactor
@@ -265,7 +273,8 @@ runs:
           echo "report-file=$abs" >> "$GITHUB_OUTPUT"
         fi
         if [ -n "$OUT" ] && [ -s "$OUT" ] && [ -n "$PYBIN" ]; then
-          count="$("$PYBIN" -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$OUT" "$FORMAT" 2>/dev/null)" || count=""
+          # SR-02: -I so a json.py in the working directory cannot be imported.
+          count="$("$PYBIN" -I -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])) if sys.argv[2]=="sarif" else d.get("count",0))' "$OUT" "$FORMAT" 2>/dev/null)" || count=""
         fi
         echo "findings-count=$count" >> "$GITHUB_OUTPUT"
 
