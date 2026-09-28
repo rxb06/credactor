@@ -3568,25 +3568,25 @@ class TestReportCommits:
             'or shares part of the secret; ingested without it.'
         ]
 
-    @pytest.mark.parametrize(
-        ('secret', 'commit', 'kept'),
-        [
-            ('deadbeefcafe0123456789ab', 'deadbeefcafe0123456789ab', False),  # the secret
-            ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
-            ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
-            ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
-        ],
-        ids=['equal', 'inside', 'overlap', 'short-overlap'],
-    )
-    def test_commit_sharing_the_secret_is_dropped(self, tmp_path, parser, secret, commit, kept):
-        if parser != 'gitleaks':
-            pytest.skip('one parser is enough for the secret check with a custom secret')
-        target, config_py = _make_target(tmp_path)
-        config_py.write_text(f'token = "{secret}"\n', encoding='utf-8')
-        record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=commit)
-        report = _write_report(tmp_path, [record])
-        (finding,) = ingest_gitleaks(str(report), str(target), new_ingest_stats())
-        assert ('commit' in finding) is kept
+
+@pytest.mark.parametrize(
+    ('secret', 'commit', 'kept'),
+    [
+        ('deadbeefcafe0123456789ab', 'deadbeefcafe0123456789ab', False),  # the secret
+        ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
+        ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
+        ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
+    ],
+    ids=['equal', 'inside', 'overlap', 'short-overlap'],
+)
+def test_commit_sharing_the_secret_is_dropped(tmp_path, secret, commit, kept):
+    # Gitleaks only: the three parsers share _report_commit.
+    target, config_py = _make_target(tmp_path)
+    config_py.write_text(f'token = "{secret}"\n', encoding='utf-8')
+    record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=commit)
+    report = _write_report(tmp_path, [record])
+    (finding,) = ingest_gitleaks(str(report), str(target), new_ingest_stats())
+    assert ('commit' in finding) is kept
 
 
 def test_skipped_trufflehog_record_does_not_count_its_commit(tmp_path, caplog):
