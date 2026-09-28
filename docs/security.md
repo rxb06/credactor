@@ -119,6 +119,7 @@ This hardening shipped in **2.4.0** (Python 3.11+, uses stdlib `tomllib`).
 ### Unreleased
 
 - **Text report masking (extends #2/#29).** Every secret value found in a run is masked wherever it appears in the text report, not only the finding's own value at its first occurrence. A line holding a second credential, or the same one twice, shows none of them in full. Matching is longest value first, so a value that is a prefix of another cannot leave the longer one's tail visible, and masking works on the line as displayed: escape sequences are stripped first, then values are masked, and the line is cut to 120 characters last. A finding whose value is not on its stored line, or is under 4 characters, still shows the masked value alone.
+- **Report labels (extends #7).** An ingested finding's type carries the report's `RuleID` or `DetectorName`, and SARIF turns the type into a rule id, its descriptions and the result message. A label that is not a plain label (letters, digits, `.`, `_` or `-`, at most 64 characters), or is not a string, is reported as `unknown` with a per-parser warning; the finding is kept. Every secret value found in the run is masked in the type in the text, JSON and SARIF reports, the interactive prompt and the dedup log.
 
 ### v2.7.2 (ingestion correctness)
 

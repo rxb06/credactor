@@ -8,13 +8,14 @@ import functools
 import hashlib
 import json
 import os
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from ._log import logger
 from .types import SEVERITY_RANK, Finding
-from .utils import is_within_root, preview, read_lines
+from .utils import KnownSecrets, is_within_root, preview, read_lines
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
@@ -111,6 +112,41 @@ def _betterleaks_severity(
 
 
 # ---------------------------------------------------------------------------
+# Report labels (PA-04)
+# ---------------------------------------------------------------------------
+# A rule or detector name is copied into the finding type, and SARIF turns the
+# type into a rule id, so the report decides what those fields say. Only a
+# plain label is kept; anything else becomes 'unknown' and is counted. The
+# finding itself is kept either way.
+_LABEL_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
+
+
+def _report_label(value: object, stats: dict[str, Any] | None) -> str:
+    """Return *value* if it is a plain label, else ``'unknown'``, counting the
+    replacement in ``stats['relabelled']``. Callers pass ``'unknown'`` for a
+    missing label, so that is not counted."""
+    if isinstance(value, str) and _LABEL_RE.fullmatch(value):
+        return value
+    if stats is not None:
+        stats['relabelled'] += 1
+    return 'unknown'
+
+
+def _warn_relabelled(stats: dict[str, Any], start: int, scanner_name: str, field: str) -> None:
+    """Run-level summary of the labels this parser replaced (a delta against
+    the shared *stats*, like the other summaries)."""
+    count = stats['relabelled'] - start
+    if count:
+        logger.warning(
+            '%d %s finding(s) had a %s that is not a plain label (letters, digits, '
+            "'.', '_' or '-', at most 64 characters); reported as 'unknown'.",
+            count,
+            scanner_name,
+            field,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Raw line synthesis
 # ---------------------------------------------------------------------------
 
@@ -170,6 +206,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'unsupported_types': set(),
         'unsupported_types_truncated': False,
         'invalid_record': 0,
+        'relabelled': 0,
     }
 
 
@@ -353,11 +390,14 @@ def ingest_gitleaks(
     Validates top-level is a list, caps at 10,000 findings, and checks
     resolved paths are within the target directory. *stats* (see
     ``new_ingest_stats``) accumulates skip counters for the CLI's run-level
-    summaries; ``None`` skips the bookkeeping.
+    summaries; ``None`` keeps them private to this call.
     """
     target_resolved, filepath_resolved = _load_report_preamble(
         filepath, target, scanner_name='Gitleaks'
     )
+    if stats is None:
+        stats = new_ingest_stats()
+    relabelled_start = stats['relabelled']
 
     # Load JSON
     try:
@@ -409,8 +449,7 @@ def ingest_gitleaks(
         if not isinstance(obj, dict):
             logger.info('Skipping non-object entry in Gitleaks report.')
             invalid += 1
-            if stats is not None:
-                stats['invalid_record'] += 1
+            stats['invalid_record'] += 1
             continue
 
         # --- Secret ---
@@ -418,8 +457,7 @@ def ingest_gitleaks(
         if not isinstance(secret, str) or not secret:
             logger.info('Skipping Gitleaks finding with empty Secret.')
             invalid += 1
-            if stats is not None:
-                stats['invalid_record'] += 1
+            stats['invalid_record'] += 1
             continue
         _reject_redacted_report(secret, scanner_name='Gitleaks', flag='--redact')
 
@@ -429,8 +467,7 @@ def ingest_gitleaks(
         if not isinstance(raw_file, str) or not raw_file:
             logger.info('Skipping Gitleaks finding with non-string or empty File.')
             invalid += 1
-            if stats is not None:
-                stats['invalid_record'] += 1
+            stats['invalid_record'] += 1
             continue
 
         resolved = _resolve_external_finding_path(
@@ -456,7 +493,7 @@ def ingest_gitleaks(
             raw = _synthesise_raw(resolved, line)
 
         # --- Type ---
-        rule_id = obj.get('RuleID', 'unknown')
+        rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
         ftype = f'external:gitleaks:{rule_id}'
 
         # --- Severity ---
@@ -496,6 +533,7 @@ def ingest_gitleaks(
             'from a clean scan.',
             invalid,
         )
+    _warn_relabelled(stats, relabelled_start, 'Gitleaks', 'RuleID')
 
     return findings
 
@@ -590,6 +628,7 @@ def ingest_betterleaks(
     # below must count only THIS parser's skips.
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
+    relabelled_start = stats['relabelled']
 
     try:
         with open(filepath, encoding='utf-8', errors='strict') as fh:
@@ -757,7 +796,7 @@ def ingest_betterleaks(
                 raw = secret
 
         # --- Type ---
-        rule_id = obj.get('RuleID', 'unknown')
+        rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
         ftype = f'external:betterleaks:{rule_id}'
 
         # --- Severity ---
@@ -800,6 +839,7 @@ def ingest_betterleaks(
         findings.append(finding)
 
     _betterleaks_summaries(stats, own_unsupported, invalid_start, unsupported_start, component_sets)
+    _warn_relabelled(stats, relabelled_start, 'Betterleaks', 'RuleID')
 
     return findings
 
@@ -990,9 +1030,7 @@ def _parse_trufflehog_record(
         raw_ctx = raw_secret  # fallback per plan section 3.2.1
 
     # --- Type ---
-    detector_name = obj.get('DetectorName', 'unknown')
-    if not isinstance(detector_name, str):
-        detector_name = 'unknown'
+    detector_name = _report_label(obj.get('DetectorName', 'unknown'), stats)
     ftype = f'external:trufflehog:{detector_name}'
 
     # --- Severity ---
@@ -1038,6 +1076,7 @@ def ingest_trufflehog(
     # below must count only THIS parser's skips.
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
+    relabelled_start = stats['relabelled']
     own_unsupported: dict[str, Any] = {
         'unsupported_types': set(),
         'unsupported_types_truncated': False,
@@ -1160,6 +1199,7 @@ def ingest_trufflehog(
             'handle them with the scanner directly.',
             invalid_here,
         )
+    _warn_relabelled(stats, relabelled_start, 'TruffleHog', 'DetectorName')
 
     return findings
 
@@ -1212,6 +1252,7 @@ def deduplicate_findings(
     # Pass 2: deduplicate in order; first occurrence wins.
     result: list[Finding] = []
     seen: dict[tuple[str, int, str, str | None], int] = {}
+    known: KnownSecrets | None = None  # built on first use (PA-04)
 
     for f in findings:
         base = _base(f)
@@ -1233,14 +1274,16 @@ def deduplicate_findings(
             if SEVERITY_RANK.get(dropped_sev, 1) > SEVERITY_RANK.get(
                 survivor.get('severity', 'medium'), 1
             ):
+                if known is None:
+                    known = KnownSecrets(x['full_value'] for x in findings)
                 logger.info(
                     'Dedup raised severity %s -> %s at %s:%s (kept %s, merged %s).',
                     survivor.get('severity'),
                     dropped_sev,
                     survivor.get('file'),
                     survivor.get('line'),
-                    survivor.get('type'),
-                    f.get('type'),
+                    known.redact(survivor.get('type', '')),
+                    known.redact(f.get('type', '')),
                 )
                 survivor['severity'] = dropped_sev
             continue

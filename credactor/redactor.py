@@ -17,6 +17,7 @@ from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
 from .types import Finding
 from .utils import (
+    KnownSecrets,
     detect_encoding,
     group_by_file,
     mask_secret,
@@ -700,13 +701,16 @@ def interactive_review(
     print(f"  Answer y to replace each value with '{replacement_desc}', n (or Enter) to skip.")
     print(f'{"=" * 70}\n')
 
+    # PA-04: an ingested type holds a report's label, which can hold a secret.
+    known = KnownSecrets(sanitize_for_terminal(f['full_value']) for f in findings)
+
     for i, finding in enumerate(findings, 1):
         rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
         safe_rel = sanitize_for_terminal(rel)
-        safe_type = sanitize_for_terminal(finding['type'])
+        safe_type = known.redact(sanitize_for_terminal(finding['type']))
         safe_masked = sanitize_for_terminal(masked)
 
         print(f'  [{i}/{total}]  {safe_rel}  --  line {finding["line"]}')

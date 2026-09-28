@@ -5,7 +5,9 @@ Target: ~23 tests for the Gitleaks ingestion path.
 
 from __future__ import annotations
 
+import io
 import json
+import logging
 import os
 from pathlib import Path
 from unittest import mock
@@ -24,7 +26,9 @@ from credactor.ingest import (
     ingest_betterleaks,
     ingest_gitleaks,
     ingest_trufflehog,
+    new_ingest_stats,
 )
+from credactor.report import json_report, print_report, sarif_report
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3327,3 +3331,172 @@ class TestRedactedReportIsFatal:
             assert len(results) == 1, f'Wrongly rejected Secret={secret!r}'
             assert results[0]['full_value'] == secret
         _read_file_lines.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# PA-04: report-controlled labels
+# ---------------------------------------------------------------------------
+
+
+def _gitleaks_case(tmp_path: Path, label):
+    target, _ = _make_target(tmp_path)
+    report = _write_report(tmp_path, [_make_gitleaks_finding(RuleID=label)])
+    return ingest_gitleaks, report, target, 'AKIAIOSFODNN7EXAMPLE', 'Gitleaks'
+
+
+def _betterleaks_case(tmp_path: Path, label):
+    target, _ = _make_bl_target(tmp_path)
+    report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(RuleID=label)])
+    return ingest_betterleaks, report, target, _BL_SECRET, 'Betterleaks'
+
+
+def _trufflehog_case(tmp_path: Path, label):
+    target, _ = _make_th_target(tmp_path)
+    report = _write_ndjson(tmp_path, [_make_trufflehog_finding(DetectorName=label)])
+    return ingest_trufflehog, report, target, 'AKIAIOSFODNN7EXAMPLE', 'TruffleHog'
+
+
+_PARSER_CASES = {
+    'gitleaks': _gitleaks_case,
+    'betterleaks': _betterleaks_case,
+    'trufflehog': _trufflehog_case,
+}
+_PARSER_SECRETS = {
+    'gitleaks': 'AKIAIOSFODNN7EXAMPLE',
+    'betterleaks': _BL_SECRET,
+    'trufflehog': 'AKIAIOSFODNN7EXAMPLE',
+}
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestReportLabels:
+    """A report's rule or detector name becomes the finding type and, in SARIF,
+    the rule id. Only a plain label is kept, and a secret in one is masked in
+    every output format."""
+
+    def _ingest(self, tmp_path, parser, label):
+        ingest, report, target, secret, name = _PARSER_CASES[parser](tmp_path, label)
+        findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 1, 'the finding is kept whatever its label'
+        return findings, target, secret, name
+
+    @staticmethod
+    def _outputs(findings, target) -> dict[str, str]:
+        buf = io.StringIO()
+        print_report(findings, str(target), no_color=True, stream=buf)
+        return {
+            'text': buf.getvalue(),
+            'json': json_report(findings, str(target)),
+            'sarif': sarif_report(findings, str(target)),
+        }
+
+    @pytest.mark.parametrize('prefix', ['', 'rule-'])
+    def test_secret_in_a_label_is_masked_everywhere(self, tmp_path, parser, prefix):
+        secret = _PARSER_SECRETS[parser]
+        findings, target, _, _ = self._ingest(tmp_path, parser, prefix + secret)
+        assert findings[0]['type'] == f'external:{parser}:{prefix}{secret}', 'a plain label is kept'
+        outputs = self._outputs(findings, target)
+        for fmt, text in outputs.items():
+            assert secret not in text, fmt
+        masked_type = f'external:{parser}:{prefix}{secret[:4]}[REDACTED]'
+        assert f'[{masked_type}]' in outputs['text']
+        assert json.loads(outputs['json'])['findings'][0]['type'] == masked_type
+        run = json.loads(outputs['sarif'])['runs'][0]
+        (result,) = run['results']
+        (rule,) = run['tool']['driver']['rules']
+        assert rule['id'] == result['ruleId'] == masked_type.replace(':', '-')
+        assert result['ruleIndex'] == 0
+        assert rule['shortDescription']['text'] == masked_type
+        assert masked_type in rule['fullDescription']['text']
+        assert masked_type in result['message']['text']
+
+    @pytest.mark.parametrize(
+        'label',
+        [
+            'bad\x1b[31m',
+            'two words',
+            'x ' + 'AKIAIOSFODNN7EXAMPLE',
+            'line\nbreak',
+            'r' * 65,
+            '',
+            [1],
+            {'a': 1},
+            7,
+            None,
+        ],
+        ids=[
+            'escape',
+            'space',
+            'space-secret',
+            'newline',
+            'too-long',
+            'empty',
+            'list',
+            'dict',
+            'int',
+            'null',
+        ],
+    )
+    def test_anything_but_a_plain_label_becomes_unknown(self, tmp_path, parser, label, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings, target, secret, name = self._ingest(tmp_path, parser, label)
+        assert findings[0]['type'] == f'external:{parser}:unknown'
+        assert findings[0]['full_value'] == secret
+        warnings = [r.getMessage() for r in caplog.records if 'reported as' in r.getMessage()]
+        assert warnings == [
+            f'1 {name} finding(s) had a {"DetectorName" if parser == "trufflehog" else "RuleID"}'
+            " that is not a plain label (letters, digits, '.', '_' or '-', at most 64"
+            " characters); reported as 'unknown'."
+        ]
+        for fmt, text in self._outputs(findings, target).items():
+            assert secret not in text, fmt
+            assert '\x1b' not in text, fmt
+
+    @pytest.mark.parametrize('label', ['a', 'r' * 64, 'aws-access_token.v2', 'AWS'])
+    def test_plain_labels_are_kept(self, tmp_path, parser, label, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings, _, _, _ = self._ingest(tmp_path, parser, label)
+        assert findings[0]['type'] == f'external:{parser}:{label}'
+        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+
+    def test_missing_label_is_unknown_without_a_warning(self, tmp_path, parser, caplog):
+        ingest, report, target, _, _ = _PARSER_CASES[parser](tmp_path, 'x')
+        field = 'DetectorName' if parser == 'trufflehog' else 'RuleID'
+        records = (
+            [json.loads(line) for line in report.read_text().splitlines() if line]
+            if parser == 'trufflehog'
+            else json.loads(report.read_text())
+        )
+        for r in records:
+            del r[field]
+        body = (
+            '\n'.join(json.dumps(r) for r in records)
+            if parser == 'trufflehog'
+            else json.dumps(records)
+        )
+        report.write_text(body, encoding='utf-8')
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert findings[0]['type'] == f'external:{parser}:unknown'
+        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+
+
+def test_dedup_severity_log_masks_secrets_in_types(caplog):
+    # PA-04: the log names both findings' types, and an ingested type holds a
+    # report's label.
+    secret = 'AKIAIOSFODNN7EXAMPLE'
+    other = 'ghp_' + 'x9Kq2Lm8Rt4Wv6Yb1Nc3Pd5Fg7Hj0Sa2Ue4Io'
+    findings = [
+        _make_finding(ftype=f'external:gitleaks:{other}', severity='medium'),
+        _make_finding(ftype=f'external:trufflehog:{secret}', severity='critical'),
+        _make_finding(full_value=other, line=11),
+    ]
+    with caplog.at_level(logging.INFO, logger='credactor'):
+        result = deduplicate_findings(findings)
+    assert len(result) == 2
+    assert result[0]['severity'] == 'critical'
+    (message,) = [r.getMessage() for r in caplog.records if 'raised severity' in r.getMessage()]
+    assert secret not in message
+    assert other not in message
+    assert 'external:gitleaks:ghp_[REDACTED]' in message
+    assert 'external:trufflehog:AKIA[REDACTED]' in message

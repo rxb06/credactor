@@ -83,8 +83,8 @@ def print_report(
     color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
-    # SR-05: every value in the report is masked wherever it shows, so a line
-    # holding a second secret, or the same one twice, prints none in full.
+    # SR-05/PA-04: every value in the report is masked wherever it shows, in
+    # the line and in the type (an ingested type holds a report's label).
     known = KnownSecrets(sanitize_for_terminal(f['full_value']) for f in findings)
 
     print(f'\n{"=" * 70}', file=stream)
@@ -108,7 +108,7 @@ def print_report(
                 sanitize_for_terminal(finding['full_value']),
                 known,
             )
-            safe_type = sanitize_for_terminal(finding['type'])
+            safe_type = known.redact(sanitize_for_terminal(finding['type']))
             sev_label = _c(f'[{severity.upper()}]', sev_color, use_color=color)
             print(f'  Line {finding["line"]:>4}  {sev_label}  [{safe_type}]', file=stream)
             print(f'           {safe_raw}', file=stream)
@@ -151,6 +151,7 @@ def json_report(findings: list[Finding], root: str) -> str:
     masking the text report applies to it (``_mask_in_line``).
     """
     root_path = Path(root).resolve()
+    known = KnownSecrets(f['full_value'] for f in findings)  # PA-04
     output = []
     for f in findings:
         rel = relativize(f['file'], root_path)
@@ -158,7 +159,7 @@ def json_report(findings: list[Finding], root: str) -> str:
             {
                 'file': rel,
                 'line': f['line'],
-                'type': f['type'],
+                'type': known.redact(f['type']),
                 'severity': f['severity'],
                 'value': mask_secret(f['full_value']),
                 'commit': f.get('commit'),
@@ -182,9 +183,12 @@ def sarif_report(findings: list[Finding], root: str) -> str:
     rules: dict[str, dict[str, Any]] = {}
     rule_index: dict[str, int] = {}
     results = []
+    # PA-04: the type becomes the rule id, its descriptions and the message,
+    # and an ingested type holds a report's label, so it is masked first.
+    known = KnownSecrets(f['full_value'] for f in findings)
 
     for f in findings:
-        safe_type = html.escape(f['type'])
+        safe_type = html.escape(known.redact(f['type']))
         rule_id = safe_type.replace(':', '-')
         if rule_id not in rules:
             rule_index[rule_id] = len(rules)
@@ -228,7 +232,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 'level': _sarif_level(f['severity']),
                 'message': {
                     'text': (
-                        f'Potential credential detected: {html.escape(f["type"])}'
+                        f'Potential credential detected: {safe_type}'
                         f' ({html.escape(mask_secret(f["full_value"]))})'
                     ),
                 },

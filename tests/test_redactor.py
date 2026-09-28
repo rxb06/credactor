@@ -1582,6 +1582,22 @@ class TestGuardPins:
             assert value not in captured.out + captured.err
             assert f'  Value    : {value[:4]}[REDACTED]\n' in captured.out
 
+    def test_interactive_prompt_masks_a_secret_in_the_type(self, make_file, monkeypatch, capsys):
+        # PA-04: an ingested type carries a report-controlled label, which can
+        # hold a secret, this finding's or another one's.
+        path = make_file('labels.py', f'api_key = "{_AWS_KEY}"\npassword = "{_PASSWORD}"\n')
+        findings = [
+            _mk_finding(path, _AWS_KEY, f'external:gitleaks:{_PASSWORD}', line=1),
+            _mk_finding(path, _PASSWORD, f'external:gitleaks:rule-{_AWS_KEY}', line=2),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        out = capsys.readouterr().out
+        for value in (_AWS_KEY, _PASSWORD):
+            assert value not in out
+        assert f'  Type     : external:gitleaks:{_PASSWORD[:4]}[REDACTED]\n' in out
+        assert f'  Type     : external:gitleaks:rule-{_AWS_KEY[:4]}[REDACTED]\n' in out
+
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked
         # value is four characters, which is enough for a complete escape

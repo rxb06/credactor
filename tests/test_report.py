@@ -227,6 +227,33 @@ class TestTextReportMasksEveryValue:
         assert _GH_TOKEN not in out
 
 
+class TestTypeMasking:
+    """PA-04: an ingested type holds a report's label, so every format masks
+    the report's known values in it."""
+
+    def _findings(self):
+        return [
+            _finding(_AWS_KEY, f'key = "{_AWS_KEY}"', ftype=f'external:gitleaks:{_GH_TOKEN}'),
+            _finding(_GH_TOKEN, f'token = "{_GH_TOKEN}"', line=2, ftype='pattern:GitHub token'),
+        ]
+
+    def test_text(self):
+        out = _text(self._findings())
+        assert _GH_TOKEN not in out
+        assert '[external:gitleaks:ghp_[REDACTED]]' in out
+
+    def test_json(self):
+        data = json.loads(json_report(self._findings(), '/tmp'))
+        assert data['findings'][0]['type'] == 'external:gitleaks:ghp_[REDACTED]'
+        assert _GH_TOKEN not in json.dumps(data)
+
+    def test_sarif(self):
+        out = sarif_report(self._findings(), '/tmp')
+        assert _GH_TOKEN not in out
+        run = json.loads(out)['runs'][0]
+        assert run['results'][0]['ruleId'] == 'external-gitleaks-ghp_[REDACTED]'
+
+
 class TestJsonReport:
     def test_valid_json(self):
         findings = [

@@ -38,12 +38,7 @@ _HAS_ENCODING_EXTRA = importlib.util.find_spec('charset_normalizer') is not None
 
 # (case id, report format) -> the task that removes the leak. When that task
 # lands the entry must go: a listed leak that no longer happens fails too.
-KNOWN_OUTPUT_LEAKS: dict[tuple[str, str], str] = {
-    # A report-controlled rule id is printed as the finding type.
-    ('ingest-labels-and-lines', 'text'): 'PA-04 (T09)',
-    ('ingest-labels-and-lines', 'json'): 'PA-04 (T09)',
-    ('ingest-labels-and-lines', 'sarif'): 'PA-04 (T09)',
-}
+KNOWN_OUTPUT_LEAKS: dict[tuple[str, str], str] = {}
 
 
 def _skip_reason(case: Case) -> str | None:

@@ -677,7 +677,10 @@ Verified behaviour and **requirements**:
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule
   ids the `:` is sanitised to `-`) — filter on these in `-f json`
-  pipelines. Severity maps from a per-rule table for Gitleaks (with a
+  pipelines. A `RuleID` or `DetectorName` that is not a plain label (letters,
+  digits, `.`, `_` or `-`, at most 64 characters) is reported as `unknown`, and
+  the run warns with the count; the finding itself is kept. A secret value
+  that appears in a type is masked there like anywhere else. Severity maps from a per-rule table for Gitleaks (with a
   `Tags` override); for TruffleHog, `Verified: true` is always **critical**.
 - **Betterleaks severity** comes from the same per-rule table and the same
   `Tags` override as Gitleaks, because Betterleaks inherits the Gitleaks rule

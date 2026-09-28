@@ -19,6 +19,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   run is now masked wherever it appears in the report, including a second
   credential on the same line or a repeat of the same one, and a line is cut to
   length only after masking.
+- **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
+  ingested report becomes part of the finding type and, in SARIF, the rule id.
+  A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
+  is now reported as `unknown`, with a warning that counts them; the finding is
+  kept. Secret values are masked in the type in every output format and in the
+  interactive prompt. A non-string `RuleID` no longer stops the run with a
+  traceback.
 
 ### Changed
 
