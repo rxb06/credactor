@@ -254,6 +254,62 @@ class TestTypeMasking:
         assert run['results'][0]['ruleId'] == 'external-gitleaks-ghp_[REDACTED]'
 
 
+class TestSecretInFileName:
+    """SR-07: a secret in a path is masked in every format, and the text and
+    SARIF reports say the file name holds a secret."""
+
+    @staticmethod
+    def _findings(root, rel, value=_AWS_KEY):
+        return [_finding(value, f'aws_key = "{value}"', path=str(root / rel))]
+
+    @staticmethod
+    def _text_at(findings, root):
+        buf = io.StringIO()
+        print_report(findings, str(root), no_color=True, stream=buf)
+        return buf.getvalue()
+
+    def test_text(self, tmp_path):
+        out = self._text_at(self._findings(tmp_path, f'{_AWS_KEY}.py'), tmp_path)
+        assert _AWS_KEY not in out
+        assert '  FILE: AKIA[REDACTED].py\n' in out
+        assert 'the file name holds a secret' in out
+
+    def test_json(self, tmp_path):
+        out = json_report(self._findings(tmp_path, f'{_AWS_KEY}.py'), str(tmp_path))
+        assert _AWS_KEY not in out
+        assert json.loads(out)['findings'][0]['file'] == 'AKIA[REDACTED].py'
+
+    def test_sarif(self, tmp_path):
+        rel = Path('keys', _AWS_KEY, 'app.py')
+        out = sarif_report(self._findings(tmp_path, rel), str(tmp_path))
+        assert _AWS_KEY not in out
+        (result,) = json.loads(out)['runs'][0]['results']
+        uri = result['locations'][0]['physicalLocation']['artifactLocation']['uri']
+        assert uri == str(Path('keys', 'AKIA[REDACTED]', 'app.py'))
+        assert result['message']['text'].endswith(
+            '(AKIA[REDACTED]). The file name holds a secret, so rename the file as well.'
+        )
+
+    def test_another_findings_secret_in_the_name(self, tmp_path):
+        findings = [
+            _finding(_AWS_KEY, f'aws_key = "{_AWS_KEY}"', path=str(tmp_path / 'a.py')),
+            _finding(_GH_TOKEN, f't = "{_GH_TOKEN}"', path=str(tmp_path / f'{_AWS_KEY}.txt')),
+        ]
+        outputs = (
+            self._text_at(findings, tmp_path),
+            json_report(findings, str(tmp_path)),
+            sarif_report(findings, str(tmp_path)),
+        )
+        for out in outputs:
+            assert _AWS_KEY not in out
+
+    def test_clean_names_have_no_note(self, tmp_path):
+        findings = self._findings(tmp_path, 'config.py')
+        assert 'file name' not in self._text_at(findings, tmp_path)
+        sarif = json.loads(sarif_report(findings, str(tmp_path)))
+        assert sarif['runs'][0]['results'][0]['message']['text'].endswith('(AKIA[REDACTED])')
+
+
 class TestJsonReport:
     def test_valid_json(self):
         findings = [

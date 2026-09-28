@@ -262,7 +262,17 @@ CASES: list[Case] = [
         },
         argv=('--ci', '.'),
         note='distinct secrets, repeats, and pattern/assignment overlap on one line; '
-        'the text report leaks other values on the line until SR-05',
+        'SR-05 masks every value on a displayed line',
+    ),
+    Case(
+        id='secret-in-file-name',
+        files={
+            f'{AWS}.py': _t(f'aws_key = "{AWS}"\n'),
+            f'keys/{GITHUB}/app.py': _t(f'token = "{GITHUB}"\npassword = "{STRONG}"\n'),
+        },
+        argv=('--ci', '.'),
+        note='SR-07: a secret found in the run is masked in file and directory names in every '
+        'report format (names are not scanned, so a secret only in a name is not found)',
     ),
     Case(
         id='xml-attribute-orders',

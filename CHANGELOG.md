@@ -25,6 +25,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   (a tab as a space). CI workflow command markers in them are broken, so a
   file name or a line of scanned source can no longer be read as a command by
   the GitHub Actions or Azure Pipelines runner. JSON and SARIF are unchanged.
+- **A secret in a file or directory name is masked.** If a value found in the
+  run also appears in a path, the path is shown masked in the text, JSON and
+  SARIF reports and in the interactive prompt, with a note to rename the file.
+  A masked SARIF path no longer links to the file.
 - **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
   ingested report becomes part of the finding type and, in SARIF, the rule id.
   A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
@@ -55,7 +59,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   masking and escape stripping in the interactive prompt. Each now has a test
   that fails when it is broken.
 - **Behaviour snapshots.** A differential test runs the real CLI over a fixed
-  corpus of 52 cases and compares every finding field in order, the exit code,
+  corpus of small cases and compares every finding field in order, the exit code,
   the log messages and the bytes of every file afterwards against committed
   snapshots, so an unintended change to what Credactor reports or writes fails
   the suite. Snapshots hold hashes, never secret values.

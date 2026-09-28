@@ -97,8 +97,11 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
     for filepath, file_findings in sorted(by_file.items()):
-        safe_rel = sanitize_for_display(relativize(filepath, root_path))
-        print(_c(f'  FILE: {safe_rel}', 'bold', use_color=color), file=stream)
+        shown_rel = display_chars(relativize(filepath, root_path))
+        masked_rel = known.redact(shown_rel)  # SR-07: a name can hold a secret
+        print(_c(f'  FILE: {defuse_ci_commands(masked_rel)}', 'bold', use_color=color), file=stream)
+        if masked_rel != shown_rel:
+            print(f'  Note: {_NAME_NOTE}.', file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
             severity = finding['severity']
@@ -128,6 +131,8 @@ def print_report(
 
 
 _RAW_DISPLAY = 120
+# SR-07: the name itself is the leak, so renaming is part of the fix.
+_NAME_NOTE = 'the file name holds a secret, so rename the file as well'
 
 
 def _mask_in_line(raw_line: str, full_value: str, known: KnownSecrets) -> str:
@@ -159,19 +164,17 @@ def json_report(findings: list[Finding], root: str) -> str:
     """
     root_path = Path(root).resolve()
     known = KnownSecrets(f['full_value'] for f in findings)  # PA-04
-    output = []
-    for f in findings:
-        rel = relativize(f['file'], root_path)
-        output.append(
-            {
-                'file': rel,
-                'line': f['line'],
-                'type': known.redact(f['type']),
-                'severity': f['severity'],
-                'value': mask_secret(f['full_value']),
-                'commit': f.get('commit'),
-            }
-        )
+    output = [
+        {
+            'file': known.redact(relativize(f['file'], root_path)),  # SR-07
+            'line': f['line'],
+            'type': known.redact(f['type']),
+            'severity': f['severity'],
+            'value': mask_secret(f['full_value']),
+            'commit': f.get('commit'),
+        }
+        for f in findings
+    ]
     return json.dumps({'findings': output, 'count': len(output)}, indent=2)
 
 
@@ -216,7 +219,11 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 },
             }
 
+        # SR-07: a secret in the path is masked. That breaks the link to the
+        # file, which is accepted: the name is the leak.
         rel = relativize(f['file'], root_path)
+        uri = known.redact(rel)
+        name_note = f'. {_NAME_NOTE.capitalize()}.' if uri != rel else ''
 
         # Column positions for precise annotation. Omit them when the value
         # isn't found on the stored line rather than pointing at a wrong column.
@@ -240,13 +247,13 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 'message': {
                     'text': (
                         f'Potential credential detected: {safe_type}'
-                        f' ({html.escape(mask_secret(f["full_value"]))})'
+                        f' ({html.escape(mask_secret(f["full_value"]))}){name_note}'
                     ),
                 },
                 'locations': [
                     {
                         'physicalLocation': {
-                            'artifactLocation': {'uri': rel},
+                            'artifactLocation': {'uri': uri},
                             'region': region,
                         },
                     }

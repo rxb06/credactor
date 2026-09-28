@@ -204,7 +204,7 @@ def run_case(
         for f in findings:
             unexpected = set(f) - _FINDING_KEYS
             assert not unexpected, f'new Finding keys not in the snapshot: {sorted(unexpected)}'
-            rel = _relative(f['file'], roots)
+            rel = _mask(_relative(f['file'], roots), known)  # a name can hold a secret
             if f.get('commit'):
                 rel = commits(rel)
             by_file.setdefault(rel, []).append(
@@ -240,7 +240,10 @@ def run_case(
         'reported': findings is not None,
         'findings': by_file,
         'log': log,
-        'tree_after': _tree_hashes(root, skip_git=case.needs_git),
+        'tree_after': {
+            _mask(rel, known): digest
+            for rel, digest in _tree_hashes(root, skip_git=case.needs_git).items()
+        },
     }
     return snapshot, rendered, _ordered(known)
 

@@ -1612,6 +1612,21 @@ class TestGuardPins:
         assert '  [1/1]  x?::error::y #?[warning]z.py  --  line 1\n' in out
         assert not [ln for ln in out.split('\n') if ln.lstrip().startswith('::') or '##[' in ln]
 
+    def test_interactive_prompt_masks_a_secret_in_the_path(self, tmp_path, monkeypatch, capsys):
+        # SR-07: a secret in a file or directory name is masked in the prompt.
+        path = tmp_path / _AWS_KEY / 'app.py'
+        path.parent.mkdir()
+        path.write_text(f'password = "{_PASSWORD}"\n', encoding='utf-8')
+        findings = [
+            _mk_finding(str(path), _PASSWORD, 'variable:password'),
+            _mk_finding(str(tmp_path / 'other.py'), _AWS_KEY),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(findings, str(tmp_path), Config(no_backup=True))
+        out = capsys.readouterr().out
+        assert _AWS_KEY not in out
+        assert f'  [1/2]  {os.path.join("AKIA[REDACTED]", "app.py")}  --  line 1\n' in out
+
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked
         # value is four characters, which is enough for a complete escape

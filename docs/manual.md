@@ -417,6 +417,13 @@ Machine-readable. Verified top-level keys: `findings`, `count`; each finding:
 `file`, `line`, `type`, `severity`, `value` (masked), `commit`. The full secret
 never appears (verified — masked in JSON and SARIF).
 
+A secret found in the run is also masked where it appears in a path, in every
+format: the text report adds a note under the `FILE:` line, and the SARIF
+message says the same. Such a path no longer points at the file (in SARIF, the
+annotation link breaks); rename the file as part of the fix. File names are
+not scanned, so a secret that appears only in a name is neither found nor
+masked.
+
 ```bash
 credactor --ci -f json . > findings.json
 ```

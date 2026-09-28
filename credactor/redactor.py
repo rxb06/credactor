@@ -711,7 +711,7 @@ def interactive_review(
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_display(rel)
+        safe_rel = defuse_ci_commands(known.redact(display_chars(rel)))  # SR-06, SR-07
         safe_type = defuse_ci_commands(known.redact(display_chars(finding['type'])))
         safe_masked = sanitize_for_display(masked)
 
