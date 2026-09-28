@@ -42,7 +42,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   is now reported as `unknown`, with a warning that counts them; the finding is
   kept. Secret values are masked in the type in every output format and in the
   interactive prompt. A non-string `RuleID` no longer stops the run with a
-  traceback.
+  traceback. A report's commit id, which JSON prints as is, is kept only if it
+  is 7 to 40 hex characters and not part of the secret; otherwise the finding
+  is ingested without it, with a warning.
 
 ### Changed
 

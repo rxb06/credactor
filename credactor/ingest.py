@@ -132,6 +132,36 @@ def _report_label(value: object, stats: dict[str, Any] | None) -> str:
     return 'unknown'
 
 
+# A report's commit id is emitted verbatim in JSON, so the same holds: only a
+# hex id is kept, and not one found inside the secret (a hex secret would pass
+# the charset check). The finding is kept without it.
+_COMMIT_RE = re.compile(r'[0-9a-fA-F]{7,40}')
+
+
+def _report_commit(value: object, secret: str, stats: dict[str, Any] | None) -> str:
+    """Return *value* cut to 12 characters if it is a usable commit id, else
+    ``''``, counting a rejected string in ``stats['bad_commit']``. A missing or
+    non-string commit is ``''`` without being counted."""
+    if not isinstance(value, str) or not value:
+        return ''
+    if _COMMIT_RE.fullmatch(value) and value[:12] not in secret:
+        return value[:12]
+    if stats is not None:
+        stats['bad_commit'] += 1
+    return ''
+
+
+def _warn_bad_commits(stats: dict[str, Any], start: int, scanner_name: str) -> None:
+    count = stats['bad_commit'] - start
+    if count:
+        logger.warning(
+            '%d %s finding(s) had a commit id that is not 7 to 40 hex characters, '
+            'or is part of the secret; ingested without it.',
+            count,
+            scanner_name,
+        )
+
+
 def _warn_relabelled(stats: dict[str, Any], start: int, scanner_name: str, field: str) -> None:
     """Run-level summary of the labels this parser replaced (a delta against
     the shared *stats*, like the other summaries)."""
@@ -207,6 +237,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'unsupported_types_truncated': False,
         'invalid_record': 0,
         'relabelled': 0,
+        'bad_commit': 0,
     }
 
 
@@ -398,6 +429,7 @@ def ingest_gitleaks(
     if stats is None:
         stats = new_ingest_stats()
     relabelled_start = stats['relabelled']
+    bad_commit_start = stats['bad_commit']
 
     # Load JSON
     try:
@@ -515,9 +547,9 @@ def ingest_gitleaks(
         # type-check before slicing — non-string Commit (e.g. int, list)
         # would raise TypeError or produce an unhashable value that crashes
         # deduplicate_findings later.
-        commit = obj.get('Commit', '')
-        if isinstance(commit, str) and commit:
-            finding['commit'] = commit[:12]
+        commit = _report_commit(obj.get('Commit', ''), secret, stats)
+        if commit:
+            finding['commit'] = commit
 
         findings.append(finding)
 
@@ -534,6 +566,7 @@ def ingest_gitleaks(
             invalid,
         )
     _warn_relabelled(stats, relabelled_start, 'Gitleaks', 'RuleID')
+    _warn_bad_commits(stats, bad_commit_start, 'Gitleaks')
 
     return findings
 
@@ -629,6 +662,7 @@ def ingest_betterleaks(
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
     relabelled_start = stats['relabelled']
+    bad_commit_start = stats['bad_commit']
 
     try:
         with open(filepath, encoding='utf-8', errors='strict') as fh:
@@ -821,9 +855,9 @@ def ingest_betterleaks(
         # --- Commit (omit key when empty) ---
         # Type-check before slicing: a non-string value would raise TypeError
         # or produce an unhashable dedup key later.
-        commit = attrs.get('git.sha') or obj.get('Commit', '')
-        if isinstance(commit, str) and commit:
-            finding['commit'] = commit[:12]
+        commit = _report_commit(attrs.get('git.sha') or obj.get('Commit', ''), secret, stats)
+        if commit:
+            finding['commit'] = commit
 
         # --- Multi-part rules ---
         # A ComponentSet carries the other half of a multi-part credential
@@ -840,6 +874,7 @@ def ingest_betterleaks(
 
     _betterleaks_summaries(stats, own_unsupported, invalid_start, unsupported_start, component_sets)
     _warn_relabelled(stats, relabelled_start, 'Betterleaks', 'RuleID')
+    _warn_bad_commits(stats, bad_commit_start, 'Betterleaks')
 
     return findings
 
@@ -948,12 +983,9 @@ def _parse_trufflehog_record(
             if isinstance(git, dict):
                 file_path_raw = git.get('file', '') or ''
                 line_num = git.get('line', 1) or 1
-                raw_commit = git.get('commit', '') or ''
-                # type-check before slicing — non-string commit
-                # (e.g. int, list) would raise TypeError or produce an
-                # unhashable value that crashes deduplicate_findings.
-                if isinstance(raw_commit, str) and raw_commit:
-                    commit = raw_commit[:12]
+                # Non-string commits (int, list) are dropped: slicing one
+                # would crash deduplicate_findings.
+                commit = _report_commit(git.get('commit', '') or '', raw_secret, stats)
                 source_found = True
 
     if not source_found:
@@ -1077,6 +1109,7 @@ def ingest_trufflehog(
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
     relabelled_start = stats['relabelled']
+    bad_commit_start = stats['bad_commit']
     own_unsupported: dict[str, Any] = {
         'unsupported_types': set(),
         'unsupported_types_truncated': False,
@@ -1200,6 +1233,7 @@ def ingest_trufflehog(
             invalid_here,
         )
     _warn_relabelled(stats, relabelled_start, 'TruffleHog', 'DetectorName')
+    _warn_bad_commits(stats, bad_commit_start, 'TruffleHog')
 
     return findings
 

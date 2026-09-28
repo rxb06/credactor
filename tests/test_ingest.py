@@ -3502,3 +3502,82 @@ def test_dedup_severity_log_masks_secrets_in_types(caplog):
     assert 'external:gitleaks:ghp_[REDACTED]' in message
     assert 'external:trufflehog:AKIA[REDACTED]' in message
     assert '/repo/AKIA[REDACTED]/app.py:10' in message
+
+
+def _with_commit(parser, tmp_path, commit):
+    """Write one finding carrying *commit* for *parser*; return (ingest, report, target)."""
+    if parser == 'gitleaks':
+        target, _ = _make_target(tmp_path)
+        report = _write_report(tmp_path, [_make_gitleaks_finding(Commit=commit)])
+        return ingest_gitleaks, report, target
+    if parser == 'betterleaks':
+        target, _ = _make_bl_target(tmp_path)
+        report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(Commit=commit)])
+        return ingest_betterleaks, report, target
+    target, _ = _make_th_target(tmp_path)
+    finding = _make_trufflehog_finding(
+        SourceMetadata={'Data': {'Git': {'file': 'src/config.py', 'line': 1, 'commit': commit}}}
+    )
+    return ingest_trufflehog, _write_ndjson(tmp_path, [finding]), target
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestReportCommits:
+    """A report's commit id is emitted verbatim in JSON, so only a hex id
+    that is not part of the secret is kept."""
+
+    def _ingest(self, tmp_path, parser, commit, caplog):
+        ingest, report, target = _with_commit(parser, tmp_path, commit)
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 1, 'the finding is kept'
+        warned = [r.getMessage() for r in caplog.records if 'commit id' in r.getMessage()]
+        return findings[0], warned
+
+    @pytest.mark.parametrize('commit', ['abc1234', 'ABCDEF0123456789abcdef0123456789abcdef01'])
+    def test_hex_commit_is_kept(self, tmp_path, parser, commit, caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+        assert finding['commit'] == commit[:12]
+        assert warned == []
+
+    @pytest.mark.parametrize(
+        'commit',
+        ['##[error]abc', 'abc 1234', 'abc123', 'g' * 12, 'a' * 41, 'AKIAIOSFODNN'],
+        ids=['marker', 'space', 'short', 'not-hex', 'long', 'secret'],
+    )
+    def test_anything_else_is_dropped_and_counted(self, tmp_path, parser, commit, caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+        assert 'commit' not in finding
+        name = {'gitleaks': 'Gitleaks', 'betterleaks': 'Betterleaks', 'trufflehog': 'TruffleHog'}
+        assert warned == [
+            f'1 {name[parser]} finding(s) had a commit id that is not 7 to 40 hex characters, '
+            'or is part of the secret; ingested without it.'
+        ]
+
+    def test_part_of_a_hex_secret_is_dropped(self, tmp_path, parser, caplog):
+        if parser != 'gitleaks':
+            pytest.skip('one parser is enough for the secret check with a custom secret')
+        target, config_py = _make_target(tmp_path)
+        secret = 'deadbeefcafe0123456789ab'
+        config_py.write_text(f'token = "{secret}"\n', encoding='utf-8')
+        record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=secret)
+        report = _write_report(tmp_path, [record])
+        (finding,) = ingest_gitleaks(str(report), str(target), new_ingest_stats())
+        assert 'commit' not in finding
+
+
+def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):
+    # The CLI passes one stats dict to every parser, so each summary is a
+    # delta against what that parser saw on entry.
+    stats = new_ingest_stats()
+    gl_target, _ = _make_target(tmp_path / 'gl')
+    gl = _write_report(tmp_path / 'gl', [_make_gitleaks_finding(RuleID='a b', Commit='x y')] * 2)
+    th_target, _ = _make_th_target(tmp_path / 'th')
+    th = _write_ndjson(tmp_path / 'th', [_make_trufflehog_finding()])
+    with caplog.at_level(logging.WARNING, logger='credactor'):
+        ingest_gitleaks(str(gl), str(gl_target), stats)
+        ingest_trufflehog(str(th), str(th_target), stats)
+    messages = [r.getMessage() for r in caplog.records]
+    assert [m.split(' finding')[0] for m in messages if 'plain label' in m] == ['2 Gitleaks']
+    assert [m.split(' finding')[0] for m in messages if 'commit id' in m] == ['2 Gitleaks']
+    assert not [m for m in messages if 'TruffleHog' in m]
