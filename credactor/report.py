@@ -17,11 +17,10 @@ from . import __version__
 from .types import Finding
 from .utils import (
     KNOWN_MIN_LEN,
-    KnownSecrets,
-    defuse_ci_commands,
-    display_chars,
+    OutputMasker,
     group_by_file,
     mask_secret,
+    name_secrets,
     relativize,
     sanitize_for_display,
 )
@@ -87,9 +86,10 @@ def print_report(
     color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
-    # SR-05/PA-04: every value in the report is masked wherever it shows, in
-    # the line and in the type (an ingested type holds a report's label).
-    known = KnownSecrets(display_chars(f['full_value']) for f in findings)
+    # SR-05/PA-04/SR-07: every value found in the run is masked wherever the
+    # report shows it: in lines, types (an ingested type holds a report's
+    # label) and paths.
+    masker = OutputMasker(f['full_value'] for f in findings)
 
     print(f'\n{"=" * 70}', file=stream)
     header = f'  CREDENTIAL SCAN REPORT  --  {len(findings)} finding(s) in {len(by_file)} file(s)'
@@ -97,28 +97,19 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
     for filepath, file_findings in sorted(by_file.items()):
-        shown_rel = display_chars(relativize(filepath, root_path))
-        masked_rel = known.redact(shown_rel)  # SR-07: a name can hold a secret
-        print(_c(f'  FILE: {defuse_ci_commands(masked_rel)}', 'bold', use_color=color), file=stream)
-        if masked_rel != shown_rel:
+        rel = relativize(filepath, root_path)
+        shown_rel = masker.show_name(rel)
+        print(_c(f'  FILE: {shown_rel}', 'bold', use_color=color), file=stream)
+        if shown_rel != sanitize_for_display(rel):
             print(f'  Note: {_NAME_NOTE}.', file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
             severity = finding['severity']
             sev_color = _SEVERITY_COLOR.get(severity, 'dim')
 
-            # #2/#29 — mask the credential in the raw line display. Masking
-            # works on the characters as displayed (removing an escape
-            # sequence afterwards could join a split value back together);
-            # workflow command markers are broken after masking (SR-06).
-            safe_raw = defuse_ci_commands(
-                _mask_in_line(
-                    display_chars(finding['raw']),
-                    display_chars(finding['full_value']),
-                    known,
-                )
-            )
-            safe_type = defuse_ci_commands(known.redact(display_chars(finding['type'])))
+            # #2/#29: mask the credentials in the raw line display.
+            safe_raw = _mask_in_line(finding['raw'], finding['full_value'], masker)
+            safe_type = masker.show_name(finding['type'])
             sev_label = _c(f'[{severity.upper()}]', sev_color, use_color=color)
             print(f'  Line {finding["line"]:>4}  {sev_label}  [{safe_type}]', file=stream)
             print(f'           {safe_raw}', file=stream)
@@ -132,13 +123,12 @@ def print_report(
 
 _RAW_DISPLAY = 120
 # SR-07: the name itself is the leak, so renaming is part of the fix.
-_NAME_NOTE = 'the file name holds a secret, so rename the file as well'
+_NAME_NOTE = 'the path holds a secret, so rename the file or directory as well'
 
 
-def _mask_in_line(raw_line: str, full_value: str, known: KnownSecrets) -> str:
-    """Return the raw line for display with every value in *known* masked,
-    cut to ``_RAW_DISPLAY`` characters after masking. *raw_line*,
-    *full_value* and *known* are all in their sanitized, displayed form.
+def _mask_in_line(raw_line: str, full_value: str, masker: OutputMasker) -> str:
+    """Return the raw line with every known value masked, safe to display and
+    cut to ``_RAW_DISPLAY`` characters after masking.
 
     If ``full_value`` is not a verbatim substring of ``raw_line``, masking
     would silently no-op and print the raw line WITH the secret. This happens
@@ -149,8 +139,8 @@ def _mask_in_line(raw_line: str, full_value: str, known: KnownSecrets) -> str:
     ``KnownSecrets`` to mask inside other text.
     """
     if len(full_value) >= KNOWN_MIN_LEN and full_value in raw_line:
-        return known.redact(raw_line, limit=_RAW_DISPLAY)
-    return mask_secret(full_value)
+        return masker.show_line(raw_line, limit=_RAW_DISPLAY)
+    return sanitize_for_display(mask_secret(full_value))
 
 
 # ---------------------------------------------------------------------------
@@ -163,12 +153,12 @@ def json_report(findings: list[Finding], root: str) -> str:
     masking the text report applies to it (``_mask_in_line``).
     """
     root_path = Path(root).resolve()
-    known = KnownSecrets(f['full_value'] for f in findings)  # PA-04
+    names = name_secrets(f['full_value'] for f in findings)  # PA-04, SR-07
     output = [
         {
-            'file': known.redact(relativize(f['file'], root_path)),  # SR-07
+            'file': names.redact(relativize(f['file'], root_path)),
             'line': f['line'],
-            'type': known.redact(f['type']),
+            'type': names.redact(f['type']),
             'severity': f['severity'],
             'value': mask_secret(f['full_value']),
             'commit': f.get('commit'),
@@ -195,10 +185,10 @@ def sarif_report(findings: list[Finding], root: str) -> str:
     results = []
     # PA-04: the type becomes the rule id, its descriptions and the message,
     # and an ingested type holds a report's label, so it is masked first.
-    known = KnownSecrets(f['full_value'] for f in findings)
+    names = name_secrets(f['full_value'] for f in findings)
 
     for f in findings:
-        safe_type = html.escape(known.redact(f['type']))
+        safe_type = html.escape(names.redact(f['type']))
         rule_id = safe_type.replace(':', '-')
         if rule_id not in rules:
             rule_index[rule_id] = len(rules)
@@ -222,7 +212,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
         # SR-07: a secret in the path is masked. That breaks the link to the
         # file, which is accepted: the name is the leak.
         rel = relativize(f['file'], root_path)
-        uri = known.redact(rel)
+        uri = names.redact(rel)
         name_note = f'. {_NAME_NOTE.capitalize()}.' if uri != rel else ''
 
         # Column positions for precise annotation. Omit them when the value

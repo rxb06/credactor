@@ -327,7 +327,7 @@ class TestTypeMasking:
 
 class TestSecretInFileName:
     """SR-07: a secret in a path is masked in every format, and the text and
-    SARIF reports say the file name holds a secret."""
+    SARIF reports say the path holds a secret."""
 
     @staticmethod
     def _findings(root, rel, value=_AWS_KEY):
@@ -343,7 +343,7 @@ class TestSecretInFileName:
         out = self._text_at(self._findings(tmp_path, f'{_AWS_KEY}.py'), tmp_path)
         assert _AWS_KEY not in out
         assert '  FILE: AKIA[REDACTED].py\n' in out
-        assert 'the file name holds a secret' in out
+        assert 'the path holds a secret' in out
 
     def test_json(self, tmp_path):
         out = json_report(self._findings(tmp_path, f'{_AWS_KEY}.py'), str(tmp_path))
@@ -358,7 +358,7 @@ class TestSecretInFileName:
         uri = result['locations'][0]['physicalLocation']['artifactLocation']['uri']
         assert uri == str(Path('keys', 'AKIA[REDACTED]', 'app.py'))
         assert result['message']['text'].endswith(
-            '(AKIA[REDACTED]). The file name holds a secret, so rename the file as well.'
+            '(AKIA[REDACTED]). The path holds a secret, so rename the file or directory as well.'
         )
 
     def test_another_findings_secret_in_the_name(self, tmp_path):
@@ -376,7 +376,7 @@ class TestSecretInFileName:
 
     def test_clean_names_have_no_note(self, tmp_path):
         findings = self._findings(tmp_path, 'config.py')
-        assert 'file name' not in self._text_at(findings, tmp_path)
+        assert 'holds a secret' not in self._text_at(findings, tmp_path)
         sarif = json.loads(sarif_report(findings, str(tmp_path)))
         assert sarif['runs'][0]['results'][0]['message']['text'].endswith('(AKIA[REDACTED])')
 
@@ -418,6 +418,110 @@ class TestMultilineRawIsWhole:
         run = json.loads(sarif_report(findings, str(tmp_path)))['runs'][0]
         region = run['results'][0]['locations'][0]['physicalLocation']['region']
         assert 'startColumn' not in region
+
+
+def _fragments(value, out, n=8):
+    """Parts of *value* past its visible prefix that show in *out*."""
+    return {value[i : i + n] for i in range(4, len(value) - n + 1)} & {
+        out[j : j + n] for j in range(len(out) - n + 1)
+    }
+
+
+class TestMaskingAroundEscapes:
+    """An escape sequence can end right where a secret starts (and take its
+    first character when removed), or split a secret that its removal then
+    joins. Masking runs on the raw text and again on the displayed text."""
+
+    def test_escape_that_takes_a_first_character_in_a_line(self):
+        raw = f'a = "\x1b[{_AWS_KEY}" b = "{_GH_TOKEN}"'
+        findings = [_finding(_AWS_KEY, raw), _finding(_GH_TOKEN, raw, line=2)]
+        assert _fragments(_AWS_KEY, _text(findings)) == set()
+
+    def test_escape_that_takes_a_first_character_in_a_name(self, tmp_path):
+        findings = [
+            _finding(_AWS_KEY, f'k = "{_AWS_KEY}"', path=str(tmp_path / f'x\x1b[{_AWS_KEY}.py'))
+        ]
+        buf = io.StringIO()
+        print_report(findings, str(tmp_path), no_color=True, stream=buf)
+        out = buf.getvalue()
+        assert _fragments(_AWS_KEY, out) == set()
+        assert 'Note:' in out
+
+    def test_value_split_by_an_escape_in_a_name(self, tmp_path):
+        split = _AWS_KEY[:8] + '\x1b[0m' + _AWS_KEY[8:]
+        findings = [
+            _finding(_AWS_KEY, f'k = "{_AWS_KEY}"', path=str(tmp_path / 'a.py')),
+            _finding(_GH_TOKEN, f't = "{_GH_TOKEN}"', path=str(tmp_path / f'{split}.py')),
+        ]
+        buf = io.StringIO()
+        print_report(findings, str(tmp_path), no_color=True, stream=buf)
+        assert _AWS_KEY not in buf.getvalue()
+
+
+class TestDistinctiveValuesOnlyInNames:
+    """Paths and types are masked only with values that look like secrets,
+    not words: a found password such as 'production' must not mask an
+    unrelated directory, break its SARIF link, or change a rule id."""
+
+    def _findings(self, root):
+        return [
+            _finding(
+                'production',
+                'db_password = "production"',
+                path=str(root / 'settings.py'),
+                ftype='variable:db_password',
+            ),
+            _finding(
+                _GH_TOKEN,
+                f't = "{_GH_TOKEN}"',
+                path=str(root / 'config/production/app.py'),
+                ftype='pattern:GitHub token',
+            ),
+            _finding(
+                'token',
+                'x = token',
+                path=str(root / 'b.py'),
+                ftype='external:gitleaks:github-token',
+            ),
+            _finding('20260928', 'pin = "20260928"', path=str(root / 'logs/20260928/app.py')),
+            _finding('ab12cd', 'k = "ab12cd"', path=str(root / 'src/ab12cd/x.py')),
+        ]
+
+    def test_text(self, tmp_path):
+        buf = io.StringIO()
+        print_report(self._findings(tmp_path), str(tmp_path), no_color=True, stream=buf)
+        out = buf.getvalue()
+        assert f'  FILE: {Path("config/production/app.py")}\n' in out
+        assert 'Note:' not in out
+        assert f'  FILE: {Path("logs/20260928/app.py")}\n' in out  # no letter
+        assert f'  FILE: {Path("src/ab12cd/x.py")}\n' in out  # under 8 characters
+        assert '[pattern:GitHub token]' in out
+        assert '[external:gitleaks:github-token]' in out
+        assert 'db_password = "prod[REDACTED]"' in out  # lines still use every value
+
+    def test_json_and_sarif(self, tmp_path):
+        findings = self._findings(tmp_path)
+        data = json.loads(json_report(findings, str(tmp_path)))['findings']
+        assert data[1]['file'] == str(Path('config/production/app.py'))
+        assert [f['type'] for f in data] == [f['type'] for f in findings]
+        run = json.loads(sarif_report(findings, str(tmp_path)))['runs'][0]
+        uri = run['results'][1]['locations'][0]['physicalLocation']['artifactLocation']['uri']
+        assert uri == str(Path('config/production/app.py'))
+        assert run['results'][1]['ruleId'] == 'pattern-GitHub token'
+        assert 'holds a secret' not in run['results'][1]['message']['text']
+
+    def test_distinctive_values_still_mask_names(self, tmp_path):
+        findings = [
+            _finding(
+                'Hx7Kq2Lm9Pz4',
+                'k = "Hx7Kq2Lm9Pz4"',
+                path=str(tmp_path / 'Hx7Kq2Lm9Pz4.txt'),
+                ftype='external:gitleaks:Hx7Kq2Lm9Pz4',
+            )
+        ]
+        data = json.loads(json_report(findings, str(tmp_path)))['findings'][0]
+        assert data['file'] == 'Hx7K[REDACTED].txt'
+        assert data['type'] == 'external:gitleaks:Hx7K[REDACTED]'
 
 
 class TestJsonReport:

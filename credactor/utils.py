@@ -301,6 +301,61 @@ def sanitize_for_display(s: str) -> str:
     return defuse_ci_commands(display_chars(s))
 
 
+# A known value masks a path or a type only if it looks like a secret, not a
+# word: a found password such as 'production' must not mask an unrelated
+# directory (breaking its SARIF link) or change a rule id between runs.
+_NAME_VALUE_MIN = 8
+# Raw text is masked this far before it is made displayable, which bounds the
+# work for a very long line; a value crossing the bound is masked whole first.
+_FIRST_PASS_LIMIT = 4096
+
+
+def _distinctive(value: str) -> bool:
+    return (
+        len(value) >= _NAME_VALUE_MIN
+        and any(c.isdigit() for c in value)
+        and any(c.isalpha() for c in value)
+    )
+
+
+def name_secrets(values: Iterable[str]) -> KnownSecrets:
+    """The known values that may mask a path or a type (see ``OutputMasker``)."""
+    return KnownSecrets(v for v in values if _distinctive(v))
+
+
+class OutputMasker:
+    """Masks a run's known secret values wherever a report shows text
+    (SR-05, PA-04, SR-07).
+
+    Source lines are masked with every known value; paths and types only
+    with distinctive ones. For display, text is masked in its raw form,
+    then made displayable, then masked again in its displayed form, then
+    has CI command markers broken: removing an escape sequence can take the
+    first character of a value (only the raw pass sees it whole) or join the
+    two halves of a value it split (only the second pass sees it whole).
+    """
+
+    def __init__(self, values: Iterable[str]) -> None:
+        every = set(values)
+        self._lines = KnownSecrets(every)
+        self._lines_shown = KnownSecrets(display_chars(v) for v in every)
+        self._names = name_secrets(every)
+        self._names_shown = KnownSecrets(display_chars(v) for v in every if _distinctive(v))
+
+    @staticmethod
+    def _show(raw: KnownSecrets, shown: KnownSecrets, text: str, limit: int | None) -> str:
+        first = raw.redact(text, limit=None if limit is None else _FIRST_PASS_LIMIT)
+        return defuse_ci_commands(shown.redact(display_chars(first), limit=limit))
+
+    def show_line(self, text: str, *, limit: int | None = None) -> str:
+        """*text* (a source line) masked and made safe to display."""
+        return self._show(self._lines, self._lines_shown, text, limit)
+
+    def show_name(self, text: str) -> str:
+        """*text* (a path or a type) masked and made safe to display."""
+        return self._show(self._names, self._names_shown, text, None)
+
+
 def preview(val: str, n: int = 60) -> str:
     """*val* cut to *n* characters, with an ellipsis when longer. Truncated,
     NOT masked: for most secrets the result is the whole secret, so never
