@@ -29,6 +29,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   publication of every rewrite (including a failed rename or temp file), and
   masking and escape stripping in the interactive prompt. Each now has a test
   that fails when it is broken.
+- **Behaviour snapshots.** A differential test runs the real CLI over a fixed
+  corpus of 52 cases and compares every finding field in order, the exit code,
+  the log messages and the bytes of every file afterwards against committed
+  snapshots, so an unintended change to what Credactor reports or writes fails
+  the suite. Snapshots hold hashes, never secret values.
 
 ## [2.7.4] - 2026-09-18
 

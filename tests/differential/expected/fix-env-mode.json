@@ -1,0 +1,130 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "--replace-with",
+  "env",
+  "."
+ ],
+ "case": "fix-env-mode",
+ "exit": 0,
+ "findings": {
+  "a.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "auth = \"Bearer <v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "b.js": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "const token = '<v:b8498412b57d7cac>';",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "c.sh": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "323725e8eff4df0a",
+    "raw": "export PASSWORD=\"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:PASSWORD",
+    "value": "323725e8eff4df0a"
+   }
+  ],
+  "d.rb": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = '<v:1a5d44a2dca19669>'",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "e.go": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "apiKey := \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "f.java": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "5f4b8f793c79706d",
+    "raw": "String password = \"<v:5f4b8f793c79706d>\";",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "5f4b8f793c79706d"
+   }
+  ],
+  "g.php": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "$api_key = '<v:1a5d44a2dca19669>';",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "h.ts": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "const token: string = \"<v:b8498412b57d7cac>\";",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "--replace-with env changes string literals to function calls. Ensure environment variables are set before running the modified code.",
+   1
+  ]
+ ],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "a.py": "ca70963d7df2be8d",
+  "b.js": "3681d2d2767cca13",
+  "c.sh": "47b42f9bde7c4c41",
+  "d.rb": "e1cb4fd87bacc627",
+  "e.go": "b084fb37b8d1e25a",
+  "f.java": "93fa6522d81c3b9e",
+  "g.php": "c8c1a2c0d0236242",
+  "h.ts": "2717e74bf7307350"
+ }
+}
