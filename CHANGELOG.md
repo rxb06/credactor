@@ -22,8 +22,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   so a value past the first 120 characters is masked before the cut too.
 - **Text output is safe to print into a terminal or a CI log.** Paths, source
   lines, types and the values in warnings now have terminal escape sequences
-  removed, and control, line-break and bidirectional characters shown as `?`
-  (a tab as a space). CI workflow command markers in them are broken, so a
+  removed, and control, line-break and bidirectional characters, and bytes
+  that could not be decoded, shown as `?` (a tab as a space). An undecodable
+  byte on a finding's line no longer stops the text report with an encoding
+  error. CI workflow command markers in them are broken, so a
   file name or a line of scanned source can no longer be read as a command by
   the GitHub Actions or Azure Pipelines runner. JSON and SARIF are unchanged.
 - **A secret in a file or directory name is masked.** If a value found in the

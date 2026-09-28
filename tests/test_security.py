@@ -1,5 +1,6 @@
 """Security-focused tests for confirmed vulnerability mitigations."""
 
+import io
 import json
 import logging
 import os
@@ -822,6 +823,12 @@ class TestDisplayChars:
     def test_escape_sequences_are_removed_whole(self, seq):
         assert display_chars(f'a{seq}b') == 'ab'
 
+    def test_lone_surrogates_become_question_marks(self):
+        # Undecodable bytes arrive as lone surrogates (surrogateescape, or
+        # os.fsdecode of a file name). Written out with surrogateescape they
+        # are raw bytes again, which can spell a C1 or bidi control.
+        assert display_chars('a\udce2\x1b[m\udc80\udcae\ud800b') == 'a????b'
+
     def test_tab_becomes_a_space(self):
         assert display_chars('\tkey = 1') == ' key = 1'
 
@@ -961,6 +968,38 @@ class TestHostileNamesAndLines:
         target.mkdir()
         (target / 'c.py').write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
         self._assert_clean(self._run(['--ci', str(target)], capsys))
+
+    def test_undecodable_bytes_in_a_line_and_a_name(self, tmp_path):
+        # A strict UTF-8 stream must accept the report (no crash), and a
+        # surrogateescape stream must not receive raw C1 or bidi bytes.
+        line = 'k = "' + _AKIA + '"  # \udce2\x1b[m\udc80\udcae x \udcc2\x1b[m\udc9b2J'
+        finding = {
+            'file': str(tmp_path / 'e\udc9bf.py'),
+            'line': 1,
+            'type': 'pattern:AWS access key',
+            'severity': 'critical',
+            'full_value': _AKIA,
+            'value_preview': _AKIA,
+            'raw': line,
+        }
+        for errors in ('strict', 'surrogateescape'):
+            raw = io.BytesIO()
+            stream = io.TextIOWrapper(raw, encoding='utf-8', errors=errors)
+            print_report([finding], str(tmp_path), no_color=True, stream=stream)
+            stream.flush()
+            data = raw.getvalue()
+            for bad in (b'\xc2\x9b', b'\xe2\x80\xae', b'\x9b', b'\x80\xae'):
+                assert bad not in data, (errors, bad)
+            assert b'AKIA[REDACTED]' in data
+
+    @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='needs byte file names')
+    def test_undecodable_file_name_on_disk(self, tmp_path, capsys):
+        name = os.fsdecode(b'e\x9bf.py')
+        (tmp_path / name).write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        captured = self._run(['--ci', str(tmp_path)], capsys)
+        assert 'e?f.py' in captured.out
+        for text in (captured.out, captured.err):
+            assert not any(0xD800 <= ord(c) <= 0xDFFF for c in text)
 
     @pytest.mark.skipif(hasattr(os, 'getuid') and os.getuid() == 0, reason='root can traverse')
     def test_untraversable_directory_warning(self, tmp_path, capsys):

@@ -246,8 +246,11 @@ _ESCAPE_SEQ_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|
 # Every C0 control (LF and CR included), DEL, every C1 control (NEL and the
 # one-byte CSI included), the Unicode line and paragraph separators, and the
 # bidirectional embedding, override and isolate controls, which can make a
-# name display in a different order than its bytes. TAB becomes a space: it
-# cannot break a line, and source lines are often indented with it.
+# name display in a different order than its bytes. Lone surrogates too:
+# undecodable bytes arrive as them (surrogateescape, os.fsdecode), and a
+# stream that writes them back out would emit those raw bytes, while a
+# strict one would raise. TAB becomes a space: it cannot break a line, and
+# source lines are often indented with it.
 _DISPLAY_TABLE = str.maketrans(
     dict.fromkeys(
         [
@@ -259,6 +262,7 @@ _DISPLAY_TABLE = str.maketrans(
             0x2029,
             *range(0x202A, 0x202F),
             *range(0x2066, 0x206A),
+            *range(0xD800, 0xE000),
         ],
         '?',
     )
@@ -273,7 +277,8 @@ _LINE_COMMAND_RE = re.compile(r'^([^\S\r\n]*):(?=:)', re.MULTILINE)
 
 def display_chars(s: str) -> str:
     """Remove terminal escape sequences from *s*, replace every control,
-    line-break and bidi character with '?', and TAB with a space.
+    line-break, bidi and lone surrogate character with '?', and TAB with a
+    space.
 
     Apart from whole escape sequences, each character maps on its own, so a
     secret and a line that holds it stay consistent: mask the output of this
