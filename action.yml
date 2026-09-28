@@ -255,12 +255,15 @@ runs:
 
         echo "Running: credactor ${args[*]}"
 
+        # The runner starts this shell with "bash -eo pipefail", so a bare
+        # "credactor ...; code=$?" would stop the step on exit 1 (findings)
+        # before any output is written, and the gate below would never run.
+        # "|| code=$?" keeps the exit code without tripping -e.
+        code=0
         if [ -n "$OUT" ]; then
-          credactor "${args[@]}" > "$OUT"
-          code=$?
+          credactor "${args[@]}" > "$OUT" || code=$?
         else
-          credactor "${args[@]}"
-          code=$?
+          credactor "${args[@]}" || code=$?
         fi
 
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"

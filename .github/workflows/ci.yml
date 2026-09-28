@@ -139,3 +139,40 @@ jobs:
           [ "$CODE" = "0" ] || { echo "::error::expected exit-code 0, got '$CODE'"; exit 1; }
           [ "$COUNT" = "0" ] || { echo "::error::expected findings-count 0, got '$COUNT'"; exit 1; }
           rm -f pip.py json.py action-fixture/pip.py action-fixture/json.py
+
+      - name: Plant a finding
+        shell: bash
+        run: |
+          mkdir -p findings-fixture
+          printf 'api_key = "%s"\n' "AKIA""IOSFODNN7EXAMPLE" > findings-fixture/app.py
+
+      # With findings, the scan step must record the exit code and let the
+      # gate decide; it must not stop on credactor's exit 1 under bash -e.
+      - id: report-only
+        uses: ./
+        with:
+          working-directory: findings-fixture
+          format: json
+          fail-on-findings: 'false'
+
+      - id: gated
+        uses: ./
+        continue-on-error: true
+        with:
+          working-directory: findings-fixture
+          format: json
+
+      - name: Assert findings are reported and gated, not crashed on
+        shell: bash
+        env:
+          RO_CODE: ${{ steps.report-only.outputs.exit-code }}
+          RO_COUNT: ${{ steps.report-only.outputs.findings-count }}
+          RO_FILE: ${{ steps.report-only.outputs.report-file }}
+          G_OUTCOME: ${{ steps.gated.outcome }}
+          G_CODE: ${{ steps.gated.outputs.exit-code }}
+        run: |
+          [ "$RO_CODE" = "1" ] || { echo "::error::report-only exit-code '$RO_CODE', expected 1"; exit 1; }
+          [ "$RO_COUNT" = "1" ] || { echo "::error::report-only findings-count '$RO_COUNT', expected 1"; exit 1; }
+          [ -s "$RO_FILE" ] || { echo "::error::report-only wrote no report at '$RO_FILE'"; exit 1; }
+          [ "$G_OUTCOME" = "failure" ] || { echo "::error::gated run outcome '$G_OUTCOME', expected failure"; exit 1; }
+          [ "$G_CODE" = "1" ] || { echo "::error::gated exit-code '$G_CODE', expected 1"; exit 1; }

@@ -19,6 +19,15 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   Python in isolated mode (`python -I`), so a module in the repository being
   scanned can never be imported in place of pip or the standard library.
 
+### Fixed
+
+- **The GitHub Action no longer errors out when it finds credentials.** The
+  runner starts each step with `bash -e`, so the scan step stopped on
+  Credactor's exit 1 before recording any output. A run with findings then
+  failed as an error, `fail-on-findings: false` could not report without
+  failing, and the SARIF upload never ran on the runs that had something to
+  upload. The step now keeps the exit code and lets the gate decide.
+
 ### Changed
 
 - **`--verbose` now says when the advisory file lock could not be taken.** The
