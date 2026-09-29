@@ -221,6 +221,20 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
     return probe.stdout.strip()
 
 
+def _has_commits(root: str) -> bool:
+    """Whether HEAD names a commit (False in a repository with none yet)."""
+    try:
+        probe = subprocess.run(
+            ['git', 'rev-parse', '--verify', '-q', 'HEAD'],
+            capture_output=True,
+            cwd=root,
+            timeout=_GIT_TIMEOUT_S,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise GitUnavailableError(f'Cannot run git: {exc}') from exc
+    return probe.returncode == 0
+
+
 def scan_staged_files(
     root: str,
     *,
@@ -252,13 +266,12 @@ def scan_staged_files(
             timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        # rev-parse already proved git is usable; a diff failure here is a
-        # non-fatal empty result, not a not-a-repo error.
-        logger.error('git diff failed: %s', exc)
-        return [], []
+        # SR-14: rev-parse proved this is a repository, so a failing diff (a
+        # damaged index, say) is an error. An empty stage is exit 0 with no
+        # output, not a failure, so it never gets here.
+        raise GitUnavailableError(f'git diff --cached failed: {exc}') from exc
     if result.returncode != 0:
-        logger.error('git diff failed: %s', result.stderr.strip())
-        return [], []
+        raise GitUnavailableError(f'git diff --cached failed: {result.stderr.strip()}')
     # -z yields NUL-separated, unquoted paths: a unicode/special-char filename
     # would otherwise be octal-quoted and silently skipped (a staged-secret miss).
     raw_staged = [p for p in result.stdout.split('\0') if p]
@@ -441,13 +454,15 @@ def scan_git_history(
             cwd=str(root_path),
             timeout=_GIT_LOG_TIMEOUT_S,
         )
-        if result.returncode != 0:
-            # e.g. a valid repo with no commits yet — nothing to scan, not fatal.
-            logger.error('git log failed: %s', result.stderr.strip())
-            return []
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        logger.error('Cannot run git: %s', exc)
-        return []
+        raise GitUnavailableError(f'git log failed: {exc}') from exc
+    if result.returncode != 0:
+        # SR-14: a repository with no commits yet makes git log fail too, and
+        # has nothing to scan. Any other failure is an error, not a clean scan.
+        if not _has_commits(str(root_path)):
+            logger.info('No commits to scan yet: %s', result.stderr.strip())
+            return []
+        raise GitUnavailableError(f'git log failed: {result.stderr.strip()}')
 
     # A repo deeper than the window would otherwise produce an all-clear
     # byte-identical to a fully-scanned clean repo. Probe one commit past the

@@ -14,6 +14,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **A git failure in `--staged` or `--scan-history` is an error, not a clean
+  scan.** Once `git rev-parse` had found the repository, a failing
+  `git diff --cached` or `git log` was reported as nothing to scan, exit 0; a
+  damaged index let a pre-commit hook pass. Both now exit 2. A repository with
+  no commits yet still has nothing to scan for `--scan-history`, exit 0. Under
+  `--staged`, a staged file that cannot be read also exits 2, with or without
+  `--fail-on-error`.
 - **`.gitignore` and `.credactorignore` are read with the same guards as a
   scanned file.** They were opened before any check, so a FIFO could block the
   scan forever and a device file could be read without end. Each is now read

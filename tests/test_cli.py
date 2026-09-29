@@ -2,8 +2,11 @@
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -743,6 +746,48 @@ class TestPhase1Fixes:
         out = capsys.readouterr().out
         assert 'Safe for commits' not in out
         assert 'entropy floor' in out
+
+
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedReadFailures:
+    """SR-14: the pre-commit gate cannot call a commit clean when it could
+    not read it."""
+
+    def _repo(self, tmp_path):
+        run = dict(cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(['git', 'init', '-q'], **run)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **run)
+        subprocess.run(['git', 'config', 'user.name', 't'], **run)
+        (tmp_path / 'app.py').write_text('x = 1\n', encoding='utf-8')
+        subprocess.run(['git', 'add', 'app.py'], **run)
+        return tmp_path
+
+    def test_corrupt_index_exits_2(self, tmp_path):
+        repo = self._repo(tmp_path)
+        subprocess.run(['git', 'commit', '-qm', 'x'], cwd=repo, check=True, capture_output=True)
+        index = repo / '.git' / 'index'
+        index.write_bytes(b'DIRC\0\0\0\2\0\0\0\5garbage')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert index.read_bytes() == b'DIRC\0\0\0\2\0\0\0\5garbage'  # left alone
+
+    def test_unreadable_staged_blob_exits_2_without_fail_on_error(self, tmp_path, capsys):
+        repo = self._repo(tmp_path)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show']:
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert 'staged file(s) could not be read' in capsys.readouterr().err
 
 
 class TestStagedReadOnly:

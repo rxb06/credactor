@@ -195,6 +195,77 @@ class TestStagedScanning:
         ):
             scan_staged_files(tmp_dir, config=Config(no_color=True))
 
+    # SR-14: a git failure after a good rev-parse is an error, not a clean scan.
+    @pytest.mark.parametrize(
+        'failure',
+        [
+            mock.Mock(returncode=128, stdout='', stderr='fatal: index file corrupt'),
+            FileNotFoundError('git'),
+            subprocess.TimeoutExpired('git', 30),
+        ],
+        ids=['exit', 'missing', 'timeout'],
+    )
+    def test_diff_failure_after_rev_parse_raises(self, tmp_dir, failure):
+        ok = mock.Mock(returncode=0, stdout=tmp_dir + '\n', stderr='')
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                return ok
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError, match='git diff --cached failed'),
+        ):
+            scan_staged_files(tmp_dir, config=Config(no_color=True))
+
+    def test_corrupt_index_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], cwd=repo, check=True)
+        subprocess.run(['git', 'config', 'user.name', 't'], cwd=repo, check=True)
+        with open(os.path.join(repo, 'app.py'), 'w') as f:
+            f.write('x = 1\n')
+        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True, capture_output=True)
+        subprocess.run(['git', 'commit', '-qm', 'x'], cwd=repo, check=True, capture_output=True)
+        with open(os.path.join(repo, '.git', 'index'), 'wb') as f:
+            f.write(b'DIRC\0\0\0\2\0\0\0\5garbage')
+        with pytest.raises(GitUnavailableError):
+            scan_staged_files(repo, config=Config(no_color=True))
+
+    def test_history_log_failure_with_commits_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'log']:
+                return mock.Mock(returncode=128, stdout='', stderr='fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError, match='git log failed'),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_log_timeout_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'log']:
+                raise subprocess.TimeoutExpired('git', 30)
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
     def test_staged_in_non_git_dir_raises(self, tmp_dir):
         # L4: a plain (non-git) directory is a hard error for --staged
         with pytest.raises(GitUnavailableError):

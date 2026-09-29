@@ -8,8 +8,8 @@
  "findings": {},
  "log": [
   [
-   "ERROR",
-   "git log failed: fatal: your current branch 'main' does not have any commits yet",
+   "INFO",
+   "No commits to scan yet: fatal: your current branch 'main' does not have any commits yet",
    1
   ]
  ],

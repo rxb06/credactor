@@ -182,7 +182,10 @@ Scans only files staged in git (`git diff --cached`), reading the **staged index
 blob**. **Read-only: it forces dry-run even with `--fix-all`** (a pre-commit hook
 must never rewrite the tree mid-commit). Verified: `--staged --fix-all --yes` on a
 staged secret exits **1** and leaves the working file **unmodified**. In a
-non-git directory it exits **2** (see below).
+non-git directory it exits **2** (see below). It also exits **2** when git
+cannot list the staged files (a damaged index, say) or cannot read one of
+them, with or without `--fail-on-error`: a hook cannot call a commit clean
+that it could not read.
 The staged set is repo-wide but the scan is **scoped to the target
 directory**: staged files outside it are skipped with a run-level `[WARN]`
 naming the count — run `--staged` from the **repository root** (as the
@@ -206,7 +209,9 @@ credactor --staged --ci          # canonical pre-commit gate
 Scans up to the 100 most recent **file-changing** commits of `git log -p`,
 reporting the commit hash where each secret was introduced. Verified: finds a
 secret that was committed then removed from the working tree. In a non-git
-directory it exits **2**; a **file** target is rejected (exit 2). In `-f
+directory it exits **2**; a **file** target is rejected (exit 2). If `git log`
+fails in a repository, the run exits **2**, except in one with no commits
+yet, which has nothing to scan and exits **0**. In `-f
 json`/`-f sarif` output a history finding's `file` field carries the
 synthetic `path (commit <hash>)` form — the hash is also in the separate
 `commit` field, so join pipelines on `commit`, not `file`.
@@ -957,7 +962,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; a target that is neither a regular file nor a directory (a FIFO/device); system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories |
+| `2` | Error: path not found; a target that is neither a regular file nor a directory (a FIFO/device); system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories; a failing `git diff --cached` or `git log` in a repository (not history in one with no commits yet); under `--staged`, a staged file that cannot be read |
 
 Two adjacent notes: **Ctrl-C during a scan exits 130**; at an interactive
 `Replace?` or `--fix-all` `Proceed?` prompt it is caught (the run reports and

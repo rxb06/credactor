@@ -590,7 +590,18 @@ def _collect_findings(
     # hard error (exit 2), never a false-clean exit 0.
     try:
         if config.staged_only:
-            return (*scan_staged_files(target, config=config, allowlist=allowlist), [])
+            findings, errored = scan_staged_files(target, config=config, allowlist=allowlist)
+            if errored:
+                # SR-14: a pre-commit gate cannot call a commit clean when it
+                # could not read part of it, so this is fatal with or without
+                # --fail-on-error.
+                logger.warning(
+                    '%d staged file(s) could not be read:' + '\n  - %s' * len(errored),
+                    len(errored),
+                    *errored,
+                )
+                _fatal('Exiting: the staged content could not be checked.')
+            return findings, errored, []
         if config.scan_history:
             return scan_git_history(target, config=config, allowlist=allowlist), [], []
     except GitUnavailableError as exc:
