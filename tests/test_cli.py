@@ -137,12 +137,22 @@ class TestMainExitCodes:
             main(['--ci', os.path.dirname(path)])
         assert exc_info.value.code == 1
 
-    def test_unexpected_exception_exits_2_not_1(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        'error',
+        [
+            RuntimeError('boom\n::error::x'),
+            OSError('boom\n::error::x'),
+            ValueError('boom\n::error::x'),
+            UnicodeDecodeError('utf-8', b'boom\n::error::x', 0, 1, 'boom'),
+        ],
+        ids=['runtime', 'os', 'value', 'decode'],
+    )
+    def test_unexpected_exception_exits_2_not_1(self, monkeypatch, capsys, error):
         # T15a: exit 1 means "findings found", so a crash must not use it.
         from credactor import cli
 
         def boom(argv):
-            raise RuntimeError('boom\n::error::x')
+            raise error
 
         monkeypatch.setattr(cli, '_main_inner', boom)
         with pytest.raises(SystemExit) as exc_info:
@@ -150,7 +160,7 @@ class TestMainExitCodes:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert 'Traceback' in err
-        assert 'RuntimeError: boom' in err
+        assert f'{type(error).__name__}: ' in err
         assert not [ln for ln in err.split('\n') if ln.lstrip().startswith('::')]
 
     def test_dry_run_with_findings_exits_1(self, make_file):
