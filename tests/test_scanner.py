@@ -553,6 +553,51 @@ class TestScanFile:
         )
         assert scan_file(make_file('k.pem.py', content), config=config) == []
 
+    _BODY = 'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB'
+
+    def test_quoted_python_fixture_after_an_ignored_header(self, make_file, config):
+        # The body of a suppressed key is skipped in its usual in-code forms.
+        content = (
+            'TEST_KEY = (\n'
+            '    "-----BEGIN RSA PRIVATE KEY-----\\n"  # credactor:ignore\n'
+            + ''.join(f'    "{self._BODY}\\n"\n' for _ in range(6))
+            + '    "-----END RSA PRIVATE KEY-----\\n"\n'
+            ')\n'
+        )
+        assert scan_file(make_file('fixture.py', content), config=config) == []
+
+    def test_concatenated_js_fixture_after_an_ignored_header(self, make_file, config):
+        content = (
+            'const KEY =\n'
+            '  "-----BEGIN RSA PRIVATE KEY-----\\n" + // credactor:ignore\n'
+            + ''.join(f'  "{self._BODY}\\n" +\n' for _ in range(6))
+            + '  "-----END RSA PRIVATE KEY-----\\n";\n'
+        )
+        assert scan_file(make_file('fixture.js', content), config=config) == []
+
+    def test_line_that_is_not_a_body_line_is_scanned_inside_a_suppressed_block(
+        self, make_file, config
+    ):
+        token = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+        content = (
+            '-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\n'
+            f'{self._BODY}\n'
+            f'{token}\n'
+            f'{self._BODY}\n'
+            '-----END RSA PRIVATE KEY-----\n'
+        )
+        findings = scan_file(make_file('k.py', content), config=config)
+        assert [f['full_value'] for f in findings] == [token]
+
+    def test_one_line_pem_does_not_hide_the_lines_after_it(self, make_file, config):
+        content = (
+            f'TEST_KEY = "-----BEGIN RSA PRIVATE KEY-----\\n{self._BODY}\\n'
+            '-----END RSA PRIVATE KEY-----\\n"\n'
+            f'aws_key = "{self._KEY}"\n'
+        )
+        findings = scan_file(make_file('one.py', content), config=config)
+        assert self._KEY in [f['full_value'] for f in findings]
+
     def test_clean_file_no_findings(self, make_file, config):
         content = 'import os\napi_key = os.getenv("API_KEY")\nprint("hello world")\n'
         path = make_file('clean.py', content)
