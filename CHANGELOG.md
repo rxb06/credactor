@@ -30,6 +30,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   no commits yet still has nothing to scan for `--scan-history`, exit 0. Under
   `--staged`, a staged file that cannot be read also exits 2, with or without
   `--fail-on-error`.
+- **`--staged` reads exactly the staged files.** A type change (a symlink
+  replaced by a file) is now scanned, a path such as `1:x.py` is no longer read
+  as stage 1 of `x.py`, and a submodule, which has no content in the
+  superproject, is no longer read at all.
 - **`.gitignore` and `.credactorignore` are read with the same guards as a
   scanned file.** `.gitignore` was opened before any check, so a FIFO could
   block the scan and a device file could be read without end, and

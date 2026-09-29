@@ -257,8 +257,19 @@ def scan_staged_files(
         # non-ASCII staged filename, and the later `git show :<path>` would
         # fail — a staged secret in that file would land in errored_files
         # instead of being scanned.
+        # --ignore-submodules=all: a gitlink is a commit id with no blob here,
+        # so it cannot be shown or scanned. T (a type change, say a symlink
+        # replaced by a file) is new content to scan like A and M.
         result = subprocess.run(
-            ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
+            [
+                'git',
+                'diff',
+                '--cached',
+                '--name-only',
+                '-z',
+                '--diff-filter=ACMRT',
+                '--ignore-submodules=all',
+            ],
             capture_output=True,
             text=True,
             encoding='utf-8',
@@ -332,8 +343,10 @@ def scan_staged_files(
         # Scan the STAGED index blob, not the working-tree file: the two can
         # differ, and a pre-commit gate must see exactly what is being committed.
         try:
+            # ':0:' names the stage explicitly, so a path such as '1:x.py'
+            # is not read as stage 1 of x.py.
             blob = subprocess.run(
-                ['git', 'show', f':{line}'],
+                ['git', 'show', f':0:{line}'],
                 capture_output=True,
                 cwd=str(root_path),
                 timeout=_GIT_TIMEOUT_S,

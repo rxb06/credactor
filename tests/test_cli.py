@@ -806,6 +806,72 @@ class TestStagedReadFailures:
         assert 'staged file(s) could not be read' in capsys.readouterr().err
 
 
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedEntries:
+    """What --staged reads from the index."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    def _repo(self, path):
+        path.mkdir(parents=True, exist_ok=True)
+        self._git(path, 'init', '-q')
+        (path / 'x.py').write_text('x = 1\n', encoding='utf-8')
+        self._git(path, 'add', 'x.py')
+        self._git(path, 'commit', '-qm', 'x')
+        return path
+
+    def _staged(self, repo):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        return exc_info.value.code
+
+    def test_submodule_with_a_scanned_name_is_skipped(self, tmp_path):
+        # A gitlink is a commit id with no blob in the superproject, so
+        # showing it can fail ('bad object'); it must not be read at all, or
+        # the hook would fail every commit that adds or bumps the submodule.
+        sub = self._repo(tmp_path / 'sub')
+        repo = self._repo(tmp_path / 'main')
+        self._git(
+            repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', str(sub), 'lib/three.js'
+        )
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show'] and args[2].endswith('lib/three.js'):
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with mock.patch('credactor.walker.subprocess.run', side_effect=run):
+            assert self._staged(repo) == 0
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='file names with a colon')
+    def test_path_that_looks_like_a_stage_number(self, tmp_path):
+        # 'git show :0:x.py' would be stage 0 of x.py, not the file '0:x.py'.
+        repo = self._repo(tmp_path / 'main')
+        (repo / '0:x.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', '0:x.py')
+        assert self._staged(repo) == 1
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_symlink_replaced_by_a_file_is_scanned(self, tmp_path):
+        repo = self._repo(tmp_path / 'main')
+        (repo / 'cfg.py').symlink_to('x.py')
+        self._git(repo, 'add', 'cfg.py')
+        self._git(repo, 'commit', '-qm', 'link')
+        (repo / 'cfg.py').unlink()
+        (repo / 'cfg.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', 'cfg.py')
+        assert self._staged(repo) == 1
+
+
 class TestStagedReadOnly:
     """M7: --staged is read-only — it forces dry-run so a staged scan never
     rewrites the working tree, even when --fix-all is also passed."""
