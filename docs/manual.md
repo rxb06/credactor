@@ -250,7 +250,10 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   name: a *variable* finding `api_key = …` → `os.environ["API_KEY"]`; a *pattern*
   finding (a `ghp_…` token) → `os.environ["GITHUB_TOKEN"]`. Verified for Python
   (`os.environ[...]`), JS (`process.env[...]`), Ruby (`ENV[...]`); Java/Go/PHP
-  forms are covered by the test suite.
+  forms are covered by the test suite. A name that would share 8 letters or
+  digits in a row with the secret itself (case and separators ignored; only
+  the secret part of a URL or PEM value is compared) becomes `CREDENTIAL`, so
+  the rewritten line cannot hold a copy of the secret.
 - **Replacement is validated** (allowlist `[A-Za-z0-9_-]+`): a dangerous value
   (`bad;rm -rf`, markup, newlines, control chars) is **rejected with exit 2**
   (verified). This guards against injection into rewritten files. An **empty**
