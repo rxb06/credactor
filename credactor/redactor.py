@@ -116,8 +116,8 @@ def _credential_part(value: str) -> str:
     value = _PEM_ARMOR_RE.sub('', value)
     url = _URL_USERINFO_RE.match(value)
     if url:
-        user, _, password = url.group(1).partition(':')
-        value = password or user
+        user, _, rest = url.group(1).partition(':')
+        value = rest or user
     return value
 
 

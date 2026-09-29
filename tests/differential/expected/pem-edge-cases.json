@@ -73,7 +73,7 @@
   ],
   [
    "WARNING",
-   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line \u2014 re-check them after large edits.",
+   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line; re-check them after large edits.",
    1
   ],
   [

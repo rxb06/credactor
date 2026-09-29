@@ -84,8 +84,8 @@ class AllowList:
                     r'[*?/\\.]', '', line
                 ):
                     logger.warning(
-                        '.credactorignore contains overly broad pattern "%s" '
-                        '— this can suppress most or all files.',
+                        '.credactorignore contains overly broad pattern "%s"; '
+                        'this can suppress most or all files.',
                         line,
                     )
                 elif any(
@@ -103,23 +103,23 @@ class AllowList:
                 self._value_literals.add(line)
         if self._value_literals:
             # Unlike file globs (warned only when overly broad), value
-            # literals had no signal at all — a contributor can hide their
+            # literals had no signal at all: a contributor can hide their
             # own secret everywhere with one line. Surface that they exist.
             logger.warning(
                 '.credactorignore defines %d value-literal suppression(s); '
                 'these hide any matching value everywhere with no per-finding '
-                'signal — review them for detection-bypass.',
+                'signal; review them for detection-bypass.',
                 len(self._value_literals),
             )
         if self._file_line:
-            # M13: file:line entries are positional only — the value is never
-            # checked — so a new secret that drifts onto a suppressed line
+            # M13: file:line entries are positional only (the value is never
+            # checked), so a new secret that drifts onto a suppressed line
             # after edits is silently hidden. No format change; surface the
             # drift risk so entries get re-verified.
             logger.warning(
                 '.credactorignore has %d positional file:line suppression(s); '
                 'they match by line number only and will not catch a new '
-                'secret that moves onto a suppressed line — re-check them '
+                'secret that moves onto a suppressed line; re-check them '
                 'after large edits.',
                 sum(len(v) for v in self._file_line.values()),
             )
