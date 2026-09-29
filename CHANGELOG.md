@@ -26,8 +26,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 - **A git failure in `--staged` or `--scan-history` is an error, not a clean
   scan.** Once `git rev-parse` had found the repository, a failing
   `git diff --cached` or `git log` was reported as nothing to scan, exit 0; a
-  damaged index let a pre-commit hook pass. Both now exit 2. A repository with
-  no commits yet still has nothing to scan for `--scan-history`, exit 0. Under
+  damaged index let a pre-commit hook pass. Both now exit 2, and so does a
+  broken ref, or a HEAD with no commits while other branches have some. A
+  repository with no commits on any branch still has nothing to scan for
+  `--scan-history`, exit 0. History now also scans type changes. Under
   `--staged`, a staged file that cannot be read also exits 2, with or without
   `--fail-on-error`.
 - **`--staged` reads exactly the staged files.** A type change (a symlink

@@ -210,8 +210,8 @@ Scans up to the 100 most recent **file-changing** commits of `git log -p`,
 reporting the commit hash where each secret was introduced. Verified: finds a
 secret that was committed then removed from the working tree. In a non-git
 directory it exits **2**; a **file** target is rejected (exit 2). If `git log`
-fails in a repository, the run exits **2**, except in one with no commits
-yet, which has nothing to scan and exits **0**. In `-f
+fails in a repository, the run exits **2**, except in one with no commits on
+any branch, which has nothing to scan and exits **0**. In `-f
 json`/`-f sarif` output a history finding's `file` field carries the
 synthetic `path (commit <hash>)` form — the hash is also in the separate
 `commit` field, so join pipelines on `commit`, not `file`.

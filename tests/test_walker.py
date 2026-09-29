@@ -266,6 +266,66 @@ class TestStagedScanning:
         ):
             scan_git_history(repo, config=Config(no_color=True))
 
+    def test_history_with_an_unborn_head_but_other_refs_raises(self, tmp_dir):
+        # HEAD names a branch with no commits while another branch has some,
+        # as in a bare repository whose default branch was never pushed.
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/nothere'], cwd=repo, check=True)
+        with pytest.raises(GitUnavailableError):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_with_a_broken_branch_ref_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        branch = subprocess.run(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        with open(os.path.join(repo, '.git', 'refs', 'heads', branch), 'w') as f:
+            f.write('')
+        with pytest.raises(GitUnavailableError):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_probe_that_cannot_run_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                return mock.Mock(returncode=0, stdout='.git\n', stderr='')
+            if args[:2] == ['git', 'log']:
+                return mock.Mock(returncode=128, stdout='', stderr='fatal: no commits')
+            raise subprocess.TimeoutExpired('git', 30)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_history_scans_a_symlink_replaced_by_a_file(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        env = dict(check=True, capture_output=True, cwd=repo)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **env)
+        subprocess.run(['git', 'config', 'user.name', 't'], **env)
+        with open(os.path.join(repo, 'x.py'), 'w') as f:
+            f.write('x = 1\n')
+        os.symlink('x.py', os.path.join(repo, 'cfg.py'))
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-qm', 'link'], **env)
+        os.unlink(os.path.join(repo, 'cfg.py'))
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'cfg.py'), 'w') as f:
+            f.write(f'k = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-qm', 'file'], **env)
+        findings = scan_git_history(repo, config=Config(no_color=True))
+        assert any(f['full_value'] == key for f in findings)
+
     def test_staged_in_non_git_dir_raises(self, tmp_dir):
         # L4: a plain (non-git) directory is a hard error for --staged
         with pytest.raises(GitUnavailableError):

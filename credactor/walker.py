@@ -221,18 +221,24 @@ def _require_git_repo(root: str, *, want_toplevel: bool = False) -> str:
     return probe.stdout.strip()
 
 
-def _has_commits(root: str) -> bool:
-    """Whether HEAD names a commit (False in a repository with none yet)."""
+def _has_no_commits(root: str) -> bool:
+    """Whether the repository holds no commits at all, on any ref. A broken
+    ref makes git fail here, which raises: it must not pass for empty."""
     try:
         probe = subprocess.run(
-            ['git', 'rev-parse', '--verify', '-q', 'HEAD'],
+            ['git', 'rev-list', '-n1', '--all'],
             capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
             cwd=root,
             timeout=_GIT_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise GitUnavailableError(f'Cannot run git: {exc}') from exc
-    return probe.returncode == 0
+    if probe.returncode != 0:
+        raise GitUnavailableError(f'Cannot list commits: {probe.stderr.strip()}')
+    return not probe.stdout.strip()
 
 
 def scan_staged_files(
@@ -456,7 +462,7 @@ def scan_git_history(
                 'log',
                 f'-{max_commits}',
                 '-p',
-                '--diff-filter=ACMR',
+                '--diff-filter=ACMRT',
                 '--no-color',
                 '--format=commit %H',
             ],
@@ -471,8 +477,9 @@ def scan_git_history(
         raise GitUnavailableError(f'git log failed: {exc}') from exc
     if result.returncode != 0:
         # SR-14: a repository with no commits yet makes git log fail too, and
-        # has nothing to scan. Any other failure is an error, not a clean scan.
-        if not _has_commits(str(root_path)):
+        # has nothing to scan. Any other failure is an error, not a clean scan:
+        # a broken ref, or a HEAD with no commits while other refs have some.
+        if _has_no_commits(str(root_path)):
             logger.info('No commits to scan yet: %s', result.stderr.strip())
             return []
         raise GitUnavailableError(f'git log failed: {result.stderr.strip()}')
