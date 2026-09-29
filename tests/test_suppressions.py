@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from credactor.suppressions import AllowList, has_inline_suppression
 
 
@@ -101,6 +103,13 @@ class TestAllowList:
             f.write('test_fixture_value_abc123\n')
         AllowList(tmp_dir)
         assert any('value-literal' in r.message for r in credactor_caplog.records)
+
+    @pytest.mark.parametrize('sep', ['\x1c', '\x0c', chr(0x2028)])
+    def test_lines_split_only_at_line_ends(self, tmp_dir, sep):
+        with open(os.path.join(tmp_dir, '.credactorignore'), 'w', encoding='utf-8') as fh:
+            fh.write(f'# reviewed fixtures{sep}src/*\n')
+        allowlist = AllowList(tmp_dir)
+        assert not allowlist.is_file_suppressed(os.path.join(tmp_dir, 'src', 'settings.py'))
 
     # --- #14: a read error mid-load must be surfaced, not swallowed ---
     def test_load_logs_warning_on_read_error(self, tmp_dir, monkeypatch, credactor_caplog):

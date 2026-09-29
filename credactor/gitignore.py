@@ -8,7 +8,7 @@ import fnmatch
 from collections.abc import Sequence
 from pathlib import Path
 
-from .utils import read_aux_file
+from .utils import ignore_file_lines, read_aux_file
 
 
 def parse_gitignore_file(gi_path: str, base_dir: Path, *, root: Path) -> list[tuple[str, Path]]:
@@ -23,7 +23,7 @@ def parse_gitignore_file(gi_path: str, base_dir: Path, *, root: Path) -> list[tu
     if text is None:
         return []
     patterns: list[tuple[str, Path]] = []
-    for line in text.splitlines():
+    for line in ignore_file_lines(text):
         stripped = line.strip()
         if not stripped or stripped.startswith(('#', '!')):
             continue

@@ -7,6 +7,7 @@ Addresses: #16 (encoding detection), #28 (optimized entropy)
 from __future__ import annotations
 
 import bisect
+import io
 import math
 import os
 import re
@@ -155,8 +156,9 @@ def is_within_root(path_str: str, root_str: str) -> bool:
 
 
 # SR-13: .gitignore and .credactorignore are read before any per-file guard,
-# so they get the same checks as a scanned file and a size cap. Cutting one
-# short only drops patterns, so more is scanned, never less.
+# so they get the same checks as a scanned file and a size cap. A cut is made
+# at a line end, so it only drops whole patterns and more is scanned, never
+# less.
 _AUX_MAX_BYTES = 1024 * 1024
 
 
@@ -166,8 +168,9 @@ def read_aux_file(path: str, root: str | Path, max_bytes: int = _AUX_MAX_BYTES) 
 
     Raises OSError if *path* is a symlink that resolves outside *root*, or is
     not a regular file: a FIFO would block ``open()`` forever, and a device
-    such as /dev/zero would read without end. Reads at most *max_bytes*, and
-    warns when the file is larger.
+    such as /dev/zero would read without end. Reads at most *max_bytes*, cut
+    back to the last line end, and warns when the file is larger. Split the
+    text with ``ignore_file_lines``.
     """
     try:
         if stat.S_ISLNK(os.lstat(path).st_mode) and not is_within_root(
@@ -188,8 +191,16 @@ def read_aux_file(path: str, root: str | Path, max_bytes: int = _AUX_MAX_BYTES) 
             max_bytes // 1024,
             max_bytes // 1024,
         )
-        data = data[:max_bytes]
+        # A partial last line could be a broader pattern ('*.log' cut to '*').
+        data = data[: data.rfind(b'\n', 0, max_bytes) + 1]
     return data.decode('utf-8', errors='replace')
+
+
+def ignore_file_lines(text: str) -> list[str]:
+    """Split an ignore file as git does, at line ends only (\\n, \\r\\n, \\r).
+    ``str.splitlines`` also splits at form feeds, U+2028 and other separators,
+    which would turn the rest of a comment line into a live pattern."""
+    return io.StringIO(text, newline=None).readlines()
 
 
 def mask_secret(value: str, *, visible: int = 4) -> str:

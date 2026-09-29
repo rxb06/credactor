@@ -31,11 +31,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   `--staged`, a staged file that cannot be read also exits 2, with or without
   `--fail-on-error`.
 - **`.gitignore` and `.credactorignore` are read with the same guards as a
-  scanned file.** They were opened before any check, so a FIFO could block the
-  scan forever and a device file could be read without end. Each is now read
-  only if it is a regular file, through a symlink only if the target stays
-  inside the scan root, and at most 1 MiB of it, with a warning when it is
-  larger. One that is refused is reported with the files that could not be
+  scanned file.** `.gitignore` was opened before any check, so a FIFO could
+  block the scan and a device file could be read without end, and
+  `.credactorignore` followed a symlink out of the scan root and had no size
+  cap. Each is now read only if it is a regular file, through a symlink only if
+  the target stays inside the scan root, and at most 1 MiB of it, cut at a line
+  end, with a warning when it is larger. Lines are split at line ends only, as
+  git does. One that is refused is reported with the files that could not be
   scanned, so `--fail-on-error` stops on it; the scan goes on without its
   patterns.
 - **A suppressed private key header no longer hides the lines after it.** A

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ._log import logger
 from .patterns import SCAN_EXTENSIONS, SUPPRESS_RE
-from .utils import read_aux_file
+from .utils import ignore_file_lines, read_aux_file
 
 
 def has_inline_suppression(line: str) -> bool:
@@ -52,7 +52,7 @@ class AllowList:
             return
         if text is None:
             return
-        for raw_line in text.splitlines():
+        for raw_line in ignore_file_lines(text):
             line = raw_line.strip()
             if not line or line.startswith('#'):
                 continue

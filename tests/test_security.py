@@ -1092,6 +1092,16 @@ class TestReadAuxFile:
         assert len(text) == 1024 * 1024
         assert any('reading only the first' in r.getMessage() for r in caplog.records)
 
+    def test_cut_falls_on_a_line_end(self, tmp_path):
+        # A cut inside '*.log' would leave the broader pattern '*'.
+        path = tmp_path / '.gitignore'
+        path.write_bytes(b'#' * (1024 * 1024 - 2) + b'\n*.log\n')
+        assert read_aux_file(str(path), tmp_path) == '#' * (1024 * 1024 - 2) + '\n'
+
+    def test_bytes_that_are_not_utf8_do_not_stop_the_read(self, tmp_path):
+        (tmp_path / '.gitignore').write_bytes(b'# caf\xe9\n*.log\n')
+        assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path).endswith('*.log\n')
+
     def test_read_is_bounded(self, tmp_path, monkeypatch):
         # A file that never ends (a device reached some other way) must not
         # be read whole: the read asks for the cap and one byte more.
