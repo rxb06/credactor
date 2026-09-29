@@ -8,23 +8,26 @@ import fnmatch
 from collections.abc import Sequence
 from pathlib import Path
 
+from .utils import read_aux_file
 
-def parse_gitignore_file(gi_path: str, base_dir: Path) -> list[tuple[str, Path]]:
+
+def parse_gitignore_file(gi_path: str, base_dir: Path, *, root: Path) -> list[tuple[str, Path]]:
     """Read a single ``.gitignore`` and return its ``(pattern, base_dir)`` entries.
 
     Used by ``walker.walk_and_scan`` to collect patterns during the same
     ``os.walk`` pass that finds scannable files (avoids a second tree walk).
+    Raises OSError when the file cannot be read safely (see ``read_aux_file``,
+    SR-13); the caller records it as errored.
     """
+    text = read_aux_file(gi_path, root)
+    if text is None:
+        return []
     patterns: list[tuple[str, Path]] = []
-    try:
-        with open(gi_path, encoding='utf-8', errors='replace') as fh:
-            for line in fh:
-                stripped = line.strip()
-                if not stripped or stripped.startswith(('#', '!')):
-                    continue
-                patterns.append((stripped, base_dir))
-    except OSError:
-        pass
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(('#', '!')):
+            continue
+        patterns.append((stripped, base_dir))
     return patterns
 
 

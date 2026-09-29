@@ -1,6 +1,7 @@
 """Tests for suppression mechanisms."""
 
 import os
+from pathlib import Path
 
 from credactor.suppressions import AllowList, has_inline_suppression
 
@@ -103,21 +104,29 @@ class TestAllowList:
 
     # --- #14: a read error mid-load must be surfaced, not swallowed ---
     def test_load_logs_warning_on_read_error(self, tmp_dir, monkeypatch, credactor_caplog):
-        import pathlib
+        import builtins
+
+        import credactor.utils
 
         ignore_path = os.path.join(tmp_dir, '.credactorignore')
         with open(ignore_path, 'w') as f:
             f.write('somevalue\n')
-        real_open = pathlib.Path.open
+        real_open = builtins.open
 
-        def boom(self, *args, **kwargs):
-            if self.name == '.credactorignore':
+        def boom(path, *args, **kwargs):
+            if os.path.basename(str(path)) == '.credactorignore':
                 raise OSError('disk error')
-            return real_open(self, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(pathlib.Path, 'open', boom)
-        AllowList(tmp_dir)  # must not raise
-        assert any('could not be fully read' in r.message for r in credactor_caplog.records)
+        monkeypatch.setattr(credactor.utils, 'open', boom, raising=False)
+        allowlist = AllowList(tmp_dir)  # must not raise
+        assert any(
+            'Cannot read' in r.message and 'disk error' in r.message
+            for r in credactor_caplog.records
+        )
+        # SR-13: reported with the files the scan could not read.
+        assert allowlist.errored == [str(Path(tmp_dir).resolve() / '.credactorignore')]
+        assert not allowlist.is_value_suppressed('somevalue')
 
     def test_globs_and_file_lines_emit_no_value_literal_warning(self, tmp_dir, credactor_caplog):
         ignore_path = os.path.join(tmp_dir, '.credactorignore')

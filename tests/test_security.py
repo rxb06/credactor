@@ -4,8 +4,10 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 from io import StringIO
 from pathlib import Path
 from typing import ClassVar
@@ -24,6 +26,7 @@ from credactor.utils import (
     detect_encoding,
     display_chars,
     is_within_root,
+    read_aux_file,
     sanitize_for_display,
 )
 from credactor.walker import walk_and_scan
@@ -1065,3 +1068,131 @@ class TestHostileNamesAndLines:
         err = capsys.readouterr().err
         assert err.count('\n  - ') == 2
         assert _command_lines(err) == []
+
+
+# ---------------------------------------------------------------------------
+# SR-13: .gitignore and .credactorignore are read with the same guards as a
+# scanned file
+# ---------------------------------------------------------------------------
+
+
+class TestReadAuxFile:
+    def test_missing_file_is_none(self, tmp_path):
+        assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) is None
+
+    def test_regular_file_is_read(self, tmp_path):
+        (tmp_path / '.gitignore').write_text('*.log\n', encoding='utf-8')
+        assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) == '*.log\n'
+
+    def test_large_file_is_cut_with_a_warning(self, tmp_path, caplog):
+        path = tmp_path / '.gitignore'
+        path.write_bytes(b'a\n' * (1024 * 1024))  # 2 MiB
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            text = read_aux_file(str(path), tmp_path)
+        assert len(text) == 1024 * 1024
+        assert any('reading only the first' in r.getMessage() for r in caplog.records)
+
+    def test_read_is_bounded(self, tmp_path, monkeypatch):
+        # A file that never ends (a device reached some other way) must not
+        # be read whole: the read asks for the cap and one byte more.
+        import builtins
+
+        import credactor.utils
+
+        sizes = []
+        real_open = builtins.open
+
+        class Probe:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+
+            def read(self, size=-1):
+                sizes.append(size)
+                return self._fh.read(size)
+
+        monkeypatch.setattr(
+            credactor.utils, 'open', lambda *a, **k: Probe(real_open(*a, **k)), raising=False
+        )
+        (tmp_path / '.gitignore').write_bytes(b'x\n' * 10)
+        read_aux_file(str(tmp_path / '.gitignore'), tmp_path, max_bytes=8)
+        assert sizes == [9]
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks and FIFOs')
+    def test_symlink_outside_the_root_is_refused(self, tmp_path):
+        outside = tmp_path / 'outside.txt'
+        outside.write_text('*\n', encoding='utf-8')
+        root = tmp_path / 'root'
+        root.mkdir()
+        (root / '.gitignore').symlink_to(outside)
+        with pytest.raises(OSError, match='outside the scan root'):
+            read_aux_file(str(root / '.gitignore'), root)
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks and FIFOs')
+    def test_symlink_inside_the_root_is_read(self, tmp_path):
+        (tmp_path / 'rules.txt').write_text('*.log\n', encoding='utf-8')
+        (tmp_path / '.gitignore').symlink_to(tmp_path / 'rules.txt')
+        assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) == '*.log\n'
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks and FIFOs')
+    def test_fifo_is_refused_without_opening_it(self, tmp_path):
+        # Opening a FIFO for reading blocks until a writer appears, so the
+        # call runs in a thread: a regression fails here instead of hanging.
+        os.mkfifo(tmp_path / '.gitignore')
+        outcome = []
+
+        def read():
+            try:
+                read_aux_file(str(tmp_path / '.gitignore'), tmp_path)
+            except OSError as exc:
+                outcome.append(str(exc))
+
+        worker = threading.Thread(target=read, daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        if worker.is_alive():
+            with open(tmp_path / '.gitignore', 'w'):  # release the blocked open
+                pass
+            pytest.fail('read_aux_file opened the FIFO')
+        assert outcome and 'not a regular file' in outcome[0]
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='symlinks and FIFOs')
+class TestAuxFilesInTheCli:
+    """Run the CLI in a subprocess, so a read that blocks fails on the timeout
+    instead of hanging the suite."""
+
+    def _run(self, root, *args):
+        return subprocess.run(
+            [sys.executable, '-m', 'credactor', '--ci', '--no-color', *args, str(root)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    @pytest.mark.parametrize('name', ['.gitignore', '.credactorignore'])
+    def test_fifo_does_not_block_and_is_errored(self, tmp_path, name):
+        (tmp_path / 'fifos').mkdir()
+        os.mkfifo(tmp_path / 'fifos' / 'pipe')
+        (tmp_path / name).symlink_to(tmp_path / 'fifos' / 'pipe')
+        (tmp_path / 'a.py').write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        proc = self._run(tmp_path, '--fail-on-error')
+        assert proc.returncode == 2, proc.stderr
+        assert f'  - {tmp_path / name}' in proc.stderr
+
+    @pytest.mark.parametrize('name', ['.gitignore', '.credactorignore'])
+    def test_symlink_outside_the_root_is_not_applied(self, tmp_path, name):
+        outside = tmp_path / 'outside.txt'
+        outside.write_text('*\n*.py\n', encoding='utf-8')
+        root = tmp_path / 'root'
+        root.mkdir()
+        (root / name).symlink_to(outside)
+        (root / 'a.py').write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        proc = self._run(root)
+        assert proc.returncode == 1, proc.stderr  # the key is still reported
+        assert 'outside the scan root' in proc.stderr

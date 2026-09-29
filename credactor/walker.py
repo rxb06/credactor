@@ -107,12 +107,16 @@ def walk_and_scan(
             and is_within_root(str(Path(os.path.join(dirpath, d)).resolve()), root_str)
         ]
         if '.gitignore' in filenames:
-            gi_patterns.extend(
-                parse_gitignore_file(
-                    os.path.join(dirpath, '.gitignore'),
-                    Path(dirpath).resolve(),
+            gi_path = os.path.join(dirpath, '.gitignore')
+            try:
+                gi_patterns.extend(
+                    parse_gitignore_file(gi_path, Path(dirpath).resolve(), root=root_path)
                 )
-            )
+            except OSError as exc:
+                # SR-13: counted like an unreadable file, so --fail-on-error
+                # gates on it; the walk goes on without these patterns.
+                logger.warning('Cannot read %s: %s', gi_path, exc)
+                walk_errors.append(gi_path)
         for filename in filenames:
             if filename in extra_skip_files:
                 continue

@@ -523,7 +523,10 @@ even if its extension is not in this list.
 
 Exit **2** if any file could not be scanned (permissions, encoding, a
 non-regular file such as an in-tree FIFO) — including a directory that could
-not be traversed (warned and counted).
+not be traversed (warned and counted), and a `.gitignore` or `.credactorignore`
+that is refused: not a regular file, or a symlink that leaves the scan root.
+The scan goes on without that file's patterns. An ignore file over 1 MiB is
+read up to 1 MiB, with a warning, and is not an error.
 Verified: a directory whose only file is unreadable exits **0** without the
 flag (a warning only) and **2** with it. Two scope notes: size- and
 type-based skips (the 50 MB per-file cap, unscanned extensions, `.json`

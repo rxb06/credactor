@@ -836,6 +836,7 @@ def _main_inner(argv: list[str] | None = None) -> None:
     _print_banner(target_resolved_path)
 
     findings, errored_files, gitignore_skipped = _collect_findings(target, config, allowlist)
+    errored_files = allowlist.errored + errored_files  # SR-13: an unsafe .credactorignore
     findings = _ingest_external(findings, target, config, allowlist)
     _handle_errored_files(errored_files, config)
     if config.output_format == 'text':

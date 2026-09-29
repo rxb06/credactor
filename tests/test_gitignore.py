@@ -12,7 +12,8 @@ class TestParseGitignoreFile:
     loader was test-only and is gone)."""
 
     def _parse(self, tmp_dir):
-        return parse_gitignore_file(os.path.join(tmp_dir, '.gitignore'), Path(tmp_dir).resolve())
+        base = Path(tmp_dir).resolve()
+        return parse_gitignore_file(os.path.join(tmp_dir, '.gitignore'), base, root=base)
 
     def test_missing_file_returns_empty(self, tmp_dir):
         assert self._parse(tmp_dir) == []

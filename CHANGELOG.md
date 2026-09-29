@@ -14,6 +14,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **`.gitignore` and `.credactorignore` are read with the same guards as a
+  scanned file.** They were opened before any check, so a FIFO could block the
+  scan forever and a device file could be read without end. Each is now read
+  only if it is a regular file, through a symlink only if the target stays
+  inside the scan root, and at most 1 MiB of it, with a warning when it is
+  larger. One that is refused is reported with the files that could not be
+  scanned, so `--fail-on-error` stops on it; the scan goes on without its
+  patterns.
 - **A suppressed private key header no longer hides the lines after it.** A
   `-----BEGIN ... PRIVATE KEY-----` line that was ignored inline or allowlisted
   still started a key block, so the lines after it, up to the END line or 500
