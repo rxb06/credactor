@@ -94,7 +94,7 @@ def _derive_env_var_name(finding: Finding) -> str:
     # behind. Letters and digits are compared, ignoring case and separators,
     # so a provider prefix such as sk_live_ is not taken for the secret.
     name = re.sub(r'[^A-Z0-9]', '', sanitized.upper())
-    value = re.sub(r'[^A-Z0-9]', '', finding.get('full_value', '').upper())
+    value = re.sub(r'[^A-Z0-9]', '', _credential_part(finding.get('full_value', '')).upper())
     shares = any(
         name[i : i + _ENV_NAME_SHARED] in value for i in range(len(name) - _ENV_NAME_SHARED + 1)
     )
@@ -104,6 +104,21 @@ def _derive_env_var_name(finding: Finding) -> str:
 # A derived env var name that shares this many letters and digits in a row
 # with the secret is not used.
 _ENV_NAME_SHARED = 8
+_PEM_ARMOR_RE = re.compile(r'-----(?:BEGIN|END)[^-]*-----')
+_URL_USERINFO_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*)@')
+
+
+def _credential_part(value: str) -> str:
+    """The part of *value* that is secret, for the env var name check: a URL
+    keeps only its password (its user when there is none), and a PEM block
+    drops its armor lines. The scheme, host and armor name what the value
+    is, which is also what the variable name says."""
+    value = _PEM_ARMOR_RE.sub('', value)
+    url = _URL_USERINFO_RE.match(value)
+    if url:
+        user, _, password = url.group(1).partition(':')
+        value = password or user
+    return value
 
 
 def _env_ref_for_language(var_name: str, ext: str) -> str:

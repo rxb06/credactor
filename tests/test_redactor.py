@@ -406,6 +406,43 @@ class TestDeriveEnvVarName:
         }
         assert _derive_env_var_name(finding) == 'AWS_ACCESS_TOKEN'
 
+    @pytest.mark.parametrize(
+        ('ftype', 'value', 'name'),
+        [
+            (
+                'external:trufflehog:Postgres',
+                'postgresql://app:S3cr3tPassw0rdXyz@db.example.com:5432/app',
+                'POSTGRES',
+            ),
+            (
+                'variable:postgres_url',
+                'postgresql://app:S3cr3tPassw0rdXyz@db.example.com/app',
+                'POSTGRES_URL',
+            ),
+            (
+                'variable:mongodb_uri',
+                'mongodb://user:Hx7Kq2Lm9Pz4Wr5@mongodb.internal/db',
+                'MONGODB_URI',
+            ),
+            (
+                'external:gitleaks:private-key',
+                '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJ\n'
+                '-----END RSA PRIVATE KEY-----',
+                'PRIVATE_KEY',
+            ),
+        ],
+        ids=['postgres', 'postgres-url', 'mongodb-uri', 'private-key'],
+    )
+    def test_scheme_host_and_armor_are_not_the_secret(self, ftype, value, name):
+        assert _derive_env_var_name({'type': ftype, 'full_value': value}) == name
+
+    def test_password_in_a_url_still_counts(self):
+        finding = {
+            'type': 'variable:S3cr3tPassw0rdXyz',
+            'full_value': 'postgres://a:S3cr3tPassw0rdXyz@h/d',
+        }
+        assert _derive_env_var_name(finding) == 'CREDENTIAL'
+
     def test_provider_prefix_in_the_label_is_kept(self):
         finding = {'type': 'pattern:Stripe live key', 'full_value': 'sk_live_' + 'Ab12Cd34Ef56Gh78'}
         assert _derive_env_var_name(finding) == 'STRIPE_LIVE_KEY'
