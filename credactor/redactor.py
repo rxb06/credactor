@@ -89,7 +89,21 @@ def _derive_env_var_name(finding: Finding) -> str:
     # xml-attr keys (e.g. "password]);evil()//").  Env var names must be
     # alphanumeric + underscore only.
     sanitized = re.sub(r'[^A-Za-z0-9_]', '', raw)
-    return sanitized if sanitized else 'CREDENTIAL'
+    # T15b: the name is text the scanned file or a report supplied, so it can
+    # spell the secret itself, and written into the file it would leave a copy
+    # behind. Letters and digits are compared, ignoring case and separators,
+    # so a provider prefix such as sk_live_ is not taken for the secret.
+    name = re.sub(r'[^A-Z0-9]', '', sanitized.upper())
+    value = re.sub(r'[^A-Z0-9]', '', finding.get('full_value', '').upper())
+    shares = any(
+        name[i : i + _ENV_NAME_SHARED] in value for i in range(len(name) - _ENV_NAME_SHARED + 1)
+    )
+    return sanitized if sanitized and not shares else 'CREDENTIAL'
+
+
+# A derived env var name that shares this many letters and digits in a row
+# with the secret is not used.
+_ENV_NAME_SHARED = 8
 
 
 def _env_ref_for_language(var_name: str, ext: str) -> str:

@@ -384,6 +384,43 @@ class TestDeriveEnvVarName:
     def test_pattern_type(self):
         assert _derive_env_var_name({'type': 'pattern:AWS access key'}) == 'AWS_ACCESS_KEY'
 
+    # T15b: the name comes from text the scanned file or a report supplied, so
+    # it can spell the secret; written into the file it would leave a copy.
+    @pytest.mark.parametrize(
+        ('ftype', 'value'),
+        [
+            ('external:gitleaks:Zq7wPx2mTr9vLk3nQ8sB', 'Zq7wPx2mTr9vLk3nQ8sB'),
+            ('external:gitleaks:rule-zq7wpx2mtr', 'Zq7wPx2mTr9vLk3nQ8sB'),
+            ('variable:token_Hx7Kq2Lm9Pz4', 'Hx7Kq2Lm9Pz4'),
+            ('xml-attr:ab-cd-ef-gh', 'AB_CD_EF_GH_99'),
+        ],
+        ids=['equal', 'prefix-other-case', 'variable', 'separators'],
+    )
+    def test_name_that_holds_the_secret_falls_back(self, ftype, value):
+        assert _derive_env_var_name({'type': ftype, 'full_value': value}) == 'CREDENTIAL'
+
+    def test_name_sharing_seven_characters_is_kept(self):
+        finding = {
+            'type': 'external:gitleaks:aws-access-token',
+            'full_value': 'x' + 'WSACCES' + 'y' * 9,
+        }
+        assert _derive_env_var_name(finding) == 'AWS_ACCESS_TOKEN'
+
+    def test_provider_prefix_in_the_label_is_kept(self):
+        finding = {'type': 'pattern:Stripe live key', 'full_value': 'sk_live_' + 'Ab12Cd34Ef56Gh78'}
+        assert _derive_env_var_name(finding) == 'STRIPE_LIVE_KEY'
+
+    def test_env_mode_leaves_no_copy_of_the_secret(self, make_file):
+        value = 'Zq7wPx2mTr9vLk3nQ8sB'
+        path = make_file('handle.py', f'handle = lookup("{value}")\n')
+        finding = _mk_finding(path, value, f'external:gitleaks:{value}')
+        config = Config(no_backup=True, replace_mode='env')
+        fix_all([finding], os.path.dirname(path), config)
+        with open(path, encoding='utf-8') as f:
+            out = f.read()
+        assert value.upper() not in out.upper()
+        assert 'CREDENTIAL' in out
+
     def test_sec30_sanitizes_xml_injection(self):
         """SEC-30: Adversarial xml_key with JS syntax must be stripped."""
         result = _derive_env_var_name(

@@ -14,6 +14,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **`--replace-with env` no longer names the variable after the secret.** The
+  env var name comes from the variable name, XML key or report rule id, and
+  one that spelled the secret left an uppercased copy of it in the redacted
+  file. A name that shares 8 letters and digits in a row with the secret now
+  falls back to `CREDENTIAL`.
 - **An unexpected error exits 2, not 1.** An exception that escaped the CLI
   ended the run with Python's exit 1, the code for "findings found", so a gate
   read a crash as a result. The traceback is now printed to stderr, sanitized
