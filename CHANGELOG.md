@@ -14,6 +14,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **An unexpected error exits 2, not 1.** An exception that escaped the CLI
+  ended the run with Python's exit 1, the code for "findings found", so a gate
+  read a crash as a result. The traceback is now printed to stderr, sanitized
+  like the rest of the output, and the run exits 2.
 - **A git failure in `--staged` or `--scan-history` is an error, not a clean
   scan.** Once `git rev-parse` had found the repository, a failing
   `git diff --cached` or `git log` was reported as nothing to scan, exit 0; a

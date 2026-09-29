@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -284,12 +285,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Console entry point: run the scan and exit (130 on Ctrl-C)."""
+    """Console entry point: run the scan and exit (130 on Ctrl-C, 2 on an
+    unexpected error)."""
     try:
         _main_inner(argv)
     except KeyboardInterrupt:
         print('\nInterrupted.', file=sys.stderr)
         sys.exit(130)
+    except Exception:
+        # T15a: an uncaught exception would exit 1, which a gate reads as
+        # "findings found". Print the traceback, one sanitized line at a time
+        # (its text can hold file content), and exit 2 like any other error.
+        for line in traceback.format_exc().splitlines():
+            print(sanitize_for_display(line), file=sys.stderr)
+        _fatal('Unexpected error; please report it with the traceback above.')
 
 
 # ---------------------------------------------------------------------------
