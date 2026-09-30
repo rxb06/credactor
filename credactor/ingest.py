@@ -404,8 +404,9 @@ def _resolve_external_finding_path(
     missing-file warning, so ingest_gitleaks, ingest_trufflehog and
     ingest_betterleaks share identical handling.
     """
+    joined = os.path.normpath(os.path.join(target_resolved, raw_file))
     try:
-        resolved = str(Path(os.path.normpath(os.path.join(target_resolved, raw_file))).resolve())
+        resolved = str(Path(joined).resolve())
     except ValueError:
         # L5b: a NUL byte (or similar) in the path makes Path.resolve() raise;
         # skip just this one finding rather than aborting the whole ingest batch
@@ -443,6 +444,17 @@ def _resolve_external_finding_path(
         if stats is not None:
             stats['missing_file'] += 1
         return None
+
+    if os.path.normcase(joined) != os.path.normcase(resolved):
+        # SR-18 (decision D4-A): the report named a symlink, or a path through
+        # one. The finding is taken as the file it points to, and a rewrite
+        # changes that file, never the link, so say which file it is.
+        logger.warning(
+            '%s finding path %r goes through a symlink; it is taken as its target %r.',
+            scanner_name,
+            raw_file,
+            os.path.relpath(resolved, target_resolved),
+        )
 
     return resolved
 

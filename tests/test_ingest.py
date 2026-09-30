@@ -3931,3 +3931,62 @@ class TestInvalidLineNumbers:
         assert finding['line'] == value
         assert 'refuse_reason' not in finding
         assert stats['bad_line'] == 0
+
+
+# ---------------------------------------------------------------------------
+# SR-18 (D4-A): an ingested symlink path is followed, and the run says so
+# ---------------------------------------------------------------------------
+
+
+def _symlink_or_skip(link: Path, target: str) -> None:
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not supported')
+
+
+def _with_path(parser: str, path: str) -> dict:
+    record = _sr19_record(parser)
+    if parser == 'gitleaks':
+        record['File'] = path
+    elif parser == 'betterleaks':
+        record['File'] = path
+        record['Attributes']['path'] = path
+    else:
+        record['SourceMetadata']['Data']['Git']['file'] = path
+    return record
+
+
+@pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
+class TestIngestedSymlinkPaths:
+    """SR-18 (decision D4-A): a report path through a symlink is taken as the
+    file it points to, as before, with a warning naming both."""
+
+    def _ingest(self, tmp_path, parser, path, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,), _ = _sr19_ingest(parser, tmp_path, _with_path(parser, path))
+        real = str((tmp_path / 'repo' / 'src' / 'app.py').resolve())
+        warnings = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        return finding, real, warnings
+
+    def test_link_to_a_file_is_followed_and_named(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/link.py', caplog)
+        assert finding['file'] == real
+        (message,) = warnings
+        assert 'src/link.py' in message
+        assert os.path.join('src', 'app.py') in message
+
+    def test_link_to_a_directory_is_followed_and_named(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'lnk', 'src')
+        finding, real, warnings = self._ingest(tmp_path, parser, 'lnk/app.py', caplog)
+        assert finding['file'] == real
+        (message,) = warnings
+        assert 'lnk/app.py' in message
+
+    def test_plain_path_has_no_warning(self, tmp_path, parser, caplog):
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/app.py', caplog)
+        assert finding['file'] == real
+        assert warnings == []

@@ -910,7 +910,12 @@ reported them.
 ### Symlinks and `SymlinkFile`
 
 An ingested finding whose path is a symlink **dereferences and redacts the
-real file** (containment is checked after resolution). The native scan
+real file** (containment is checked after resolution). The link itself is
+never rewritten. The run warns for each such finding, naming the path the
+report gave and the file it resolves to (`Gitleaks finding path 'link.py'
+goes through a symlink; it is taken as its target 'real.py'.`), so a rewrite
+of a file the report did not name is never silent. A symlinked directory on
+the way counts the same. The native scan
 differs on two points: it *scans* within-root symlinked files (only symlinks
 resolving outside the root are skipped) but *refuses to redact* them — and
 when a native finding at the symlink path wins deduplication over its

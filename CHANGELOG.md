@@ -22,6 +22,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   symlinks, and the redactor applies it again to any path it is given. A report
   named in the config file's `[ingest]` table is named on stderr before a run
   that can write.
+- **An ingested path through a symlink is named.** Such a finding is still
+  taken as the file the link points to, and a rewrite still changes that file
+  and not the link, but the run now warns with the path the report gave and
+  the file it resolves to, so it never rewrites a file the report did not name
+  without saying so.
 - **A line number the report does not give no longer picks the line to
   rewrite.** An ingested finding whose line was missing, not a positive whole
   number (`"x"`, `"3"`, `0`, `-1`, `1.5`), or a boolean became line 1, so

@@ -800,6 +800,42 @@ class TestInvalidLineNumbersCLI:
         assert target.read_bytes() == before
 
 
+class TestIngestedSymlinkCLI:
+    """SR-18 (decision D4-A): --fix-all on a report that names a symlink
+    rewrites the file it points to, leaves the link, and says which file."""
+
+    def test_target_redacted_link_kept_and_named(self, tmp_path, capsys):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        real = repo / 'real.py'
+        real.write_text('k = "Hx7Kq2Lm9Pz4Wr5"\n', encoding='utf-8')
+        link = repo / 'link.py'
+        try:
+            os.symlink('real.py', link)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        record = {
+            'File': 'link.py',
+            'StartLine': 1,
+            'Secret': 'Hx7Kq2Lm9Pz4Wr5',
+            'Match': 'k = "Hx7Kq2Lm9Pz4Wr5"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report = tmp_path / 'gl.json'
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', '--from-gitleaks', str(report), str(repo)])
+        assert exc_info.value.code == 0
+        assert link.is_symlink()
+        assert 'Hx7Kq2Lm9Pz4Wr5' not in real.read_text(encoding='utf-8')
+        err = capsys.readouterr().err
+        assert "'link.py' goes through a symlink" in err
+        assert "'real.py'" in err
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 
