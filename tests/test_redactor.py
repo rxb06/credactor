@@ -2030,7 +2030,9 @@ class TestGuardPins:
         finding['refuse_reason'] = 'the path is inside .git'
         monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('prompted'))
         assert interactive_review([finding], os.path.dirname(path), Config(no_backup=True)) == 1
-        assert '-- Not rewritten: the path is inside .git.' in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert '-- Not rewritten: the path is inside .git.' in out
+        assert '1 skipped' in out
         with open(path, encoding='utf-8') as f:
             assert _AWS_KEY in f.read()
 

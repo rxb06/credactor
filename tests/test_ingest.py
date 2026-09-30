@@ -3689,6 +3689,7 @@ class TestImplausibleSecrets:
             'token9Xk2Lm4Qp',
             'Secret_2024',
             'sb_secret_AbCdEf123456GhIjKl789012',
+            'password-reset-flow',
             'abcd==',
         ],
     )
@@ -3914,6 +3915,25 @@ class TestRecordBackstop:
         assert stats['invalid_record'] == 1
         assert any('skipped as invalid' in r.getMessage() for r in caplog.records)
 
+    def test_failed_retry_is_not_counted_either(self, tmp_path, parser):
+        # Both attempts move a counter before they fail; the record ends up
+        # counted as invalid and nothing else.
+        record = _sr19_record(parser)
+        if parser == 'gitleaks':
+            record['File'] = '.git/config'
+        elif parser == 'betterleaks':
+            record['File'] = '.git/config'
+            record['Attributes']['path'] = '.git/config'
+        else:
+            record['SourceMetadata']['Data']['Git']['file'] = '.git/config'
+        (tmp_path / 'repo' / '.git').mkdir(parents=True)
+        (tmp_path / 'repo' / '.git' / 'config').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        with mock.patch('credactor.ingest._mark_implausible', side_effect=TypeError):
+            findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+        assert stats['protected_path'] == 0
+
     def test_failed_attempt_is_not_counted_twice(self, tmp_path, parser):
         # The first attempt counts a relabelled rule id, then fails on the
         # commit; the retry reads neither, so nothing stays counted.
@@ -3929,6 +3949,54 @@ class TestRecordBackstop:
             (finding,), stats = _sr19_ingest(parser, tmp_path, record)
         assert finding['type'] == f'external:{parser}:unknown'
         assert stats['relabelled'] == 0
+
+
+def _salvage_on_label_error(parser):
+    # The severity call fails for any rule but 'unknown', so only the retry
+    # from the core fields succeeds.
+    from credactor import ingest as ingest_module
+
+    name = _SR19_SEVERITY[parser]
+    real = getattr(ingest_module, name)
+
+    def severity(label, *args):
+        if label != 'unknown':
+            raise TypeError('unhashable')
+        return real(label, *args)
+
+    return mock.patch(f'credactor.ingest.{name}', severity)
+
+
+def test_backstop_keeps_a_filesystem_trufflehog_record(tmp_path):
+    record = _sr19_record('trufflehog')
+    record['SourceMetadata'] = {'Data': {'Filesystem': {'file': 'src/app.py', 'line': 1}}}
+    with _salvage_on_label_error('trufflehog'):
+        (finding,), stats = _sr19_ingest('trufflehog', tmp_path, record)
+    assert finding['type'] == 'external:trufflehog:unknown'
+    assert stats['unsupported_source'] == 0
+
+
+@pytest.mark.parametrize(
+    ('parser', 'field'),
+    [('gitleaks', 'SymlinkFile'), ('betterleaks', 'SymlinkFile'), ('betterleaks', 'fs.symlink')],
+)
+def test_backstop_keeps_the_symlink_path(tmp_path, parser, field):
+    # The retry reads the symlink field like the first attempt, so it still
+    # resolves through the link and not through the real-path field.
+    (tmp_path / 'repo' / 'src').mkdir(parents=True)
+    _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+    record = _sr19_record(parser)
+    record['File'] = 'src/missing.py'
+    if parser == 'betterleaks':
+        record['Attributes']['path'] = 'src/missing.py'
+    if field == 'fs.symlink':
+        record['Attributes']['fs.symlink'] = 'src/link.py'
+    else:
+        record['SymlinkFile'] = 'src/link.py'
+    with _salvage_on_label_error(parser):
+        (finding,), _ = _sr19_ingest(parser, tmp_path, record)
+    assert finding['file'] == str((tmp_path / 'repo' / 'src' / 'app.py').resolve())
+    assert finding['type'] == f'external:{parser}:unknown'
 
 
 @pytest.mark.parametrize('parser', sorted(_SR19_SEVERITY))
