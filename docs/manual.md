@@ -292,6 +292,12 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   skipped and an approved finding, the approval releases the line for the
   sweep of *approved* values (disclosed by the `[WARN]`) — the skipped
   finding's own value is never cleared.
+- **The sweep keeps a copy in a hash, commit or revision field.** A copy of a
+  redacted value whose own key reads like a hash, digest, checksum, commit,
+  revision or integrity field (`revision = "<hex>"`, `commit: <hex>`) is left
+  in place, by the same rule the scanner uses to not report such a value, and
+  a `[WARN]` states how many were kept. A credential keyword in the key
+  (`api_key_rev`) still wins, so that copy is cleared.
 
 ---
 

@@ -1890,6 +1890,40 @@ class TestParentSwap:
         assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
 
 
+class TestSweepSparesHashFields:
+    """SR-21: the copy sweep keeps a copy of a redacted value that sits in a
+    hash, commit or revision field, as the scanner does, unless a credential
+    keyword in the key vetoes that."""
+
+    _HEX = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+
+    def test_revision_and_commit_pins_are_kept(self, make_file, credactor_caplog):
+        path = make_file(
+            'deps.py',
+            f'token = "{self._HEX}"\nrevision = "{self._HEX}"\ncommit: {self._HEX}\n',
+        )
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines[0] == 'token = "REDACTED_BY_CREDACTOR"'
+        assert lines[1] == f'revision = "{self._HEX}"'
+        assert lines[2] == f'commit: {self._HEX}'
+        assert any('keyed as a hash' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_credential_keyword_vetoes_the_exemption(self, make_file):
+        path = make_file('deps.py', f'token = "{self._HEX}"\napi_key_rev = "{self._HEX}"\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert self._HEX not in Path(path).read_text(encoding='utf-8')
+
+    def test_final_sweep_keeps_them_too(self, make_file):
+        path = make_file('deps.py', f'# {self._HEX}\nrevision = "{self._HEX}"\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines == ['# REDACTED_BY_CREDACTOR', f'revision = "{self._HEX}"']
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""

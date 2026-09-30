@@ -767,7 +767,8 @@ CASES: list[Case] = [
             ),
         },
         argv=('--fix-all', '--yes', '--no-backup', '.'),
-        note='records current sweep behaviour; SR-21 and SR-22 change it',
+        note="SR-21: lock.py's revision pin is kept, api_key_rev is still swept; the "
+        'dupes.py lines are current behaviour, which SR-22 changes',
     ),
     Case(
         id='fix-backup-collision-and-hardlink',

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
+from .patterns import _is_hash_context_at
 from .types import Finding
 from .utils import (
     OutputMasker,
@@ -757,16 +758,39 @@ def _sweep_stray_copies(
     )
     stray_count = 0
     kept = 0
+    hashed = 0
     for idx in range(len(lines)):
         if idx + 1 in preserved:
             continue
-        swept, n = pat.subn(lambda _m: stray, lines[idx])
-        if n and _holds_key_marker(lines[idx]):
+        line = lines[idx]
+        parts: list[str] = []
+        pos = 0
+        n = 0
+        for match in pat.finditer(line):
+            if _hash_keyed(line, match.start()):
+                # SR-21: a copy in a hash, commit or revision field is kept,
+                # as the scanner keeps it.
+                hashed += 1
+                continue
+            parts += (line[pos : match.start()], stray)
+            pos = match.end()
+            n += 1
+        if not n:
+            continue
+        if _holds_key_marker(line):
             # SR-17: a marker line is never changed, not even by the sweep.
             kept += n
             continue
-        lines[idx] = swept
+        lines[idx] = ''.join(parts) + line[pos:]
         stray_count += n
+    if hashed:
+        logger.warning(
+            '%s: kept %d cop%s of redacted value(s) keyed as a hash, commit or '
+            'revision, which the scanner does not report either.',
+            filepath,
+            hashed,
+            'y' if hashed == 1 else 'ies',
+        )
     if kept:
         logger.warning(
             '%s: left %d cop%s of redacted value(s) on lines that hold a private key '
@@ -787,6 +811,14 @@ def _sweep_stray_copies(
             stray_count,
             'y' if stray_count == 1 else 'ies',
         )
+
+
+def _hash_keyed(line: str, start: int) -> bool:
+    """Whether the value starting at *start* on *line* is keyed like a hash,
+    commit or revision field, by the scanner's own rule (a credential keyword
+    in the key vetoes it)."""
+    at = start - 1 if start and line[start - 1] in '"\'' else start
+    return _is_hash_context_at(line, at)
 
 
 def _writable_findings(filepath: str, file_findings: list[Finding]) -> tuple[list[Finding], int]:
