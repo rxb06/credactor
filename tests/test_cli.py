@@ -1,5 +1,6 @@
 """Tests for CLI argument parsing and main entry point."""
 
+import contextlib
 import json
 import os
 import shutil
@@ -529,16 +530,40 @@ class TestIngestIntoGit:
         assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
         assert (repo / '.git').read_bytes() == before
 
-    def test_config_file_ingest_is_named_before_writing(self, tmp_path, capsys):
+    @pytest.mark.parametrize(
+        ('key', 'name'),
+        [
+            ('from_gitleaks', 'Gitleaks'),
+            ('from_trufflehog', 'TruffleHog'),
+            ('from_betterleaks', 'Betterleaks'),
+        ],
+    )
+    def test_config_file_ingest_is_named_before_writing(self, tmp_path, capsys, key, name):
         repo = tmp_path / 'repo'
         (repo / 'src').mkdir(parents=True)
         (repo / 'src' / 'a.py').write_text(f'k = "{self.TOKEN}"\n', encoding='utf-8')
         report = self._report(tmp_path, 'src/a.py')
         (repo / '.credactor.toml').write_text(
-            f'[ingest]\nfrom_gitleaks = "{report.as_posix()}"\n', encoding='utf-8'
+            f'[ingest]\n{key} = "{report.as_posix()}"\n', encoding='utf-8'
         )
         self._run('--fix-all', '--yes', '--config', str(repo / '.credactor.toml'), str(repo))
-        assert f'Applying the Gitleaks report {report}' in capsys.readouterr().err
+        # The path is printed as the config file spells it.
+        assert f'Applying the {name} report {report.as_posix()}' in capsys.readouterr().err
+
+    @pytest.mark.parametrize('mode', [['--ci'], ['--dry-run'], ['--staged']])
+    def test_config_file_ingest_is_not_named_in_a_read_only_run(self, tmp_path, capsys, mode):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        (repo / 'src' / 'a.py').write_text('x = 1\n', encoding='utf-8')
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        report = self._report(tmp_path, 'src/a.py')
+        (repo / '.credactor.toml').write_text(
+            f'[ingest]\nfrom_gitleaks = "{report.as_posix()}"\n', encoding='utf-8'
+        )
+        with contextlib.chdir(repo):
+            self._run(*mode, '--config', str(repo / '.credactor.toml'), '.')
+        assert 'Applying the' not in capsys.readouterr().err
+
     def test_target_that_is_git_itself(self, tmp_path):
         # The target is .git, so no .git component lies below it; the whole
         # path still counts.

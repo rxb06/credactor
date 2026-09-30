@@ -829,9 +829,14 @@ def _main_inner(argv: list[str] | None = None) -> None:
         if not args.from_betterleaks:
             _fatal('--from-betterleaks requires a non-empty report path')
         config.from_betterleaks = args.from_betterleaks
+    # Validate invocation flags AFTER the config file is applied so a
+    # .credactor.toml [ingest] table can't slip past the --scan-history/ingest
+    # rejection (mirrors the post-config _validate_replacement / H5 check below).
+    _validate_invocation(config)
     # SR-16: a report named in the config file's [ingest] table is applied like
     # one given as a flag. Before a run that can write, say which, so an entry
-    # that came in with the repository does not act unseen.
+    # that came in with the repository does not act unseen. This runs after
+    # _validate_invocation, which makes --staged and --scan-history read-only.
     if not (config.ci_mode or config.dry_run):
         for name, flag, path in (
             ('Gitleaks', args.from_gitleaks, config.from_gitleaks),
@@ -844,11 +849,6 @@ def _main_inner(argv: list[str] | None = None) -> None:
                     name,
                     path,
                 )
-
-    # Validate invocation flags AFTER the config file is applied so a
-    # .credactor.toml [ingest] table can't slip past the --scan-history/ingest
-    # rejection (mirrors the post-config _validate_replacement / H5 check below).
-    _validate_invocation(config)
 
     # M10: an explicit --replacement overrides a config-file 'replacement'
     # (precedence CLI > config > default). argparse default is None, so a
