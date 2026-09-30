@@ -14,6 +14,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **Ingestion never rewrites anything under `.git`.** A report could name
+  `.git/config` or a hook, which the native scan never visits, and `--fix-all`
+  rewrote it. Such a finding is now reported as before, counts as unresolved
+  (so the run exits 1), and is not written, with a warning that says to fix it
+  by hand and rotate the credential. The check ignores case and follows
+  symlinks, and the redactor applies it again to any path it is given. A report
+  named in the config file's `[ingest]` table is named on stderr before a run
+  that can write.
 - **`--replace-with env` no longer names the variable after the secret.** The
   env var name comes from the variable name, XML key or report rule id, and
   one that spelled the secret left an uppercased copy of it in the redacted

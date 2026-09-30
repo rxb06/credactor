@@ -28,7 +28,17 @@ from credactor._log import logger
 
 from .corpus import SECRETS, Case
 
-_FINDING_KEYS = {'file', 'line', 'type', 'severity', 'full_value', 'value_preview', 'raw', 'commit'}
+_FINDING_KEYS = {
+    'file',
+    'line',
+    'type',
+    'severity',
+    'full_value',
+    'value_preview',
+    'raw',
+    'commit',
+    'refuse_reason',
+}
 
 # Temp files are named randomly by mkstemp. If one is ever left behind, record
 # it under a stable name so the snapshot still shows it without churning.
@@ -207,17 +217,18 @@ def run_case(
             rel = _mask(_relative(f['file'], roots), known)  # a name can hold a secret
             if f.get('commit'):
                 rel = commits(rel)
-            by_file.setdefault(rel, []).append(
-                {
-                    'line': f['line'],
-                    'type': _mask(f['type'], known),
-                    'severity': f['severity'],
-                    'value': _h(f['full_value']),
-                    'preview': _h(f['value_preview']),
-                    'raw': _mask(f['raw'], known, truncated_tail=True),
-                    'commit': commits(f['commit']) if f.get('commit') else None,
-                }
-            )
+            entry = {
+                'line': f['line'],
+                'type': _mask(f['type'], known),
+                'severity': f['severity'],
+                'value': _h(f['full_value']),
+                'preview': _h(f['value_preview']),
+                'raw': _mask(f['raw'], known, truncated_tail=True),
+                'commit': commits(f['commit']) if f.get('commit') else None,
+            }
+            if f.get('refuse_reason'):  # recorded only when set, so older cases stay as they are
+                entry['refuse_reason'] = f['refuse_reason']
+            by_file.setdefault(rel, []).append(entry)
 
     counts: dict[tuple[str, str], int] = {}
     for record in capture.records:

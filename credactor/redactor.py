@@ -20,6 +20,7 @@ from .utils import (
     OutputMasker,
     detect_encoding,
     group_by_file,
+    in_git_dir,
     mask_secret,
     relativize,
     sanitize_for_display,
@@ -440,6 +441,39 @@ def _sweep_stray_copies(
         )
 
 
+def _writable_findings(
+    filepath: str, file_findings: list[Finding], root: str | None
+) -> tuple[list[Finding], int]:
+    """Split off the findings that must not be written here, warning for
+    each; returns the rest and how many were refused."""
+    # SR-16: nothing under .git (repository metadata and hooks, not source) is
+    # ever rewritten, whoever passed the finding in.
+    if in_git_dir(filepath, root if root is not None else os.sep):
+        logger.warning('%s: not rewritten: the path is inside .git.', filepath)
+        return [], len(file_findings)
+    writable: list[Finding] = []
+    for f in file_findings:
+        if f.get('refuse_reason'):
+            # Marked at ingest: reported, never written.
+            logger.warning('%s:%d: not rewritten: %s.', filepath, f['line'], f['refuse_reason'])
+        elif f['type'].endswith('private key block'):
+            # The finding carries only its BEGIN header line as the match
+            # value: a line-based replacement would rewrite the header, leave
+            # the key material and END marker in the file, and, with the
+            # header gone, the next scan would report the file clean.
+            logger.warning(
+                '%s:%d: refusing to redact a multi-line private key block: '
+                'replacing its header line would leave the key material in the '
+                'file while the next scan reports it clean. Rotate the key and '
+                'remove the block manually.',
+                filepath,
+                f['line'],
+            )
+        else:
+            writable.append(f)
+    return writable, len(file_findings) - len(writable)
+
+
 def batch_replace_in_file(
     filepath: str,
     file_findings: list[Finding],
@@ -447,6 +481,7 @@ def batch_replace_in_file(
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
+    root: str | None = None,
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
@@ -461,33 +496,20 @@ def batch_replace_in_file(
     if not file_findings:
         return 0, 0
 
-    # A private-key-block finding carries only its BEGIN header line as the
-    # match value: a line-based replacement would rewrite the header, leave the
-    # entire key material and END marker in the file, and — with the header
-    # gone — the next scan would report the file clean. Fail closed: refuse,
-    # warn, count unresolved; the key must be rotated and removed by hand.
-    key_blocks = [f for f in file_findings if f['type'].endswith('private key block')]
-    if key_blocks:
-        for f in key_blocks:
-            logger.warning(
-                '%s:%d: refusing to redact a multi-line private key block — '
-                'replacing its header line would leave the key material in the '
-                'file while the next scan reports it clean. Rotate the key and '
-                'remove the block manually.',
-                filepath,
-                f['line'],
-            )
-        # Re-enter with the key blocks stripped so every downstream outcome
-        # (success, symlink refusal, read/write errors) counts them unresolved.
-        rest = [f for f in file_findings if not f['type'].endswith('private key block')]
+    writable, refused = _writable_findings(filepath, file_findings, root)
+    if refused:
+        # Re-enter with the refused findings stripped, so every downstream
+        # outcome (success, symlink refusal, read/write errors) counts them
+        # unresolved.
         replaced, failed = batch_replace_in_file(
             filepath,
-            rest,
+            writable,
             config,
             sweep_exclude_lines=sweep_exclude_lines,
             skip_backup=skip_backup,
+            root=root,
         )
-        return replaced, failed + len(key_blocks)
+        return replaced, failed + refused
 
     # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
     # the file it points at, so the live secret would remain in the target while
@@ -649,6 +671,7 @@ def replace_single(
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
+    root: str | None = None,
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
@@ -660,6 +683,7 @@ def replace_single(
         config,
         sweep_exclude_lines=sweep_exclude_lines,
         skip_backup=skip_backup,
+        root=root,
     )
     return replaced > 0
 
@@ -749,6 +773,12 @@ def interactive_review(
         print(f'  Value    : {safe_masked}')
         print()
 
+        # SR-16: nothing to ask about a finding that must not be rewritten.
+        if finding.get('refuse_reason'):
+            print(f'  -- Not rewritten: {sanitize_for_display(finding["refuse_reason"])}.\n')
+            skipped += 1
+            continue
+
         while True:
             try:
                 answer = input('  Replace? [y/N]: ').strip().lower()
@@ -777,6 +807,7 @@ def interactive_review(
                     config,
                     sweep_exclude_lines=frozenset(others),
                     skip_backup=fpath in backed_up_files,
+                    root=root,
                 )
                 if ok:
                     backed_up_files.add(fpath)
@@ -816,11 +847,14 @@ def fix_all(
     failed_in_ingested_files = 0
 
     for filepath, file_findings in by_file.items():
-        replaced, failed = batch_replace_in_file(filepath, file_findings, config)
+        replaced, failed = batch_replace_in_file(filepath, file_findings, config, root=root)
         total_replaced += replaced
         total_failed += failed
         if failed and any(f['type'].startswith('external:') for f in file_findings):
-            failed_in_ingested_files += failed
+            # A finding refused on purpose (SR-16) is not a sign of a stale
+            # report, so it does not count toward the hint below.
+            refused = sum(1 for f in file_findings if f.get('refuse_reason'))
+            failed_in_ingested_files += max(failed - refused, 0)
 
     _print_summary(total_replaced, total_failed, len(findings), config, label='failed')
     if failed_in_ingested_files:

@@ -1716,6 +1716,38 @@ class TestGuardPins:
         interactive_review(findings, str(tmp_path), Config(no_backup=True))
         assert _AWS_KEY not in capsys.readouterr().out
 
+    def test_nothing_under_git_is_rewritten_even_unmarked(self, tmp_path):
+        # SR-16, for library callers that pass a finding in without the ingest
+        # step's mark.
+        path = tmp_path / '.git' / 'config'
+        path.parent.mkdir()
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        before = path.read_bytes()
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert fix_all([finding], str(tmp_path), Config(no_backup=True)) == 1
+        assert path.read_bytes() == before
+        replaced, failed = batch_replace_in_file(str(path), [finding], Config(no_backup=True))
+        assert (replaced, failed) == (0, 1)
+        assert path.read_bytes() == before
+
+    def test_refused_finding_is_not_written_by_fix_all(self, make_file):
+        path = make_file('b.py', f'k = "{_AWS_KEY}"\n')
+        finding = _mk_finding(path, _AWS_KEY)
+        finding['refuse_reason'] = 'the path is inside .git'
+        assert fix_all([finding], os.path.dirname(path), Config(no_backup=True)) == 1
+        with open(path, encoding='utf-8') as f:
+            assert _AWS_KEY in f.read()
+
+    def test_refused_finding_is_shown_but_not_prompted(self, make_file, monkeypatch, capsys):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        finding = _mk_finding(path, _AWS_KEY)
+        finding['refuse_reason'] = 'the path is inside .git'
+        monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('prompted'))
+        assert interactive_review([finding], os.path.dirname(path), Config(no_backup=True)) == 1
+        assert '-- Not rewritten: the path is inside .git.' in capsys.readouterr().out
+        with open(path, encoding='utf-8') as f:
+            assert _AWS_KEY in f.read()
+
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked
         # value is four characters, which is enough for a complete escape

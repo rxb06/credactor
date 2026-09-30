@@ -702,6 +702,11 @@ Verified behaviour and **requirements**:
   `Verified: true` duplicate escalates a native medium to critical). The
   priority therefore decides only which `type` string survives an exact
   collision, never which finding is kept or at what severity.
+- An ingested finding under **`.git`** (a token in a remote URL in
+  `.git/config`, say) is reported and counted, so `--ci` and `--fix-all` exit
+  1, but it is **never rewritten**: fix it by hand and rotate the credential.
+  A report named in the config file's `[ingest]` table is named on stderr
+  before a run that can write.
 - Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule

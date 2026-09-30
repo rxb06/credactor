@@ -15,7 +15,7 @@ from typing import Any
 
 from ._log import logger
 from .types import SEVERITY_RANK, Finding
-from .utils import KnownSecrets, is_within_root, name_secrets, preview, read_lines
+from .utils import KnownSecrets, in_git_dir, is_within_root, name_secrets, preview, read_lines
 
 # Maximum number of findings to ingest to prevent memory exhaustion
 _MAX_FINDINGS = 10_000
@@ -168,6 +168,53 @@ def _warn_bad_commits(stats: dict[str, Any], start: int, scanner_name: str) -> N
         )
 
 
+# SR-16: .git holds repository metadata and hooks, not source. A finding
+# there (a token in a remote URL in .git/config, say) is a real leak to fix by
+# hand, so it is reported, but a rewrite there could break the repository.
+_GIT_PATH_REASON = 'the path is inside .git; fix it by hand and rotate the credential'
+
+
+def _mark_git_path(
+    finding: Finding, raw_file: str, target_resolved: str, stats: dict[str, Any] | None
+) -> None:
+    """Refuse the write for a finding under .git, checking the path as the
+    report gave it and as it resolved, so a symlink into .git counts too."""
+    joined = os.path.normpath(os.path.join(target_resolved, raw_file))
+    if in_git_dir(finding['file'], target_resolved) or in_git_dir(joined, target_resolved):
+        finding['refuse_reason'] = _GIT_PATH_REASON
+        if stats is not None:
+            stats['protected_path'] += 1
+
+
+def _warn_git_paths(stats: dict[str, Any], start: int, scanner_name: str) -> None:
+    count = stats['protected_path'] - start
+    if count:
+        logger.warning(
+            '%d %s finding(s) are inside .git: they are reported, but not rewritten. '
+            'Fix each by hand (for a remote URL, remove the token from it) and '
+            'rotate the credential.',
+            count,
+            scanner_name,
+        )
+
+
+# Counters that each parser reports on, as a delta against the shared stats.
+_FIXED_UP_KEYS = ('relabelled', 'bad_commit', 'protected_path')
+
+
+def _counts_at_start(stats: dict[str, Any]) -> dict[str, int]:
+    return {key: stats[key] for key in _FIXED_UP_KEYS}
+
+
+def _warn_fixed_up(
+    stats: dict[str, Any], start: dict[str, int], scanner_name: str, label_field: str
+) -> None:
+    """This parser's run-level summaries of the records it kept but changed."""
+    _warn_relabelled(stats, start['relabelled'], scanner_name, label_field)
+    _warn_bad_commits(stats, start['bad_commit'], scanner_name)
+    _warn_git_paths(stats, start['protected_path'], scanner_name)
+
+
 def _warn_relabelled(stats: dict[str, Any], start: int, scanner_name: str, field: str) -> None:
     """Run-level summary of the labels this parser replaced (a delta against
     the shared *stats*, like the other summaries)."""
@@ -244,6 +291,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'invalid_record': 0,
         'relabelled': 0,
         'bad_commit': 0,
+        'protected_path': 0,
     }
 
 
@@ -434,8 +482,7 @@ def ingest_gitleaks(
     )
     if stats is None:
         stats = new_ingest_stats()
-    relabelled_start = stats['relabelled']
-    bad_commit_start = stats['bad_commit']
+    fixed_up_start = _counts_at_start(stats)
 
     # Load JSON
     try:
@@ -556,6 +603,7 @@ def ingest_gitleaks(
         commit = _report_commit(obj.get('Commit', ''), secret, stats)
         if commit:
             finding['commit'] = commit
+        _mark_git_path(finding, raw_file, target_resolved, stats)
 
         findings.append(finding)
 
@@ -571,8 +619,7 @@ def ingest_gitleaks(
             'from a clean scan.',
             invalid,
         )
-    _warn_relabelled(stats, relabelled_start, 'Gitleaks', 'RuleID')
-    _warn_bad_commits(stats, bad_commit_start, 'Gitleaks')
+    _warn_fixed_up(stats, fixed_up_start, 'Gitleaks', 'RuleID')
 
     return findings
 
@@ -667,8 +714,7 @@ def ingest_betterleaks(
     # below must count only THIS parser's skips.
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
-    relabelled_start = stats['relabelled']
-    bad_commit_start = stats['bad_commit']
+    fixed_up_start = _counts_at_start(stats)
 
     try:
         with open(filepath, encoding='utf-8', errors='strict') as fh:
@@ -875,12 +921,12 @@ def ingest_betterleaks(
         comps = obj.get('ComponentSets')
         if isinstance(comps, list) and comps:
             component_sets += 1
+        _mark_git_path(finding, raw_file, target_resolved, stats)
 
         findings.append(finding)
 
     _betterleaks_summaries(stats, own_unsupported, invalid_start, unsupported_start, component_sets)
-    _warn_relabelled(stats, relabelled_start, 'Betterleaks', 'RuleID')
-    _warn_bad_commits(stats, bad_commit_start, 'Betterleaks')
+    _warn_fixed_up(stats, fixed_up_start, 'Betterleaks', 'RuleID')
 
     return findings
 
@@ -1090,6 +1136,7 @@ def _parse_trufflehog_record(
     commit = _report_commit(raw_commit, raw_secret, stats)
     if commit:
         finding['commit'] = commit
+    _mark_git_path(finding, file_path_raw, target_resolved, stats)
 
     return finding
 
@@ -1116,8 +1163,7 @@ def ingest_trufflehog(
     # below must count only THIS parser's skips.
     invalid_start = stats['invalid_record']
     unsupported_start = stats['unsupported_source']
-    relabelled_start = stats['relabelled']
-    bad_commit_start = stats['bad_commit']
+    fixed_up_start = _counts_at_start(stats)
     own_unsupported: dict[str, Any] = {
         'unsupported_types': set(),
         'unsupported_types_truncated': False,
@@ -1240,8 +1286,7 @@ def ingest_trufflehog(
             'handle them with the scanner directly.',
             invalid_here,
         )
-    _warn_relabelled(stats, relabelled_start, 'TruffleHog', 'DetectorName')
-    _warn_bad_commits(stats, bad_commit_start, 'TruffleHog')
+    _warn_fixed_up(stats, fixed_up_start, 'TruffleHog', 'DetectorName')
 
     return findings
 

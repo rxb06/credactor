@@ -7,7 +7,7 @@
   "."
  ],
  "case": "ingest-git-dir",
- "exit": 0,
+ "exit": 1,
  "findings": {
   ".git/config": [
    {
@@ -15,6 +15,7 @@
     "line": 2,
     "preview": "b8498412b57d7cac",
     "raw": "\ttoken = <v:b8498412b57d7cac>",
+    "refuse_reason": "the path is inside .git; fix it by hand and rotate the credential",
     "severity": "critical",
     "type": "external:gitleaks:github-pat",
     "value": "b8498412b57d7cac"
@@ -24,15 +25,19 @@
  "log": [
   [
    "WARNING",
-   "Plaintext backup created beside original file.\n  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.",
+   "1 Gitleaks finding(s) are inside .git: they are reported, but not rewritten. Fix each by hand (for a remote URL, remove the token from it) and rotate the credential.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/.git/config: not rewritten: the path is inside .git.",
    1
   ]
  ],
- "note": "records current behaviour (the .git file is rewritten); SR-16 changes it",
+ "note": "SR-16: the finding under .git is reported with a refuse reason, and the file is not rewritten",
  "reported": true,
  "tree_after": {
-  ".git/config": "14b70462e5335e56",
-  ".git/config.bak": "9fbe45948e2f12c7",
+  ".git/config": "9fbe45948e2f12c7",
   "app.py": "9e26bf369911c45c",
   "report/gl.json": "22476ccf3b6aca6a"
  }

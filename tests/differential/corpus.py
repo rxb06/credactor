@@ -710,7 +710,8 @@ CASES: list[Case] = [
             'report/gl.json': _gitleaks([_gl('github-pat', '.git/config', 2, GITHUB)]),
         },
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
-        note='records current behaviour (the .git file is rewritten); SR-16 changes it',
+        note='SR-16: the finding under .git is reported with a refuse reason, and the file '
+        'is not rewritten',
     ),
     Case(
         id='fix-sentinel',

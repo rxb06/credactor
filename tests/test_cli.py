@@ -438,6 +438,109 @@ class TestGitleaksFileTargetRejection:
         assert exc_info.value.code == 2
 
 
+class TestIngestIntoGit:
+    """SR-16: an ingested finding under .git is reported but never rewritten."""
+
+    TOKEN = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+
+    def _project(self, tmp_path, rel='.git/config'):
+        repo = tmp_path / 'repo'
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f'url = https://x:{self.TOKEN}@github.com/o/r.git\n', encoding='utf-8')
+        return repo, target
+
+    def _report(self, tmp_path, rel):
+        report = tmp_path / 'gl.json'
+        record = {
+            'File': rel,
+            'StartLine': 1,
+            'Secret': self.TOKEN,
+            'Match': self.TOKEN,
+            'RuleID': 'github-pat',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        return report
+
+    def _run(self, *argv):
+        with pytest.raises(SystemExit) as exc_info:
+            main(list(argv))
+        return exc_info.value.code
+
+    @pytest.mark.parametrize('rel', ['.git/config', '.git/hooks/pre-commit', 'sub/.git/config'])
+    def test_fix_all_leaves_git_untouched_and_exits_1(self, tmp_path, rel, capsys):
+        repo, target = self._project(tmp_path, rel)
+        before = target.read_bytes()
+        report = self._report(tmp_path, rel)
+        code = self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo))
+        assert code == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
+        err = capsys.readouterr().err
+        assert '.git' in err and 'not rewritten' in err
+
+    def test_ci_still_reports_it(self, tmp_path, capsys):
+        repo, _ = self._project(tmp_path)
+        report = self._report(tmp_path, '.git/config')
+        assert self._run('--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)) == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data['count'] == 1
+
+    def test_case_variant_on_a_case_insensitive_filesystem(self, tmp_path):
+        repo, target = self._project(tmp_path)
+        if not (repo / '.GIT' / 'config').exists():
+            pytest.skip('case-sensitive filesystem')
+        before = target.read_bytes()
+        report = self._report(tmp_path, '.GIT/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_symlink_into_git(self, tmp_path):
+        repo, target = self._project(tmp_path)
+        (repo / 'alias.py').symlink_to(target)
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'alias.py')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_git_that_is_a_symlink_to_another_directory(self, tmp_path):
+        # The resolved path has no .git component; the path the report gave does.
+        repo = tmp_path / 'repo'
+        (repo / 'realgit').mkdir(parents=True)
+        target = repo / 'realgit' / 'config'
+        target.write_text(f'url = https://x:{self.TOKEN}@github.com/o/r.git\n', encoding='utf-8')
+        (repo / '.git').symlink_to(repo / 'realgit')
+        before = target.read_bytes()
+        report = self._report(tmp_path, '.git/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    def test_git_file_of_a_worktree(self, tmp_path):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / '.git').write_text(f'gitdir: /tmp/{self.TOKEN}\n', encoding='utf-8')
+        before = (repo / '.git').read_bytes()
+        report = self._report(tmp_path, '.git')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert (repo / '.git').read_bytes() == before
+
+    def test_config_file_ingest_is_named_before_writing(self, tmp_path, capsys):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        (repo / 'src' / 'a.py').write_text(f'k = "{self.TOKEN}"\n', encoding='utf-8')
+        report = self._report(tmp_path, 'src/a.py')
+        (repo / '.credactor.toml').write_text(
+            f'[ingest]\nfrom_gitleaks = "{report.as_posix()}"\n', encoding='utf-8'
+        )
+        self._run('--fix-all', '--yes', '--config', str(repo / '.credactor.toml'), str(repo))
+        assert f'Applying the Gitleaks report {report}' in capsys.readouterr().err
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 
