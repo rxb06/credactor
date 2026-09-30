@@ -487,11 +487,10 @@ def _secure_delete(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 def _write_atomic(
     filepath: str,
-    lines: list[str],
-    encoding: str,
+    data: bytes,
     guard: Callable[[], bool] | None = None,
 ) -> bool:
-    """Write *lines* via a temp file + ``os.replace`` so a mid-write crash
+    """Write *data* via a temp file + ``os.replace`` so a mid-write crash
     leaves the original intact. *guard*, when given, runs once the temp file
     is complete and just before the rename; if it returns False the temp
     file is removed and nothing is published. Returns False (after logging a
@@ -500,8 +499,8 @@ def _write_atomic(
     tmp_path: str | None = None
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
-        with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
-            fh.writelines(lines)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         if guard is not None and not guard():
             return False
         os.replace(tmp_path, filepath)
@@ -600,17 +599,30 @@ def _rewrite_file(
                 data = fh.read()
                 seen = _identity(os.fstat(fh.fileno()))
             # newline='' keeps each line's original terminator (CRLF/LF) so
-            # redaction never normalizes line endings on untouched lines.
-            text = data.decode(encoding, errors='surrogateescape')
+            # redaction never normalizes line endings on untouched lines. The
+            # wrapper decodes as it splits, so no second copy of the whole
+            # text is held next to the bytes.
+            with io.TextIOWrapper(
+                io.BytesIO(data), encoding=encoding, errors='surrogateescape', newline=''
+            ) as reader:
+                lines = reader.readlines()
         except (OSError, UnicodeDecodeError) as exc:
             # UnicodeDecodeError: a detected multibyte encoding (e.g.
             # truncated UTF-16) failing mid-stream must fail THIS file only.
             logger.error('Cannot read %s: %s', filepath, exc)
             return 'failed'
-        lines = io.StringIO(text, newline='').readlines()
 
         if not edit(lines):
             return 'unchanged'
+
+        # Encode before any backup or check, so content the file's encoding
+        # cannot hold (an undecodable byte kept as a lone surrogate, which
+        # UTF-16 refuses) fails this file here instead of ending the run.
+        try:
+            new_data = ''.join(lines).encode(encoding, errors='surrogateescape')
+        except UnicodeError as exc:
+            logger.error('Cannot write %s: the new content cannot be encoded (%s).', filepath, exc)
+            return 'failed'
 
         def still_safe() -> bool:
             return _still_safe_to_write(filepath, root, seen)
@@ -626,7 +638,9 @@ def _rewrite_file(
                 logger.error('Backup failed for %s; skipping replacements.', filepath)
                 return 'failed'
 
-        if not _write_atomic(filepath, lines, encoding, guard=still_safe):
+        if not _write_atomic(filepath, new_data, guard=still_safe):
+            if bak:
+                _discard_backup(bak, config)
             return 'failed'
 
         # Restore original file permissions
@@ -641,6 +655,18 @@ def _rewrite_file(
     finally:
         if lock_fh is not None:
             lock_fh.close()
+
+
+def _discard_backup(bak: str, config: Config) -> None:
+    """Remove the backup made for a file that was then not written. The file
+    is unchanged, so the backup has nothing to undo, and it holds the secret
+    in plaintext: wiped first under --secure-delete."""
+    if config.secure_delete:
+        _secure_delete(bak)
+    else:
+        with contextlib.suppress(OSError):
+            os.unlink(bak)
+    logger.info('%s: removed, since the file it backs up was not rewritten.', bak)
 
 
 def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -661,8 +687,8 @@ def _still_safe_to_write(filepath: str, root: str | None, seen: tuple[int, int, 
     the scan root (SR-20), or it is not the file that was read (SR-24)."""
     if root is not None and _outside_root(filepath, root):
         logger.warning(
-            '%s no longer reaches a file inside the scan root through real '
-            'directories (a directory on its path was moved or replaced by a '
+            '%s is not inside the scan root through real directories (a '
+            'directory on its path may have been moved or replaced by a '
             'symlink), so it is not rewritten.',
             filepath,
         )

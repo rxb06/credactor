@@ -152,7 +152,11 @@ def is_within_root(path_str: str, root_str: str) -> bool:
     """
     norm_path = os.path.normcase(os.path.normpath(path_str))
     norm_root = os.path.normcase(os.path.normpath(root_str))
-    return norm_path == norm_root or norm_path.startswith(norm_root + os.sep)
+    if norm_path == norm_root:
+        return True
+    # A filesystem root ('/', 'C:\\') already ends in a separator.
+    prefix = norm_root if norm_root.endswith(os.sep) else norm_root + os.sep
+    return norm_path.startswith(prefix)
 
 
 # SR-13: .gitignore and .credactorignore are read before any per-file guard,

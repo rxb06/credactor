@@ -54,7 +54,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   assume no other process edits the files meanwhile. Just before a file is
   rewritten it is compared with what was read; if its size, modification time
   or inode changed, or it is gone, it is left as it is, with a warning, and
-  its findings stay unresolved (exit 1).
+  its findings stay unresolved (exit 1). A backup already made for it is
+  removed again (wiped under `--secure-delete`), since the file was not
+  changed.
 - **Ingestion never rewrites anything under `.git`.** A report could name
   `.git/config` or a hook, which the native scan never visits, and `--fix-all`
   rewrote it. Such a finding is now reported as before, counts as unresolved
@@ -191,6 +193,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **A file that cannot be written back in its encoding fails on its own.** A
+  UTF-16 file with an odd trailing byte decodes, but its new content cannot
+  be encoded again, and the error ended the whole `--fix-all` or interactive
+  run, leaving later files unredacted. The new content is now encoded before
+  any backup is made, and such a file is reported as not written while the
+  run goes on.
 - **A file with nothing to replace is no longer rewritten or backed up.**
   `--fix-all` wrote a `.bak` and rewrote every file it was given, even one in
   which no value could be replaced (a stale report), which gave the file a new

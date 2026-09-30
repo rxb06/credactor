@@ -335,7 +335,8 @@ it. Verified behaviour:
   memory first, so when no value in a file can be replaced (typically a stale
   ingested report) the file is neither backed up nor rewritten, and keeps its
   inode, hard links and extended attributes. A backup holds exactly the bytes
-  Credactor read and edited, and is created with mode `0600` whatever the
+  Credactor read and edited, is removed again if the file is then not
+  rewritten after all, and is created with mode `0600` whatever the
   original's mode (no setuid bit is carried over). A new `--secure-backup-dir`
   is created `0700`, and an existing one that other users can read gets a
   warning. Delete strays before committing.

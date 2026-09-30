@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -1109,27 +1110,26 @@ class TestWritePathSafety:
         assert any('symlink' in r.getMessage().lower() for r in credactor_caplog.records)
 
     def test_write_atomic_failure_leaves_original_intact(self, make_file, monkeypatch):
-        # S14: a mid-write OSError must leave the original byte-identical, the
-        # .bak intact, and no .credactor.tmp orphaned. Only the publish writes
-        # text through os.fdopen; the backup writes the bytes that were read.
-        real_fdopen = os.fdopen
-
-        def boom(fd, mode='r', *a, **k):
-            if 'b' not in mode:
-                os.close(fd)
-                raise OSError('disk full')
-            return real_fdopen(fd, mode, *a, **k)
-
+        # S14: a publish that fails must leave the original byte-identical and
+        # no .credactor.tmp orphaned. The backup made for it is removed, since
+        # the file it would restore was never changed.
         path = make_file('w.py', f'api_key = "{_AWS_KEY}"\n')
         with open(path) as f:
             before = f.read()
-        monkeypatch.setattr('os.fdopen', boom)
+        real_replace = os.replace
+
+        def boom(src, dst, *a, **k):
+            if os.path.abspath(dst) == os.path.abspath(path):
+                raise OSError('disk full')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr('os.replace', boom)
         config = Config(no_backup=False, replace_mode='sentinel')
         replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
         assert replaced == 0
         with open(path) as f:
             assert f.read() == before  # original intact
-        assert os.path.exists(path + '.bak')  # backup kept
+        assert not os.path.exists(path + '.bak')  # nothing to undo
         d = os.path.dirname(path)
         assert not [f for f in os.listdir(d) if f.endswith('.credactor.tmp')]
 
@@ -2108,6 +2108,78 @@ class TestSweepReportsWhatWasWritten:
         assert tally == {'refused': 0}
 
 
+class TestWritePathFailures:
+    """A file that cannot be written fails on its own, leaves no stray backup,
+    and never ends the run."""
+
+    def test_unencodable_content_fails_the_file_not_the_run(self, tmp_path):
+        # An odd trailing byte decodes to a lone surrogate that UTF-16 cannot
+        # encode back. The file is failed before any backup is made.
+        bad = tmp_path / 'u16.py'
+        bad.write_bytes(f'api_token = "{_GH_TOKEN}"\n'.encode('utf-16-le') + b'\xe9')
+        good = tmp_path / 'ok.py'
+        good.write_text(f'api_key = "{_AWS_KEY}"\n', encoding='utf-8')
+        before = bad.read_bytes()
+        findings = [
+            _mk_finding(str(bad), _GH_TOKEN, ftype='variable:api_token'),
+            _mk_finding(str(good), _AWS_KEY),
+        ]
+        import credactor.redactor as redactor
+
+        with mock.patch.object(
+            redactor, 'detect_encoding', lambda p: 'utf-16-le' if p.endswith('u16.py') else 'utf-8'
+        ):
+            unresolved = fix_all(findings, str(tmp_path), Config())
+        assert unresolved == 1
+        assert bad.read_bytes() == before
+        assert not (tmp_path / 'u16.py.bak').exists()
+        assert _AWS_KEY not in good.read_text(encoding='utf-8')
+
+    @pytest.mark.parametrize('secure_delete', [False, True])
+    def test_backup_is_removed_when_nothing_is_published(
+        self, make_file, monkeypatch, secure_delete
+    ):
+        # The original was not changed, so a backup made for it has nothing
+        # to undo, and under --secure-delete it must not be left in plaintext.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_backup = redactor._create_backup
+
+        def backup_then_edit(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_edit)
+        config = Config(secure_delete=secure_delete)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (0, 1)
+        assert not os.path.exists(path + '.bak')
+
+    def test_session_backup_survives_a_later_failed_approval(self, make_file, monkeypatch):
+        # Only a backup made by this call is removed; the one the first
+        # approval made stays as the file's undo.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"\n')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
+        with open(path + '.bak', 'rb') as fh:
+            first = fh.read()
+        monkeypatch.setattr(redactor, '_write_atomic', lambda *a, **k: False)
+        second = _mk_finding(path, _PASSWORD, line=2)
+        assert batch_replace_in_file(path, [second], Config(), skip_backup=True) == (0, 1)
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == first
+
+    def test_root_that_ends_in_a_separator(self, tmp_path):
+        path = tmp_path / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        root = os.path.abspath(os.sep)
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
@@ -2166,9 +2238,9 @@ class TestGuardPins:
                 held['read'] = locked_elsewhere()
             return real_open(file, *args, **kwargs)
 
-        def spy_write(filepath, lines, encoding, **kwargs):
+        def spy_write(filepath, data, **kwargs):
             held['write'] = locked_elsewhere()
-            return real_write(filepath, lines, encoding, **kwargs)
+            return real_write(filepath, data, **kwargs)
 
         monkeypatch.setattr(fcntl, 'flock', recorder)
         monkeypatch.setattr(redactor, 'open', spy_open, raising=False)
