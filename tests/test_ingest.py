@@ -3698,6 +3698,27 @@ class TestImplausibleSecrets:
         assert 'refuse_reason' not in finding
 
 
+def test_trufflehog_line_with_an_oversized_number_is_skipped(tmp_path):
+    # json.loads raises a plain ValueError for an integer over 4300 digits;
+    # the line is skipped like any other that does not parse.
+    target, _ = _make_th_target(tmp_path)
+    good = json.dumps(_make_trufflehog_finding())
+    bad = good.replace('"line": 1', '"line": 1' + '0' * 5000)
+    report = tmp_path / 'th.json'
+    report.write_text(good + '\n' + bad + '\n', encoding='utf-8')
+    assert len(ingest_trufflehog(str(report), str(target))) == 1
+
+
+@pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks'])
+def test_json_report_with_an_oversized_number_names_the_file(tmp_path, parser):
+    report = tmp_path / 'r.json'
+    report.write_text('[{"StartLine": 1' + '0' * 5000 + '}]', encoding='utf-8')
+    target, _ = _make_target(tmp_path)
+    ingest = ingest_gitleaks if parser == 'gitleaks' else ingest_betterleaks
+    with pytest.raises(ValueError, match=r'r\.json'):
+        ingest(str(report), str(target))
+
+
 def test_credential_name_check_is_linear_on_a_long_secret():
     # SR-15: the name pattern backtracks on long input, so it runs only on a
     # value short enough to be a name. Quadratic, this takes tens of seconds.
@@ -4060,8 +4081,73 @@ class TestIngestedSymlinkPaths:
         finding, real, warnings = self._ingest(tmp_path, parser, 'src/link.py', caplog)
         assert finding['file'] == real
         (message,) = warnings
-        assert 'src/link.py' in message
-        assert os.path.join('src', 'app.py') in message
+        # The target is shown with forward slashes on every platform.
+        assert "path 'src/link.py' goes through a symlink" in message
+        assert "taken as its target 'src/app.py'" in message
+
+    def test_one_warning_per_linked_path(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+        records = [_with_path(parser, 'src/link.py') for _ in range(3)]
+        for index, record in enumerate(records):
+            _sr19_set(record, _LINE_FIELDS[parser], index + 1)
+        (tmp_path / 'repo' / 'src' / 'app.py').write_text((_SR19_LINE + '\n') * 3, encoding='utf-8')
+        target = tmp_path / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, records)
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, records)
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, records)
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 3
+        assert sum('symlink' in r.getMessage() for r in caplog.records) == 1
+
+    def test_absolute_path_through_a_linked_parent_of_the_root(self, tmp_path, parser, caplog):
+        # A link above the root is not the report naming another file.
+        real_parent = tmp_path / 'real'
+        (real_parent / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'alias', 'real')
+        (real_parent / 'repo' / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        path = str(tmp_path / 'alias' / 'repo' / 'src' / 'app.py')
+        record = _with_path(parser, path)
+        target = real_parent / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert finding['file'] == str((target / 'src' / 'app.py').resolve())
+        assert not any('symlink' in r.getMessage() for r in caplog.records)
+
+    def test_absolute_path_through_an_alias_to_a_link_inside(self, tmp_path, parser, caplog):
+        real_parent = tmp_path / 'real'
+        (real_parent / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'alias', 'real')
+        _symlink_or_skip(real_parent / 'repo' / 'src' / 'link.py', 'app.py')
+        (real_parent / 'repo' / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        record = _with_path(parser, str(tmp_path / 'alias' / 'repo' / 'src' / 'link.py'))
+        target = real_parent / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            ingest(str(report), str(target), new_ingest_stats())
+        (message,) = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        assert "taken as its target 'src/app.py'" in message
+
+    def test_symlink_loop_does_not_end_the_run(self, tmp_path, parser):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'loop', 'loop')
+        findings, _ = _sr19_ingest(parser, tmp_path, _with_path(parser, 'loop/x.py'))
+        assert findings == []
 
     def test_link_to_a_directory_is_followed_and_named(self, tmp_path, parser, caplog):
         (tmp_path / 'repo' / 'src').mkdir(parents=True)
@@ -4075,3 +4161,17 @@ class TestIngestedSymlinkPaths:
         finding, real, warnings = self._ingest(tmp_path, parser, 'src/app.py', caplog)
         assert finding['file'] == real
         assert warnings == []
+
+
+@pytest.mark.parametrize('error', [RuntimeError('Symlink loop'), OSError(40, 'loop'), ValueError])
+def test_unresolvable_path_is_counted_invalid(tmp_path, error):
+    # Python 3.11 and 3.12 raise RuntimeError for a symlink loop.
+    from credactor.ingest import _resolve_external_finding_path
+
+    stats = new_ingest_stats()
+    with mock.patch.object(Path, 'resolve', side_effect=error):
+        found = _resolve_external_finding_path(
+            'x.py', str(tmp_path), str(tmp_path), scanner_name='Gitleaks', stats=stats
+        )
+    assert found is None
+    assert stats['invalid_record'] == 1

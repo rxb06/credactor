@@ -392,6 +392,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'protected_path': 0,
         'implausible': 0,
         'bad_line': 0,
+        'symlink_paths': set(),
     }
 
 
@@ -435,15 +436,17 @@ def _resolve_external_finding_path(
     joined = os.path.normpath(os.path.join(target_resolved, raw_file))
     try:
         resolved = str(Path(joined).resolve())
-    except ValueError:
-        # L5b: a NUL byte (or similar) in the path makes Path.resolve() raise;
-        # skip just this one finding rather than aborting the whole ingest batch
-        # (the CLI turns an uncaught ValueError here into a fatal exit 2).
+    except (ValueError, OSError, RuntimeError):
+        # L5b: a NUL byte in the path raises ValueError, and on Python 3.11
+        # and 3.12 a symlink loop raises RuntimeError. Skip just this one
+        # finding, counted as invalid, rather than ending the whole run.
         logger.warning(
-            'Skipping %s finding: path %r is invalid (e.g. embedded NUL).',
+            'Skipping %s finding: path %r is invalid (an embedded NUL, or a symlink loop).',
             scanner_name,
             raw_file,
         )
+        if stats is not None:
+            stats['invalid_record'] += 1
         return None
 
     if not is_within_root(resolved, target_resolved):
@@ -473,18 +476,51 @@ def _resolve_external_finding_path(
             stats['missing_file'] += 1
         return None
 
-    if os.path.normcase(joined) != os.path.normcase(resolved):
-        # SR-18 (decision D4-A): the report named a symlink, or a path through
-        # one. The finding is taken as the file it points to, and a rewrite
-        # changes that file, never the link, so say which file it is.
-        logger.warning(
-            '%s finding path %r goes through a symlink; it is taken as its target %r.',
-            scanner_name,
-            raw_file,
-            os.path.relpath(resolved, target_resolved),
-        )
+    if os.path.normcase(joined) != os.path.normcase(resolved) and _link_below_root(
+        joined, target_resolved
+    ):
+        # SR-18: the report named a symlink, or a path through one. The finding
+        # is taken as the file it points to, and a rewrite changes that file,
+        # never the link, so say which file it is, once per path.
+        seen = stats.setdefault('symlink_paths', set()) if stats is not None else set()
+        if (scanner_name, raw_file, resolved) not in seen:
+            seen.add((scanner_name, raw_file, resolved))
+            logger.warning(
+                '%s finding path %r goes through a symlink; it is taken as its target %r.',
+                scanner_name,
+                raw_file,
+                Path(os.path.relpath(resolved, target_resolved)).as_posix(),
+            )
 
     return resolved
+
+
+def _link_below_root(joined: str, target_resolved: str) -> bool:
+    """Whether *joined* reaches its file through a symlink at or below the
+    scan root. A link above the root (macOS /tmp to /private/tmp, or a CI
+    workspace behind one) is not the report naming another file."""
+    root = os.path.normcase(target_resolved)
+    if os.path.normcase(joined).startswith(root.rstrip(os.sep) + os.sep):
+        prefix = target_resolved
+        for part in Path(os.path.relpath(joined, target_resolved)).parts:
+            prefix = os.path.join(prefix, part)
+            if os.path.islink(prefix):
+                return True
+        return False
+    # An absolute report path spelled through an alias of the root: walk up
+    # from the file until a directory resolves to the root.
+    path = joined
+    while True:
+        if os.path.islink(path):
+            return True
+        parent = os.path.dirname(path)
+        if parent == path:
+            # The path never passes through the root, so it came in through
+            # a link somewhere above it that points inside.
+            return True
+        if os.path.normcase(os.path.realpath(parent)) == root:
+            return False
+        path = parent
 
 
 def _usable_secret(value: object) -> bool:
@@ -763,6 +799,10 @@ def ingest_gitleaks(
             else ''
         )
         raise ValueError(f'Gitleaks file is not valid JSON ({filepath!r}): {exc}{hint}') from exc
+    except ValueError as exc:
+        # SR-19: the decoder refuses some valid-looking JSON with a plain
+        # ValueError (an integer over 4300 digits); name the report, as above.
+        raise ValueError(f'Gitleaks file could not be parsed ({filepath!r}): {exc}') from exc
     except RecursionError as exc:
         # Deeply-nested JSON (e.g. '['*200k) exhausts the interpreter recursion
         # limit. RecursionError is a RuntimeError, not one of the above, so it
@@ -1075,6 +1115,10 @@ def ingest_betterleaks(
             else ''
         )
         raise ValueError(f'Betterleaks file is not valid JSON ({filepath!r}): {exc}{hint}') from exc
+    except ValueError as exc:
+        # SR-19: the decoder refuses some valid-looking JSON with a plain
+        # ValueError (an integer over 4300 digits); name the report, as above.
+        raise ValueError(f'Betterleaks file could not be parsed ({filepath!r}): {exc}') from exc
     except RecursionError as exc:
         # RecursionError is a RuntimeError, so without this it escapes the
         # CLI's `except ValueError` as an uncaught traceback (exit 1) instead
@@ -1410,7 +1454,9 @@ def ingest_trufflehog(
 
             try:
                 obj = json.loads(line)
-            except json.JSONDecodeError as exc:
+            except ValueError as exc:
+                # JSONDecodeError, or a plain ValueError for an integer over
+                # the decoder's 4300-digit limit: skip the line either way.
                 logger.info(
                     'TruffleHog file line %d: skipping invalid JSON: %s',
                     lineno_file,
