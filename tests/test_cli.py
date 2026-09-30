@@ -741,6 +741,65 @@ class TestMalformedReportFieldsCLI:
         assert '1 Gitleaks record(s) skipped as invalid' in err
 
 
+_NO_LINE = object()
+
+
+class TestInvalidLineNumbersCLI:
+    """PA-05 (DA-4): a finding whose report gives no valid line number is
+    reported and unresolved under --ci and --fix-all, and the file is never
+    written."""
+
+    _SECRET = 'Hx7Kq2Lm9Pz4Wr5'
+
+    def _report(self, tmp_path, parser, line):
+        if parser == 'trufflehog':
+            source = {'file': 'app.py'}
+            if line is not _NO_LINE:
+                source['line'] = line
+            record = {
+                'Raw': self._SECRET,
+                'DetectorName': 'Generic',
+                'Verified': False,
+                'SourceMetadata': {'Data': {'Filesystem': source}},
+            }
+            path = tmp_path / 'th.json'
+            path.write_text(json.dumps(record) + '\n', encoding='utf-8')
+            return '--from-trufflehog', path
+        record = {
+            'File': 'app.py',
+            'Secret': self._SECRET,
+            'Match': f'k = "{self._SECRET}"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        if line is not _NO_LINE:
+            record['StartLine'] = line
+        path = tmp_path / f'{parser}.json'
+        path.write_text(json.dumps([record]), encoding='utf-8')
+        return f'--from-{parser}', path
+
+    @pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks', 'trufflehog'])
+    @pytest.mark.parametrize('line', ['x', '3', True, 0, -1, 1.5, _NO_LINE])
+    def test_reported_unresolved_and_not_written(self, tmp_path, capsys, parser, line):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        target = repo / 'app.py'
+        target.write_text(f'k = "{self._SECRET}"\n', encoding='utf-8')
+        flag, report = self._report(tmp_path, parser, line)
+        before = target.read_bytes()
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '-f', 'json', flag, str(report), str(repo)])
+        assert exc_info.value.code == 1
+        (finding,) = json.loads(capsys.readouterr().out)['findings']
+        assert finding['line'] == 0
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', flag, str(report), str(repo)])
+        assert exc_info.value.code == 1
+        assert target.read_bytes() == before
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

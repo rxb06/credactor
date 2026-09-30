@@ -63,9 +63,10 @@
    },
    {
     "commit": null,
-    "line": 1,
+    "line": 0,
     "preview": "b8498412b57d7cac",
-    "raw": "first = 1",
+    "raw": "",
+    "refuse_reason": "the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand",
     "severity": "critical",
     "type": "external:gitleaks:github-pat",
     "value": "b8498412b57d7cac"
@@ -108,17 +109,27 @@
   ],
   [
    "WARNING",
+   "1 Gitleaks finding(s) have no valid line number in the report: they are reported at line 0, but not rewritten.",
+   1
+  ],
+  [
+   "WARNING",
    "1 Gitleaks finding(s) report a secret too short or a credential name: they are reported, but not rewritten.",
    1
   ],
   [
    "WARNING",
-   "3 finding(s) in file(s) with ingested findings could not be applied \u2014 if the tree changed since the scan, the report is stale: regenerate it and re-run.",
+   "2 finding(s) in file(s) with ingested findings could not be applied \u2014 if the tree changed since the scan, the report is stale: regenerate it and re-run.",
    1
   ],
   [
    "WARNING",
    "<root>/README.md:1: refusing to redact a multi-line private key block: replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/lines.py:0: not rewritten: the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand.",
    1
   ],
   [
@@ -138,16 +149,11 @@
   ],
   [
    "WARNING",
-   "Reported value not found on line 1 in <root>/lines.py \u2014 stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
-   1
-  ],
-  [
-   "WARNING",
    "Reported value not found on line 1 in <root>/stale.py \u2014 stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
    1
   ]
  ],
- "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; SR-24 and PA-05 are still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
+ "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; PA-05: lines.py's line \"x\" is kept at line 0 and not written; SR-24 is still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
  "reported": true,
  "tree_after": {
   "README.md": "a6ff0fdb8882fe94",

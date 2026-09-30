@@ -22,6 +22,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   symlinks, and the redactor applies it again to any path it is given. A report
   named in the config file's `[ingest]` table is named on stderr before a run
   that can write.
+- **A line number the report does not give no longer picks the line to
+  rewrite.** An ingested finding whose line was missing, not a positive whole
+  number (`"x"`, `"3"`, `0`, `-1`, `1.5`), or a boolean became line 1, so
+  `--fix-all` rewrote a line the report never named. Such a finding is now
+  reported at line 0, counted as unresolved (exit 1) and not written, with a
+  warning. The redactor also refuses line 0 itself.
 - **A malformed report record cannot crash the run.** A report secret holding
   a lone surrogate (a `\ud800` escape, which no scanner writes) crashed
   deduplication, so the run ended with a traceback instead of the invalid
@@ -125,6 +131,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **An ingested finding with no valid line number is reported at line 0.**
+  It was reported at line 1. In SARIF such a result names the file with no
+  region, since SARIF lines start at 1. Two copies of one finding, one with a
+  valid line and one without, are no longer merged.
 - **SARIF results for multi-line findings have no columns.** The columns were
   offsets into the escaped block, not positions on the source line.
 - **The text report follows `sys.stdout` when it is redirected.**

@@ -707,6 +707,10 @@ Verified behaviour and **requirements**:
   1, but it is **never rewritten**: fix it by hand and rotate the credential.
   A report named in the config file's `[ingest]` table is named on stderr
   before a run that can write.
+- A finding whose report gives **no valid line number** (the field is missing,
+  or is not a whole number of at least 1) is reported at **line 0** and counted,
+  so `--ci` and `--fix-all` exit 1, but it is **never rewritten**, since the
+  line to change is unknown. In SARIF it names the file with no region.
 - A reported secret under **4 characters**, or one that is a credential name
   such as `password`, is reported and counted but **never rewritten**, since
   it would match ordinary text on the line. A longer one is replaced only

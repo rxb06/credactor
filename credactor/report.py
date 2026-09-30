@@ -233,6 +233,11 @@ def sarif_report(findings: list[Finding], root: str) -> str:
         if idx >= 0:
             region['startColumn'] = idx + 1
             region['endColumn'] = idx + 1 + len(full_val)
+        location: dict[str, Any] = {'artifactLocation': {'uri': uri}}
+        if f['line'] >= 1:
+            # PA-05: line 0 is a line the report did not give; SARIF lines
+            # start at 1, so the result names the file only.
+            location['region'] = region
 
         results.append(
             {
@@ -245,14 +250,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                         f' ({html.escape(mask_secret(f["full_value"]))}){name_note}'
                     ),
                 },
-                'locations': [
-                    {
-                        'physicalLocation': {
-                            'artifactLocation': {'uri': uri},
-                            'region': region,
-                        },
-                    }
-                ],
+                'locations': [{'physicalLocation': location}],
             }
         )
 

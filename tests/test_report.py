@@ -958,3 +958,34 @@ class TestPrintGitignoreSkipped:
         ]
         result = json.loads(sarif_report(findings, '/tmp'))
         assert 'ruleIndex' in result['runs'][0]['results'][0]
+
+
+class TestUnknownLine:
+    """PA-05 (DA-4): a finding at line 0 (the report gave no valid line) has no
+    SARIF region, since SARIF lines start at 1."""
+
+    def _finding(self, tmp_path):
+        path = tmp_path / 'app.py'
+        path.write_text('k = "Hx7Kq2Lm9Pz4Wr5"\n', encoding='utf-8')
+        return {
+            'file': str(path),
+            'line': 0,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'Hx7Kq2Lm9Pz4Wr5',
+            'value_preview': 'Hx7K...',
+            'raw': 'k = "Hx7Kq2Lm9Pz4Wr5"',
+            'refuse_reason': 'the report gives no valid line number',
+        }
+
+    def test_sarif_omits_the_region(self, tmp_path):
+        sarif = json.loads(sarif_report([self._finding(tmp_path)], str(tmp_path)))
+        (location,) = sarif['runs'][0]['results'][0]['locations']
+        assert 'region' not in location['physicalLocation']
+        assert location['physicalLocation']['artifactLocation']['uri'] == 'app.py'
+
+    def test_text_and_json_show_line_zero(self, tmp_path, capsys):
+        finding = self._finding(tmp_path)
+        print_report([finding], str(tmp_path))
+        assert 'Line    0' in capsys.readouterr().out
+        assert json.loads(json_report([finding], str(tmp_path)))['findings'][0]['line'] == 0

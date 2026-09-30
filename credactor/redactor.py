@@ -668,7 +668,8 @@ def batch_replace_in_file(
             full_value = finding['full_value']
             idx = lineno - 1
 
-            if idx >= len(lines):
+            if idx < 0 or idx >= len(lines):
+                # Line 0 is an unknown line (PA-05); index -1 would be the last.
                 logger.warning('Line %d out of range in %s — skipping.', lineno, filepath)
                 failed += 1
                 failed_lines.add(lineno)

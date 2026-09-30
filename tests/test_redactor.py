@@ -1353,6 +1353,20 @@ class TestPrivateKeyRefusalByValueAndLine:
         assert '-----BEGIN PRIVATE KEY-----' in content
 
 
+class TestLineZeroAtTheSink:
+    """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
+    a caller that passes it cannot reach the last line through index -1."""
+
+    def test_line_zero_rewrites_nothing(self, make_file):
+        path = make_file('app.py', f'first = 1\napi_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = _mk_finding(path, _AWS_KEY, line=0)
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+
 class TestGuardPins:
     """SR-01 and PA-02: each test pins one write-path guard that could once be
     deleted, or quietly weakened, with the whole suite still green (found by

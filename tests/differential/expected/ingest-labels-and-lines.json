@@ -38,18 +38,30 @@
    },
    {
     "commit": null,
-    "line": 1,
+    "line": 0,
     "preview": "5f4b8f793c79706d",
-    "raw": "key <v:1a5d44a2dca19669>",
+    "raw": "",
+    "refuse_reason": "the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand",
     "severity": "medium",
     "type": "external:gitleaks:unknown",
     "value": "5f4b8f793c79706d"
    },
    {
     "commit": null,
-    "line": 1,
+    "line": 0,
+    "preview": "1a5d44a2dca19669",
+    "raw": "",
+    "refuse_reason": "the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand",
+    "severity": "medium",
+    "type": "external:gitleaks:ok",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 0,
     "preview": "b8498412b57d7cac",
-    "raw": "key <v:1a5d44a2dca19669>",
+    "raw": "",
+    "refuse_reason": "the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand",
     "severity": "medium",
     "type": "external:gitleaks:ok",
     "value": "b8498412b57d7cac"
@@ -58,17 +70,17 @@
  },
  "log": [
   [
-   "INFO",
-   "Deduplicated 1 finding(s).",
+   "WARNING",
+   "3 Gitleaks finding(s) had a RuleID that is not a plain label (letters, digits, '.', '_' or '-', at most 64 characters); reported as 'unknown'.",
    1
   ],
   [
    "WARNING",
-   "3 Gitleaks finding(s) had a RuleID that is not a plain label (letters, digits, '.', '_' or '-', at most 64 characters); reported as 'unknown'.",
+   "3 Gitleaks finding(s) have no valid line number in the report: they are reported at line 0, but not rewritten.",
    1
   ]
  ],
- "note": "report-controlled labels and invalid line numbers; PA-04 replaces labels outside [A-Za-z0-9._-]{1,64} with unknown and masks secrets in the rest, and PA-05 changes the line numbers",
+ "note": "report-controlled labels and invalid line numbers; PA-04 replaces labels outside [A-Za-z0-9._-]{1,64} with unknown and masks secrets in the rest, and PA-05 keeps the findings whose line is \"3\", true or null at line 0",
  "reported": true,
  "tree_after": {
   "notes.md": "ec400e779a3eee28",

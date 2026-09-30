@@ -1979,9 +1979,10 @@ class TestBetterleaksFieldMapping:
         results = ingest_betterleaks(str(report), str(target))
         assert results[0]['line'] == 1
 
-    def test_bad_start_line_coerced_to_one(self, tmp_path):
-        """StartLine must end up an int >= 1 — a 0, a negative or a string would
-        index the wrong line (or raise) during raw synthesis and redaction."""
+    def test_bad_start_line_kept_at_zero_and_refused(self, tmp_path):
+        """PA-05 (DA-4): a StartLine that is not an int >= 1 does not become
+        line 1, which the report never named. The finding is kept at line 0
+        and refused, so it cannot choose a line to rewrite."""
         target, _ = _make_bl_target(tmp_path)
         for bad in (0, -3, 'seven', None, 1.5, True):
             finding = _make_betterleaks_finding()
@@ -1989,7 +1990,8 @@ class TestBetterleaksFieldMapping:
             report = _write_betterleaks_report(tmp_path, [finding])
             results = ingest_betterleaks(str(report), str(target))
             assert len(results) == 1, f'Finding dropped for StartLine={bad!r}'
-            assert results[0]['line'] >= 1, f'line not coerced for StartLine={bad!r}'
+            assert results[0]['line'] == 0, f'StartLine={bad!r}'
+            assert results[0].get('refuse_reason'), f'StartLine={bad!r}'
 
     def test_long_secret_preview_truncated_but_value_intact(self, tmp_path):
         """value_preview is display-only; full_value must never be truncated —
@@ -3870,3 +3872,62 @@ def test_backstop_leaves_the_redacted_report_fatal(tmp_path, parser):
     record['Secret'] = 'REDACTED'
     with pytest.raises(ValueError, match='redact'):
         _sr19_ingest(parser, tmp_path, record)
+
+
+# ---------------------------------------------------------------------------
+# PA-05 (DA-4): a line number the report does not give never authorises a write
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+_BAD_LINES = [
+    pytest.param('x', id='word'),
+    pytest.param('3', id='digit-string'),
+    pytest.param(True, id='true'),
+    pytest.param(0, id='zero'),
+    pytest.param(-1, id='negative'),
+    pytest.param(1.5, id='float'),
+    pytest.param(None, id='null'),
+    pytest.param(_MISSING, id='missing'),
+]
+_LINE_FIELDS = {
+    'gitleaks': 'StartLine',
+    'betterleaks': 'StartLine',
+    'trufflehog': 'SourceMetadata/Data/Git/line',
+}
+
+
+def _with_line(parser: str, value) -> dict:
+    record = _sr19_record(parser)
+    *parents, last = _LINE_FIELDS[parser].split('/')
+    holder = record
+    for key in parents:
+        holder = holder[key]
+    if value is _MISSING:
+        del holder[last]
+    else:
+        holder[last] = value
+    return record
+
+
+@pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
+class TestInvalidLineNumbers:
+    """PA-05 (DA-4): an invalid or missing line number keeps the finding at
+    line 0, reported and unresolved, and refuses the write. It was line 1."""
+
+    @pytest.mark.parametrize('value', _BAD_LINES)
+    def test_kept_at_line_zero_and_refused(self, tmp_path, parser, value, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, _with_line(parser, value))
+        assert finding['line'] == 0
+        assert finding['full_value'] == _SR19_SECRET
+        assert 'line number' in finding['refuse_reason']
+        assert stats['bad_line'] == 1
+        assert stats['invalid_record'] == 0
+        assert any('no valid line number' in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize('value', [1, 2])
+    def test_valid_line_is_kept(self, tmp_path, parser, value):
+        (finding,), stats = _sr19_ingest(parser, tmp_path, _with_line(parser, value))
+        assert finding['line'] == value
+        assert 'refuse_reason' not in finding
+        assert stats['bad_line'] == 0

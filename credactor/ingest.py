@@ -230,8 +230,44 @@ def _warn_git_paths(stats: dict[str, Any], start: int, scanner_name: str) -> Non
         )
 
 
+# PA-05 (decision DA-4): a line number the report does not give cannot choose
+# the line to rewrite. The finding is kept at line 0 (unknown), reported and
+# unresolved, but never written. It used to become line 1.
+_BAD_LINE_REASON = (
+    'the report gives no valid line number, so the line to rewrite is unknown; '
+    'find the value and fix it by hand'
+)
+
+
+def _valid_line(value: object) -> int:
+    """*value* if it is a line number (an int of at least 1, not a bool),
+    else 0."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return 0
+
+
+def _mark_bad_line(finding: Finding, stats: dict[str, Any] | None) -> None:
+    if finding['line'] >= 1:
+        return
+    finding.setdefault('refuse_reason', _BAD_LINE_REASON)
+    if stats is not None:
+        stats['bad_line'] += 1
+
+
+def _warn_bad_lines(stats: dict[str, Any], start: int, scanner_name: str) -> None:
+    count = stats['bad_line'] - start
+    if count:
+        logger.warning(
+            '%d %s finding(s) have no valid line number in the report: they are '
+            'reported at line 0, but not rewritten.',
+            count,
+            scanner_name,
+        )
+
+
 # Counters that each parser reports on, as a delta against the shared stats.
-_FIXED_UP_KEYS = ('relabelled', 'bad_commit', 'protected_path', 'implausible')
+_FIXED_UP_KEYS = ('relabelled', 'bad_commit', 'protected_path', 'implausible', 'bad_line')
 
 
 def _counts_at_start(stats: dict[str, Any]) -> dict[str, int]:
@@ -246,6 +282,7 @@ def _warn_fixed_up(
     _warn_bad_commits(stats, start['bad_commit'], scanner_name)
     _warn_git_paths(stats, start['protected_path'], scanner_name)
     _warn_implausible(stats, start['implausible'], scanner_name)
+    _warn_bad_lines(stats, start['bad_line'], scanner_name)
 
 
 def _warn_relabelled(stats: dict[str, Any], start: int, scanner_name: str, field: str) -> None:
@@ -287,8 +324,8 @@ def _synthesise_raw(filepath: str, lineno: int) -> str:
 
     Returns the line stripped of trailing whitespace, or ``""`` when the file
     is unreadable (``_read_file_lines`` absorbs ``OSError``, returning ``()``)
-    or *lineno* is out of range. Both callers validate *lineno* as an
-    ``int >= 1`` before calling.
+    or *lineno* is out of range. The callers pass 0 for a line the report did
+    not give (PA-05), which is out of range.
     """
     lines = _read_file_lines(filepath)
     if lines and 1 <= lineno <= len(lines):
@@ -326,6 +363,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'bad_commit': 0,
         'protected_path': 0,
         'implausible': 0,
+        'bad_line': 0,
     }
 
 
@@ -607,9 +645,7 @@ def _parse_gitleaks_record(
         return None
 
     # --- Line number ---
-    line = obj.get('StartLine', 1)
-    if not isinstance(line, int) or line < 1:
-        line = 1
+    line = _valid_line(obj.get('StartLine'))
 
     # --- raw context line ---
     match_ctx = obj.get('Match', '')
@@ -643,6 +679,7 @@ def _parse_gitleaks_record(
         finding['commit'] = commit
     _mark_git_path(finding, raw_file, target_resolved, stats)
     _mark_implausible(finding, stats)
+    _mark_bad_line(finding, stats)
 
     return finding
 
@@ -900,9 +937,7 @@ def _parse_betterleaks_record(
         return None
 
     # --- Line number ---
-    line = obj.get('StartLine', 1)
-    if not isinstance(line, int) or line < 1:
-        line = 1
+    line = _valid_line(obj.get('StartLine'))
 
     # --- raw context line ---
     # Prefer the on-disk line: Finding['raw'] is contracted as a single
@@ -947,6 +982,7 @@ def _parse_betterleaks_record(
 
     _mark_git_path(finding, raw_file, target_resolved, stats)
     _mark_implausible(finding, stats)
+    _mark_bad_line(finding, stats)
 
     return finding
 
@@ -1159,7 +1195,7 @@ def _parse_trufflehog_record(
     data = source_meta.get('Data', {}) if isinstance(source_meta, dict) else {}
 
     file_path_raw: str = ''
-    line_num: int = 1
+    raw_line: object = None
     raw_commit: object = ''
     source_found = False
 
@@ -1168,14 +1204,14 @@ def _parse_trufflehog_record(
         fs = data.get('Filesystem')
         if isinstance(fs, dict):
             file_path_raw = fs.get('file', '') or ''
-            line_num = fs.get('line', 1) or 1
+            raw_line = fs.get('line')
             source_found = True
         else:
             # Git source
             git = data.get('Git')
             if isinstance(git, dict):
                 file_path_raw = git.get('file', '') or ''
-                line_num = git.get('line', 1) or 1
+                raw_line = git.get('line')
                 raw_commit = git.get('commit', '') or ''
                 source_found = True
 
@@ -1225,9 +1261,7 @@ def _parse_trufflehog_record(
     if resolved is None:
         return None
 
-    # Validate line number
-    if not isinstance(line_num, int) or line_num < 1:
-        line_num = 1
+    line_num = _valid_line(raw_line)
 
     # --- Synthesise raw context line ---
     raw_ctx = _synthesise_raw(resolved, line_num)
@@ -1279,6 +1313,7 @@ def _parse_trufflehog_record(
         finding['commit'] = commit
     _mark_git_path(finding, file_path_raw, target_resolved, stats)
     _mark_implausible(finding, stats)
+    _mark_bad_line(finding, stats)
 
     return finding
 
