@@ -711,9 +711,13 @@ Verified behaviour and **requirements**:
   or is not a whole number of at least 1) is reported at **line 0** and counted,
   so `--ci` and `--fix-all` exit 1, but it is **never rewritten**, since the
   line to change is unknown. In SARIF it names the file with no region.
-- A reported secret under **4 characters**, or one that is a credential name
-  such as `password`, is reported and counted but **never rewritten**, since
-  it would match ordinary text on the line. A longer one is replaced only
+- A reported secret that is not one plausible token is reported and counted
+  but **never rewritten**, since it would match ordinary text on the line:
+  one with fewer than **4** letters, digits or underscores, one with
+  whitespace at either end or a line break in it, or one that reads as a
+  credential name (such as `password`, `db_password` or `x-api-key`: 64
+  characters or fewer, no digit, and matched whole by the credential variable
+  name pattern). So `Secret_2024` is still rewritten. Any other one is replaced only
   where it stands as a whole token: a line that holds it only inside a longer
   word is left alone and counted as not fixed.
 - Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,

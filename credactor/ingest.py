@@ -188,19 +188,45 @@ def _mark_git_path(
             stats['protected_path'] += 1
 
 
-# SR-15 (decision D2, floor of 4): a reported secret this short, or one that
-# is itself a credential name, would be replaced wherever it happens to occur
-# ('a' inside 'api_key'). It is reported, but never drives a rewrite.
+# SR-15: a reported secret is matched as text on its line, so one that is not
+# a single plausible token would be replaced wherever it happens to occur ('a'
+# inside 'api_key', four spaces of indentation, a name like 'password'). Such a
+# finding is reported, but never drives a rewrite. A secret is refused when it
+# has fewer than 4 letters, digits or underscores; has whitespace at either
+# end or a line break anywhere (a replacement works within one line, and a
+# value ending in a line break would join two lines); or reads as a credential
+# name: short, with no digit, and matched whole by the credential name pattern
+# ('password', 'db_password', 'x-api-key', but not 'Secret_2024').
 _MIN_REPORTED_SECRET = 4
+_MAX_NAME_LENGTH = 64
 _IMPLAUSIBLE_REASON = (
-    'the reported secret is too short or a credential name to be replaced safely; '
-    'check the report and fix the value by hand'
+    'the reported secret is too short, a credential name or not a single token, '
+    'so it cannot be replaced safely; check the report and fix the value by hand'
 )
 
 
+def _is_credential_name(value: str) -> bool:
+    # The length bound comes first: the pattern backtracks on long input, and
+    # no bare name is that long.
+    return (
+        len(value) <= _MAX_NAME_LENGTH
+        and not any(ch.isdigit() for ch in value)
+        and CRED_VAR_PATTERNS.fullmatch(value) is not None
+    )
+
+
+def _implausible_secret(secret: str) -> bool:
+    return (
+        sum(1 for ch in secret if ch.isalnum() or ch == '_') < _MIN_REPORTED_SECRET
+        or secret != secret.strip()
+        or '\n' in secret
+        or '\r' in secret
+        or _is_credential_name(secret)
+    )
+
+
 def _mark_implausible(finding: Finding, stats: dict[str, Any] | None) -> None:
-    secret = finding['full_value']
-    if len(secret) >= _MIN_REPORTED_SECRET and not CRED_VAR_PATTERNS.fullmatch(secret):
+    if not _implausible_secret(finding['full_value']):
         return
     finding.setdefault('refuse_reason', _IMPLAUSIBLE_REASON)
     if stats is not None:
@@ -211,8 +237,8 @@ def _warn_implausible(stats: dict[str, Any], start: int, scanner_name: str) -> N
     count = stats['implausible'] - start
     if count:
         logger.warning(
-            '%d %s finding(s) report a secret too short or a credential name: '
-            'they are reported, but not rewritten.',
+            '%d %s finding(s) report a secret that is too short, a credential name or '
+            'not a single token: they are reported, but not rewritten.',
             count,
             scanner_name,
         )

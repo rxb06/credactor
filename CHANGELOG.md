@@ -51,9 +51,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   ingested secret is matched as text on the reported line, and its first
   occurrence was replaced even inside a longer word, so a report giving `pass`
   for a line holding `password` rewrote part of the name and left the real
-  value. A secret under 4 characters, or one that is a credential name such as
-  `password` or `api_key`, is now reported and counted as unresolved (exit 1)
-  but not written, with a warning to fix it by hand. A longer one is replaced
+  value. A secret that is not one plausible token is now reported and counted
+  as unresolved (exit 1) but not written, with a warning to fix it by hand:
+  one with fewer than 4 letters, digits or underscores, one with whitespace at
+  either end or a line break in it, or one that reads as a credential name
+  (such as `password` or `db_password`, with no digit). Any other one is replaced
   where it stands as a whole token; if it appears on the line only inside a
   longer word, the line is left alone and the finding is counted as not
   fixed.

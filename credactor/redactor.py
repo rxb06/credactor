@@ -536,6 +536,15 @@ def _writable_findings(
                 filepath,
                 f['line'],
             )
+        elif '\n' in f['full_value'] or '\r' in f['full_value']:
+            # A replacement works within one line; a value holding a line break
+            # cannot match there, and one ending in it would join two lines.
+            logger.warning(
+                '%s:%d: not rewritten: the value spans lines, so it cannot be '
+                'replaced within one. Fix it by hand.',
+                filepath,
+                f['line'],
+            )
         else:
             writable.append(f)
     return writable, len(file_findings) - len(writable)

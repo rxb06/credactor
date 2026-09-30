@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -3644,23 +3645,68 @@ def _record_for(parser, tmp_path, secret, line_text):
 
 @pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
 class TestImplausibleSecrets:
-    """SR-15 (D2-B): a secret under 4 characters, or one that is itself a
-    credential name, is reported but never drives a rewrite."""
+    """SR-15: a reported secret that is not one plausible token (under 4 word
+    characters, whitespace at an edge, a line break, or a credential name) is
+    reported but never drives a rewrite."""
 
-    @pytest.mark.parametrize('secret', ['a', 'ab', 'api', 'password', 'API_KEY', 'token'])
+    @pytest.mark.parametrize(
+        'secret',
+        [
+            'a',
+            'ab',
+            'api',
+            'password',
+            'API_KEY',
+            'token',
+            'db_password',
+            'x-api-key',
+            'my_api_key',
+            'abc ',
+            ' abcd',
+            'password ',
+            '    ',
+            '----',
+            'a-b-c',
+            'abcd1234\n',
+            'ab\ncd1234',
+            'abcd1234\r',
+        ],
+    )
     def test_kept_and_refused(self, tmp_path, parser, secret, caplog):
-        ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
+        ingest, report, target = _record_for(parser, tmp_path, secret, 'x = 1')
         with caplog.at_level(logging.WARNING, logger='credactor'):
             (finding,) = ingest(str(report), str(target), new_ingest_stats())
         assert finding['full_value'] == secret
         assert finding.get('refuse_reason')
-        assert any('too short or a credential name' in r.getMessage() for r in caplog.records)
+        assert any('not a single token' in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.parametrize('secret', ['hunt', 'Hx7Kq2Lm9Pz4'])
+    @pytest.mark.parametrize(
+        'secret',
+        [
+            'hunt',
+            'Hx7Kq2Lm9Pz4',
+            'Password123',
+            'token9Xk2Lm4Qp',
+            'Secret_2024',
+            'sb_secret_AbCdEf123456GhIjKl789012',
+            'abcd==',
+        ],
+    )
     def test_plausible_secret_is_not_refused(self, tmp_path, parser, secret):
         ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
         (finding,) = ingest(str(report), str(target), new_ingest_stats())
         assert 'refuse_reason' not in finding
+
+
+def test_credential_name_check_is_linear_on_a_long_secret():
+    # SR-15: the name pattern backtracks on long input, so it runs only on a
+    # value short enough to be a name. Quadratic, this takes tens of seconds.
+    from credactor.ingest import _implausible_secret
+
+    secret = '_secret' * 15000 + '!'
+    start = time.perf_counter()
+    assert _implausible_secret(secret) is False
+    assert time.perf_counter() - start < 1.0
 
 
 # ---------------------------------------------------------------------------

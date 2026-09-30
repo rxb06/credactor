@@ -78,7 +78,7 @@
     "line": 1,
     "preview": "14c2529eb4498c5d",
     "raw": "<v:14c2529eb4498c5d>_key = load()",
-    "refuse_reason": "the reported secret is too short or a credential name to be replaced safely; check the report and fix the value by hand",
+    "refuse_reason": "the reported secret is too short, a credential name or not a single token, so it cannot be replaced safely; check the report and fix the value by hand",
     "severity": "medium",
     "type": "external:gitleaks:generic",
     "value": "14c2529eb4498c5d"
@@ -114,7 +114,7 @@
   ],
   [
    "WARNING",
-   "1 Gitleaks finding(s) report a secret too short or a credential name: they are reported, but not rewritten.",
+   "1 Gitleaks finding(s) report a secret that is too short, a credential name or not a single token: they are reported, but not rewritten.",
    1
   ],
   [
@@ -134,7 +134,7 @@
   ],
   [
    "WARNING",
-   "<root>/short.py:1: not rewritten: the reported secret is too short or a credential name to be replaced safely; check the report and fix the value by hand.",
+   "<root>/short.py:1: not rewritten: the reported secret is too short, a credential name or not a single token, so it cannot be replaced safely; check the report and fix the value by hand.",
    1
   ],
   [
