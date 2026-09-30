@@ -141,7 +141,7 @@ def _env_ref_for_language(var_name: str, ext: str) -> str:
     return f'${{{var_name}}}'
 
 
-def _replace_quoted(original: str, full_value: str, replacement: str) -> str:
+def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -> str:
     """Insert a bare env expression in place of a *quoted* credential literal,
     consuming the surrounding quotes so it isn't left nested inside them
     (api_key = "os.environ[...]" would be invalid syntax).
@@ -164,7 +164,24 @@ def _replace_quoted(original: str, full_value: str, replacement: str) -> str:
             if other in replacement and other in original.replace(token, '', 1):
                 break
             return original.replace(token, replacement, 1)
-    return original.replace(full_value, DEFAULT_REPLACEMENT, 1)
+    return original[:at] + DEFAULT_REPLACEMENT + original[at + len(full_value) :]
+
+
+def _value_position(line: str, finding: Finding) -> int | None:
+    """Where on *line* the finding's value is replaced, or None.
+
+    A native value comes from an anchored pattern match, so its first
+    occurrence is it. An ingested value is whatever the report says (SR-15),
+    so only an occurrence that stands as a whole token counts, with the same
+    word boundaries the stray-copy sweep uses: 'pass' is never replaced
+    inside 'password'.
+    """
+    value = finding['full_value']
+    if not finding['type'].startswith('external:'):
+        at = line.find(value)
+        return at if at >= 0 else None
+    match = re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', line)
+    return match.start() if match else None
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +625,18 @@ def batch_replace_in_file(
                 continue
 
             original = lines[idx]
-            if full_value not in original:
+            at = _value_position(original, finding)
+            if at is None and full_value in original:
+                logger.warning(
+                    'Reported value on line %d in %s appears only inside a longer word, '
+                    'so it is not replaced there. Check the report.',
+                    lineno,
+                    filepath,
+                )
+                failed += 1
+                failed_lines.add(lineno)
+                continue
+            if at is None:
                 if finding['type'].startswith('external:'):
                     # K-5/K03: for an ingested finding this is almost always a
                     # stale report (line drift, rotated value, .git/objects
@@ -633,9 +661,9 @@ def batch_replace_in_file(
 
             replacement, takes_quotes = _make_replacement(finding, config, filepath)
             if takes_quotes:
-                lines[idx] = _replace_quoted(original, full_value, replacement)
+                lines[idx] = _replace_quoted(original, full_value, replacement, at)
             else:
-                lines[idx] = original.replace(full_value, replacement, 1)
+                lines[idx] = original[:at] + replacement + original[at + len(full_value) :]
             replaced += 1
 
         # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by

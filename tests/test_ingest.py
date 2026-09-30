@@ -3614,3 +3614,48 @@ def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):
     assert [m.split(' finding')[0] for m in messages if 'plain label' in m] == ['2 Gitleaks']
     assert [m.split(' finding')[0] for m in messages if 'commit id' in m] == ['2 Gitleaks']
     assert not [m for m in messages if 'TruffleHog' in m]
+
+
+def _record_for(parser, tmp_path, secret, line_text):
+    """One record reporting *secret* on line 1 of src/app.py, which holds
+    *line_text*; returns (ingest, report, target)."""
+    target = tmp_path / 'repo'
+    (target / 'src').mkdir(parents=True)
+    (target / 'src' / 'app.py').write_text(line_text + '\n', encoding='utf-8')
+    if parser == 'gitleaks':
+        rec = _make_gitleaks_finding(File='src/app.py', StartLine=1, Secret=secret, Match=line_text)
+        return ingest_gitleaks, _write_report(tmp_path, [rec]), target
+    if parser == 'betterleaks':
+        rec = _make_betterleaks_finding(
+            File='src/app.py',
+            Attributes={'path': 'src/app.py', 'resource': 'fs.content'},
+            StartLine=1,
+            Secret=secret,
+            Match=line_text,
+        )
+        return ingest_betterleaks, _write_betterleaks_report(tmp_path, [rec]), target
+    rec = _make_trufflehog_finding(
+        Raw=secret, SourceMetadata={'Data': {'Filesystem': {'file': 'src/app.py', 'line': 1}}}
+    )
+    return ingest_trufflehog, _write_ndjson(tmp_path, [rec]), target
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestImplausibleSecrets:
+    """SR-15 (D2-B): a secret under 4 characters, or one that is itself a
+    credential name, is reported but never drives a rewrite."""
+
+    @pytest.mark.parametrize('secret', ['a', 'ab', 'api', 'password', 'API_KEY', 'token'])
+    def test_kept_and_refused(self, tmp_path, parser, secret, caplog):
+        ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert finding['full_value'] == secret
+        assert finding.get('refuse_reason')
+        assert any('too short or a credential name' in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize('secret', ['hunt', 'Hx7Kq2Lm9Pz4'])
+    def test_plausible_secret_is_not_refused(self, tmp_path, parser, secret):
+        ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
+        (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert 'refuse_reason' not in finding

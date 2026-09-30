@@ -77,6 +77,7 @@
     "line": 1,
     "preview": "14c2529eb4498c5d",
     "raw": "<v:14c2529eb4498c5d>_key = load()",
+    "refuse_reason": "the reported secret is too short or a credential name to be replaced safely; check the report and fix the value by hand",
     "severity": "medium",
     "type": "external:gitleaks:generic",
     "value": "14c2529eb4498c5d"
@@ -107,7 +108,17 @@
   ],
   [
    "WARNING",
+   "1 Gitleaks finding(s) report a secret too short or a credential name: they are reported, but not rewritten.",
+   1
+  ],
+  [
+   "WARNING",
    "3 finding(s) in file(s) with ingested findings could not be applied \u2014 if the tree changed since the scan, the report is stale: regenerate it and re-run.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/short.py:1: not rewritten: the reported secret is too short or a credential name to be replaced safely; check the report and fix the value by hand.",
    1
   ],
   [
@@ -131,7 +142,7 @@
    1
   ]
  ],
- "note": "current behaviour for SR-15, SR-17, SR-24 and PA-05; app.py and dsn.py are positive controls that must keep redacting",
+ "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17, SR-24 and PA-05 are still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
  "reported": true,
  "tree_after": {
   "README.md": "3f9b732624bc20f8",
@@ -143,8 +154,7 @@
   "lines.py": "45a8413dbe30dc78",
   "lines.py.bak": "0c24368e177fd09f",
   "report/gl.json": "e0d588d70afdff6f",
-  "short.py": "f3c5ee5b2734548e",
-  "short.py.bak": "8ee075c4c8213876",
+  "short.py": "8ee075c4c8213876",
   "stale.py": "9e26bf369911c45c",
   "stale.py.bak": "9e26bf369911c45c"
  }

@@ -22,6 +22,16 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   symlinks, and the redactor applies it again to any path it is given. A report
   named in the config file's `[ingest]` table is named on stderr before a run
   that can write.
+- **A reported secret is replaced only where it stands as a whole token.** An
+  ingested secret is matched as text on the reported line, and its first
+  occurrence was replaced even inside a longer word, so a report giving `pass`
+  for a line holding `password` rewrote part of the name and left the real
+  value. A secret under 4 characters, or one that is a credential name such as
+  `password` or `api_key`, is now reported and counted as unresolved (exit 1)
+  but not written, with a warning to fix it by hand. A longer one is replaced
+  where it stands as a whole token; if it appears on the line only inside a
+  longer word, the line is left alone and the finding is counted as not
+  fixed.
 - **`--replace-with env` no longer names the variable after the secret.** The
   env var name comes from the variable name, XML key or report rule id, and
   one that spelled the secret left an uppercased copy of it in the redacted

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ._log import logger
+from .patterns import CRED_VAR_PATTERNS
 from .types import SEVERITY_RANK, Finding
 from .utils import KnownSecrets, in_git_dir, is_within_root, name_secrets, preview, read_lines
 
@@ -186,6 +187,36 @@ def _mark_git_path(
             stats['protected_path'] += 1
 
 
+# SR-15 (decision D2, floor of 4): a reported secret this short, or one that
+# is itself a credential name, would be replaced wherever it happens to occur
+# ('a' inside 'api_key'). It is reported, but never drives a rewrite.
+_MIN_REPORTED_SECRET = 4
+_IMPLAUSIBLE_REASON = (
+    'the reported secret is too short or a credential name to be replaced safely; '
+    'check the report and fix the value by hand'
+)
+
+
+def _mark_implausible(finding: Finding, stats: dict[str, Any] | None) -> None:
+    secret = finding['full_value']
+    if len(secret) >= _MIN_REPORTED_SECRET and not CRED_VAR_PATTERNS.fullmatch(secret):
+        return
+    finding.setdefault('refuse_reason', _IMPLAUSIBLE_REASON)
+    if stats is not None:
+        stats['implausible'] += 1
+
+
+def _warn_implausible(stats: dict[str, Any], start: int, scanner_name: str) -> None:
+    count = stats['implausible'] - start
+    if count:
+        logger.warning(
+            '%d %s finding(s) report a secret too short or a credential name: '
+            'they are reported, but not rewritten.',
+            count,
+            scanner_name,
+        )
+
+
 def _warn_git_paths(stats: dict[str, Any], start: int, scanner_name: str) -> None:
     count = stats['protected_path'] - start
     if count:
@@ -199,7 +230,7 @@ def _warn_git_paths(stats: dict[str, Any], start: int, scanner_name: str) -> Non
 
 
 # Counters that each parser reports on, as a delta against the shared stats.
-_FIXED_UP_KEYS = ('relabelled', 'bad_commit', 'protected_path')
+_FIXED_UP_KEYS = ('relabelled', 'bad_commit', 'protected_path', 'implausible')
 
 
 def _counts_at_start(stats: dict[str, Any]) -> dict[str, int]:
@@ -213,6 +244,7 @@ def _warn_fixed_up(
     _warn_relabelled(stats, start['relabelled'], scanner_name, label_field)
     _warn_bad_commits(stats, start['bad_commit'], scanner_name)
     _warn_git_paths(stats, start['protected_path'], scanner_name)
+    _warn_implausible(stats, start['implausible'], scanner_name)
 
 
 def _warn_relabelled(stats: dict[str, Any], start: int, scanner_name: str, field: str) -> None:
@@ -292,6 +324,7 @@ def new_ingest_stats() -> dict[str, Any]:
         'relabelled': 0,
         'bad_commit': 0,
         'protected_path': 0,
+        'implausible': 0,
     }
 
 
@@ -604,6 +637,7 @@ def ingest_gitleaks(
         if commit:
             finding['commit'] = commit
         _mark_git_path(finding, raw_file, target_resolved, stats)
+        _mark_implausible(finding, stats)
 
         findings.append(finding)
 
@@ -922,6 +956,7 @@ def ingest_betterleaks(
         if isinstance(comps, list) and comps:
             component_sets += 1
         _mark_git_path(finding, raw_file, target_resolved, stats)
+        _mark_implausible(finding, stats)
 
         findings.append(finding)
 
@@ -1137,6 +1172,7 @@ def _parse_trufflehog_record(
     if commit:
         finding['commit'] = commit
     _mark_git_path(finding, file_path_raw, target_resolved, stats)
+    _mark_implausible(finding, stats)
 
     return finding
 

@@ -707,6 +707,11 @@ Verified behaviour and **requirements**:
   1, but it is **never rewritten**: fix it by hand and rotate the credential.
   A report named in the config file's `[ingest]` table is named on stderr
   before a run that can write.
+- A reported secret under **4 characters**, or one that is a credential name
+  such as `password`, is reported and counted but **never rewritten**, since
+  it would match ordinary text on the line. A longer one is replaced only
+  where it stands as a whole token: a line that holds it only inside a longer
+  word is left alone and counted as not fixed.
 - Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule

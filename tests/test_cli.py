@@ -541,6 +541,116 @@ class TestIngestIntoGit:
         assert f'Applying the Gitleaks report {report}' in capsys.readouterr().err
 
 
+class TestIngestedValuesAtTheSink:
+    """SR-15: an ingested value is only replaced where it stands as a whole
+    token, and an implausible one is never written."""
+
+    def _run_fix(self, tmp_path, secret, line_text):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        target = repo / 'src' / 'app.py'
+        target.write_text(line_text + '\n', encoding='utf-8')
+        report = tmp_path / 'gl.json'
+        record = {
+            'File': 'src/app.py',
+            'StartLine': 1,
+            'Secret': secret,
+            'Match': line_text,
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        before = target.read_bytes()
+        codes = []
+        for argv in (['--ci'], ['--fix-all', '--yes', '--no-backup']):
+            with pytest.raises(SystemExit) as exc_info:
+                main([*argv, '--from-gitleaks', str(report), str(repo)])
+            codes.append(exc_info.value.code)
+        return codes, before, target.read_bytes()
+
+    @pytest.mark.parametrize('secret', ['a', 'api', 'password'])
+    def test_implausible_secret_leaves_the_file_alone(self, tmp_path, secret):
+        codes, before, after = self._run_fix(tmp_path, secret, 'api_key = load_password()')
+        assert codes == [1, 1]
+        assert after == before
+
+    def test_value_only_inside_a_longer_word_is_not_replaced(self, tmp_path, capsys):
+        codes, before, after = self._run_fix(tmp_path, 'pass', 'password_hint = compass()')
+        assert codes == [1, 1]
+        assert after == before
+        assert 'only inside a longer word' in capsys.readouterr().err
+
+    def test_realistic_secret_still_redacts(self, tmp_path):
+        codes, _, after = self._run_fix(tmp_path, 'Hx7Kq2Lm9Pz4Wr5', 'k = "Hx7Kq2Lm9Pz4Wr5"')
+        assert codes == [1, 0]
+        assert b'Hx7Kq2Lm9Pz4Wr5' not in after
+
+    def test_whole_token_is_replaced_not_the_first_occurrence(self, tmp_path):
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text('passport = "pass"\n', encoding='utf-8')
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'pass',
+            'value_preview': 'pass',
+            'raw': 'passport = "pass"',
+        }
+        assert batch_replace_in_file(str(path), [finding], Config(no_backup=True)) == (1, 0)
+        assert path.read_text(encoding='utf-8').startswith('passport = "')
+        assert '"pass"' not in path.read_text(encoding='utf-8')
+
+    def test_env_mode_fallback_replaces_the_whole_token(self, tmp_path):
+        # Not a quoted literal of its own, so env mode falls back to the sentinel.
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text('note = "passport pass"\n', encoding='utf-8')
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'pass',
+            'value_preview': 'pass',
+            'raw': 'note = "passport pass"',
+        }
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(str(path), [finding], config) == (1, 0)
+        assert path.read_text(encoding='utf-8') == 'note = "passport REDACTED_BY_CREDACTOR"\n'
+
+    def test_password_in_a_connection_string_still_redacts(self, tmp_path):
+        # ':' and '@' are token boundaries. Called on the sink directly: the
+        # native scanner reports the whole URL, which would redact it first.
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text(
+            'DSN = "postgres://app:Hx7Kq2Lm9Pz4Wr5@db.example.com/app"\n', encoding='utf-8'
+        )
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'Hx7Kq2Lm9Pz4Wr5',
+            'value_preview': 'Hx7Kq2Lm9Pz4Wr5',
+            'raw': path.read_text(encoding='utf-8').rstrip(),
+        }
+        assert batch_replace_in_file(str(path), [finding], Config(no_backup=True)) == (1, 0)
+        after = path.read_text(encoding='utf-8')
+        assert 'Hx7Kq2Lm9Pz4Wr5' not in after
+        assert 'postgres://app:' in after and '@db.example.com/app' in after
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 
