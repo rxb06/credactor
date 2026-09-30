@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from credactor.gitignore import matches_gitignore, parse_gitignore_file
 
 
@@ -12,7 +14,16 @@ class TestParseGitignoreFile:
     loader was test-only and is gone)."""
 
     def _parse(self, tmp_dir):
-        return parse_gitignore_file(os.path.join(tmp_dir, '.gitignore'), Path(tmp_dir).resolve())
+        base = Path(tmp_dir).resolve()
+        return parse_gitignore_file(os.path.join(tmp_dir, '.gitignore'), base, root=base)
+
+    @pytest.mark.parametrize('sep', ['\x1c', '\x0c', '\x0b', '\x85', chr(0x2028), chr(0x2029)])
+    def test_lines_split_only_at_line_ends_like_git(self, tmp_dir, sep):
+        # Git splits an ignore file at newlines only, so these characters stay
+        # inside a comment line instead of starting a pattern.
+        with open(os.path.join(tmp_dir, '.gitignore'), 'w', encoding='utf-8', newline='') as fh:
+            fh.write(f'# build artifacts{sep}src/\r\n*.log\n')
+        assert [p for p, _ in self._parse(tmp_dir)] == ['*.log']
 
     def test_missing_file_returns_empty(self, tmp_dir):
         assert self._parse(tmp_dir) == []

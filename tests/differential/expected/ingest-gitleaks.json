@@ -1,0 +1,73 @@
+{
+ "argv": [
+  "--ci",
+  "--from-gitleaks",
+  "report/gitleaks.json",
+  "."
+ ],
+ "case": "ingest-gitleaks",
+ "exit": 1,
+ "findings": {
+  "README.md": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "token: <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "external:gitleaks:github-pat",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "INFO",
+   "Deduplicated 1 finding(s).",
+   1
+  ],
+  [
+   "INFO",
+   "Skipping Gitleaks finding with an empty or unusable Secret.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 Gitleaks record(s) skipped as invalid (non-object entry, or empty/missing Secret or File) \u2014 check the report and scanner version; an all-invalid report is otherwise indistinguishable from a clean scan.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 ingested finding(s) reference files that no longer exist and were skipped (moved or deleted since the scan?) \u2014 regenerate the scanner report if the tree has changed.",
+   1
+  ],
+  [
+   "WARNING",
+   "Gitleaks finding references missing file '<root>/gone.py'; skipping.",
+   1
+  ],
+  [
+   "WARNING",
+   "Skipping Gitleaks finding: path '../outside.py' resolves outside target directory (possible path traversal).",
+   1
+  ]
+ ],
+ "note": "report kept inside the tree on purpose; it is .json so not scanned natively",
+ "reported": true,
+ "tree_after": {
+  "README.md": "54c3f0c4e3786920",
+  "app.py": "aef561de5aaa378b",
+  "report/gitleaks.json": "7e678e0ab62bc746"
+ }
+}

@@ -182,7 +182,10 @@ Scans only files staged in git (`git diff --cached`), reading the **staged index
 blob**. **Read-only: it forces dry-run even with `--fix-all`** (a pre-commit hook
 must never rewrite the tree mid-commit). Verified: `--staged --fix-all --yes` on a
 staged secret exits **1** and leaves the working file **unmodified**. In a
-non-git directory it exits **2** (see below).
+non-git directory it exits **2** (see below). It also exits **2** when git
+cannot list the staged files (a damaged index, say) or cannot read one of
+them, with or without `--fail-on-error`: a hook cannot call a commit clean
+that it could not read.
 The staged set is repo-wide but the scan is **scoped to the target
 directory**: staged files outside it are skipped with a run-level `[WARN]`
 naming the count — run `--staged` from the **repository root** (as the
@@ -206,7 +209,9 @@ credactor --staged --ci          # canonical pre-commit gate
 Scans up to the 100 most recent **file-changing** commits of `git log -p`,
 reporting the commit hash where each secret was introduced. Verified: finds a
 secret that was committed then removed from the working tree. In a non-git
-directory it exits **2**; a **file** target is rejected (exit 2). In `-f
+directory it exits **2**; a **file** target is rejected (exit 2). If `git log`
+fails in a repository, the run exits **2**, except in one with no commits on
+any branch, which has nothing to scan and exits **0**. In `-f
 json`/`-f sarif` output a history finding's `file` field carries the
 synthetic `path (commit <hash>)` form — the hash is also in the separate
 `commit` field, so join pipelines on `commit`, not `file`.
@@ -245,7 +250,10 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   name: a *variable* finding `api_key = …` → `os.environ["API_KEY"]`; a *pattern*
   finding (a `ghp_…` token) → `os.environ["GITHUB_TOKEN"]`. Verified for Python
   (`os.environ[...]`), JS (`process.env[...]`), Ruby (`ENV[...]`); Java/Go/PHP
-  forms are covered by the test suite.
+  forms are covered by the test suite. A name that would share 8 letters or
+  digits in a row with the secret itself (case and separators ignored; only
+  the secret part of a URL or PEM value is compared) becomes `CREDENTIAL`, so
+  the rewritten line cannot hold a copy of the secret.
 - **Replacement is validated** (allowlist `[A-Za-z0-9_-]+`): a dangerous value
   (`bad;rm -rf`, markup, newlines, control chars) is **rejected with exit 2**
   (verified). This guards against injection into rewritten files. An **empty**
@@ -391,7 +399,15 @@ journaling filesystems.
 
 Human-readable report; the credential is masked to its first 4 characters +
 `[REDACTED]`. `--no-color` strips ANSI codes (auto-disabled when stdout is not a
-terminal). Verified output:
+terminal). Paths, source lines and types are printed safe for a terminal or a
+CI log: escape sequences are removed; control, line-break and bidirectional
+characters, and bytes that could not be decoded, show as `?` (a tab as a
+space); and CI workflow command markers
+(`::` at the start of a line, `##[` and `##vso[`) are broken with a `?`. The
+same applies to the values in warnings on stderr. JSON and SARIF are not
+sanitized for terminals: they escape control characters, and write the command
+markers with a JSON escape (`#\u0023[`), so the data is unchanged. Verified
+output:
 
 ```text
 ======================================================================
@@ -411,6 +427,16 @@ terminal). Verified output:
 Machine-readable. Verified top-level keys: `findings`, `count`; each finding:
 `file`, `line`, `type`, `severity`, `value` (masked), `commit`. The full secret
 never appears (verified — masked in JSON and SARIF).
+
+A secret found in the run is also masked where it appears in a path, in every
+format: the text report adds a note under the `FILE:` line, and the SARIF
+message says the same. Paths and types are masked only with values of at
+least 8 characters that are not a plain number or a plain word (letters in
+one case, or capitalised), so a password that is also a word does not change
+unrelated paths or rule ids. Such a path no longer points at the file (in SARIF, the
+annotation link breaks); rename the file or directory as part of the fix. File names are
+not scanned, so a secret that appears only in a name is neither found nor
+masked.
 
 ```bash
 credactor --ci -f json . > findings.json
@@ -505,7 +531,10 @@ even if its extension is not in this list.
 
 Exit **2** if any file could not be scanned (permissions, encoding, a
 non-regular file such as an in-tree FIFO) — including a directory that could
-not be traversed (warned and counted).
+not be traversed (warned and counted), and a `.gitignore` or `.credactorignore`
+that is refused: not a regular file, or a symlink that leaves the scan root.
+The scan goes on without that file's patterns. An ignore file over 1 MiB is
+read up to 1 MiB, with a warning, and is not an error.
 Verified: a directory whose only file is unreadable exits **0** without the
 flag (a warning only) and **2** with it. Two scope notes: size- and
 type-based skips (the 50 MB per-file cap, unscanned extensions, `.json`
@@ -673,11 +702,35 @@ Verified behaviour and **requirements**:
   `Verified: true` duplicate escalates a native medium to critical). The
   priority therefore decides only which `type` string survives an exact
   collision, never which finding is kept or at what severity.
+- An ingested finding under **`.git`** (a token in a remote URL in
+  `.git/config`, say) is reported and counted, so `--ci` and `--fix-all` exit
+  1, but it is **never rewritten**: fix it by hand and rotate the credential.
+  This holds when the scan target is `.git` itself or a directory inside it.
+  A report named in the config file's `[ingest]` table is named on stderr
+  before a run that can write (not under `--ci`, `--dry-run`, `--staged` or
+  `--scan-history`).
+- A finding whose report gives **no valid line number** (the field is missing,
+  or is not a whole number of at least 1) is reported at **line 0** and counted,
+  so `--ci` and `--fix-all` exit 1, but it is **never rewritten**, since the
+  line to change is unknown. In SARIF it names the file with no region.
+- A reported secret that is not one plausible token is reported and counted
+  but **never rewritten**, since it would match ordinary text on the line:
+  one with fewer than **4** letters, digits or underscores, one with
+  whitespace at either end or a line break in it, or one that reads as a
+  credential name (such as `password`, `db_password` or `x-api-key`: 64
+  characters or fewer, no digit, and matched whole by the credential variable
+  name pattern). So `Secret_2024` is still rewritten. Any other one is replaced only
+  where it stands as a whole token (no ASCII letter, digit or underscore on
+  either side): a line that holds it only inside a longer word is left alone
+  and counted as not fixed, and its value is not swept from other lines.
 - Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule
   ids the `:` is sanitised to `-`) — filter on these in `-f json`
-  pipelines. Severity maps from a per-rule table for Gitleaks (with a
+  pipelines. A `RuleID` or `DetectorName` that is not a plain label (letters,
+  digits, `.`, `_` or `-`, at most 64 characters) is reported as `unknown`, and
+  the run warns with the count; the finding itself is kept. A secret value
+  that appears in a type is masked there like anywhere else. Severity maps from a per-rule table for Gitleaks (with a
   `Tags` override); for TruffleHog, `Verified: true` is always **critical**.
 - **Betterleaks severity** comes from the same per-rule table and the same
   `Tags` override as Gitleaks, because Betterleaks inherits the Gitleaks rule
@@ -744,7 +797,15 @@ Verified behaviour and **requirements**:
     record(s) skipped as invalid` summary (either scanner; for TruffleHog
     this covers parsed records with unusable fields — an unparseable NDJSON
     *line* follows the parse contract above), so an all-invalid report is
-    never byte-indistinguishable from a clean run. A finding whose
+    never byte-indistinguishable from a clean run. Only an unusable path or
+    secret makes a record invalid (a secret holding a lone surrogate, which
+    no scanner writes, counts as unusable). A label field of the wrong type is
+    replaced instead and the finding is kept: a rule id becomes `unknown`, bad
+    `Tags` entries and a non-string `ValidationStatus` are ignored, and a bad
+    commit id is dropped. If a record still cannot be read, it is read again
+    from its path, line and secret alone and kept with the rule `unknown`, or
+    counted invalid when that fails too, with a warning naming the record;
+    it never crashes the run. A finding whose
     path resolves **to the report file itself** is skipped to avoid
     self-corruption, with only a `-v` INFO note — **keep reports outside the
     target tree**: `.json` files are not scanned natively without
@@ -856,7 +917,15 @@ reported them.
 ### Symlinks and `SymlinkFile`
 
 An ingested finding whose path is a symlink **dereferences and redacts the
-real file** (containment is checked after resolution). The native scan
+real file** (containment is checked after resolution). The link itself is
+never rewritten. The run warns once for each such path, naming the path the
+report gave and the file it resolves to (`Gitleaks finding path 'link.py'
+goes through a symlink; it is taken as its target 'real.py'.`), so a rewrite
+of a file the report did not name is never silent. A symlinked directory on
+the way counts the same. A link above the scan target (macOS's `/tmp`, or a
+CI workspace reached through one, when the report gives absolute paths) does
+not count. A path that cannot be resolved at all, such as a symlink loop, is
+skipped as an invalid record. The native scan
 differs on two points: it *scans* within-root symlinked files (only symlinks
 resolving outside the root are skipped) but *refuses to redact* them — and
 when a native finding at the symlink path wins deduplication over its
@@ -882,6 +951,17 @@ unresolved, exit 1): its match value is only the `-----BEGIN` header line, so
 a line-based replacement would rewrite the header, leave the entire key
 material in the file, and make the next scan report it clean. Rotate the key
 and remove the block manually — redaction never half-eats a key block.
+
+The refusal does not depend on the finding's type. Any finding whose value
+holds a `-----BEGIN` or `-----END` marker with `PRIVATE KEY` (in any case) is
+refused, so an ingested finding whose secret is only a key's header line is
+refused as well, whatever the report's rule is called. No replacement, and no
+sweep for copies of a redacted value, changes a line that holds such a marker:
+a finding on that line is counted failed, and a copy left on it is named in a
+warning. The one exception is a value that holds the whole key, BEGIN to END,
+on one line (a service-account JSON file keeps its key that way): replacing it
+removes the key and both markers, so it is redacted, as long as no marker is
+left on the line afterwards.
 
 Betterleaks findings follow the external rule above. Betterleaks' `Match`
 field can span lines for some rules, so the `raw` context line of an ingested
@@ -933,7 +1013,7 @@ Verified across the scenarios above:
 |------|---------|
 | `0` | No findings, or all resolved/redacted |
 | `1` | Unresolved findings detected (incl. `--dry-run`/`--ci`/`--staged`/`--scan-history` with findings) |
-| `2` | Error: path not found; a target that is neither a regular file nor a directory (a FIFO/device); system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories |
+| `2` | Error: path not found; a target that is neither a regular file nor a directory (a FIFO/device); system/home/protected directory; explicit `--config` missing/unreadable/invalid-TOML, or refused under `--ci` (outside project root); dangerous `--replacement`; `--ci --fix-all`; `--scan-history` + ingestion; ingestion with a file target; a missing/unreadable/unparseable/oversized ingestion report file or an empty `--from-*` flag or `[ingest]` config value; `--staged`/`--scan-history` outside a git repo, combined with each other, or with a file target; `--fail-on-error` with unreadable files or undescendable directories; a failing `git diff --cached` or `git log` in a repository (not history in one with no commits yet); under `--staged`, a staged file that cannot be read; an unexpected internal error (the traceback is printed to stderr) |
 
 Two adjacent notes: **Ctrl-C during a scan exits 130**; at an interactive
 `Replace?` or `--fix-all` `Proceed?` prompt it is caught (the run reports and

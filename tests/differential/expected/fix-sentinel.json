@@ -1,0 +1,83 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "."
+ ],
+ "case": "fix-sentinel",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "323725e8eff4df0a",
+    "raw": "password = \"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "323725e8eff4df0a"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "1a5d44a2dca19669",
+    "raw": "# note <v:1a5d44a2dca19669>",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "cfg.yaml": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "token: \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "key.pem": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "<root>/key.pem:1: refusing to redact a multi-line private key block: replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
+   1
+  ],
+  [
+   "WARNING",
+   "Plaintext backup created beside original file.\n  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.",
+   1
+  ]
+ ],
+ "note": "rewritten bytes and .bak bytes are hashed; the PEM block is refused",
+ "reported": true,
+ "tree_after": {
+  "app.py": "77b0a375e0c6548b",
+  "app.py.bak": "b290490680c5cfce",
+  "cfg.yaml": "14fe59e123fa3cf5",
+  "cfg.yaml.bak": "9ba3471a715bee86",
+  "key.pem": "a6ff0fdb8882fe94"
+ }
+}

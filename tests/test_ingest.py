@@ -5,8 +5,11 @@ Target: ~23 tests for the Gitleaks ingestion path.
 
 from __future__ import annotations
 
+import io
 import json
+import logging
 import os
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -24,7 +27,9 @@ from credactor.ingest import (
     ingest_betterleaks,
     ingest_gitleaks,
     ingest_trufflehog,
+    new_ingest_stats,
 )
+from credactor.report import json_report, print_report, sarif_report
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1975,9 +1980,10 @@ class TestBetterleaksFieldMapping:
         results = ingest_betterleaks(str(report), str(target))
         assert results[0]['line'] == 1
 
-    def test_bad_start_line_coerced_to_one(self, tmp_path):
-        """StartLine must end up an int >= 1 — a 0, a negative or a string would
-        index the wrong line (or raise) during raw synthesis and redaction."""
+    def test_bad_start_line_kept_at_zero_and_refused(self, tmp_path):
+        """PA-05: a StartLine that is not an int >= 1 does not become
+        line 1, which the report never named. The finding is kept at line 0
+        and refused, so it cannot choose a line to rewrite."""
         target, _ = _make_bl_target(tmp_path)
         for bad in (0, -3, 'seven', None, 1.5, True):
             finding = _make_betterleaks_finding()
@@ -1985,7 +1991,8 @@ class TestBetterleaksFieldMapping:
             report = _write_betterleaks_report(tmp_path, [finding])
             results = ingest_betterleaks(str(report), str(target))
             assert len(results) == 1, f'Finding dropped for StartLine={bad!r}'
-            assert results[0]['line'] >= 1, f'line not coerced for StartLine={bad!r}'
+            assert results[0]['line'] == 0, f'StartLine={bad!r}'
+            assert results[0].get('refuse_reason'), f'StartLine={bad!r}'
 
     def test_long_secret_preview_truncated_but_value_intact(self, tmp_path):
         """value_preview is display-only; full_value must never be truncated —
@@ -3327,3 +3334,914 @@ class TestRedactedReportIsFatal:
             assert len(results) == 1, f'Wrongly rejected Secret={secret!r}'
             assert results[0]['full_value'] == secret
         _read_file_lines.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# PA-04: report-controlled labels
+# ---------------------------------------------------------------------------
+
+
+def _gitleaks_case(tmp_path: Path, label):
+    target, _ = _make_target(tmp_path)
+    report = _write_report(tmp_path, [_make_gitleaks_finding(RuleID=label)])
+    return ingest_gitleaks, report, target, 'AKIAIOSFODNN7EXAMPLE', 'Gitleaks'
+
+
+def _betterleaks_case(tmp_path: Path, label):
+    target, _ = _make_bl_target(tmp_path)
+    report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(RuleID=label)])
+    return ingest_betterleaks, report, target, _BL_SECRET, 'Betterleaks'
+
+
+def _trufflehog_case(tmp_path: Path, label):
+    target, _ = _make_th_target(tmp_path)
+    report = _write_ndjson(tmp_path, [_make_trufflehog_finding(DetectorName=label)])
+    return ingest_trufflehog, report, target, 'AKIAIOSFODNN7EXAMPLE', 'TruffleHog'
+
+
+_PARSER_CASES = {
+    'gitleaks': _gitleaks_case,
+    'betterleaks': _betterleaks_case,
+    'trufflehog': _trufflehog_case,
+}
+_PARSER_SECRETS = {
+    'gitleaks': 'AKIAIOSFODNN7EXAMPLE',
+    'betterleaks': _BL_SECRET,
+    'trufflehog': 'AKIAIOSFODNN7EXAMPLE',
+}
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestReportLabels:
+    """A report's rule or detector name becomes the finding type and, in SARIF,
+    the rule id. Only a plain label is kept, and a secret in one is masked in
+    every output format."""
+
+    def _ingest(self, tmp_path, parser, label):
+        ingest, report, target, secret, name = _PARSER_CASES[parser](tmp_path, label)
+        findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 1, 'the finding is kept whatever its label'
+        return findings, target, secret, name
+
+    @staticmethod
+    def _outputs(findings, target) -> dict[str, str]:
+        buf = io.StringIO()
+        print_report(findings, str(target), no_color=True, stream=buf)
+        return {
+            'text': buf.getvalue(),
+            'json': json_report(findings, str(target)),
+            'sarif': sarif_report(findings, str(target)),
+        }
+
+    @pytest.mark.parametrize('prefix', ['', 'rule-'])
+    def test_secret_in_a_label_is_masked_everywhere(self, tmp_path, parser, prefix):
+        secret = _PARSER_SECRETS[parser]
+        findings, target, _, _ = self._ingest(tmp_path, parser, prefix + secret)
+        assert findings[0]['type'] == f'external:{parser}:{prefix}{secret}', 'a plain label is kept'
+        outputs = self._outputs(findings, target)
+        for fmt, text in outputs.items():
+            assert secret not in text, fmt
+        masked_type = f'external:{parser}:{prefix}{secret[:4]}[REDACTED]'
+        assert f'[{masked_type}]' in outputs['text']
+        assert json.loads(outputs['json'])['findings'][0]['type'] == masked_type
+        run = json.loads(outputs['sarif'])['runs'][0]
+        (result,) = run['results']
+        (rule,) = run['tool']['driver']['rules']
+        assert rule['id'] == result['ruleId'] == masked_type.replace(':', '-')
+        assert result['ruleIndex'] == 0
+        assert rule['shortDescription']['text'] == masked_type
+        assert masked_type in rule['fullDescription']['text']
+        assert masked_type in result['message']['text']
+
+    @pytest.mark.parametrize(
+        'label',
+        [
+            'bad\x1b[31m',
+            'two words',
+            'x ' + 'AKIAIOSFODNN7EXAMPLE',
+            'line\nbreak',
+            'r' * 65,
+            '',
+            [1],
+            {'a': 1},
+            7,
+            None,
+            '##[error]x',
+            'a:b',
+            'a/b',
+            '<b>',
+            'caf' + chr(0xE9),
+            'a' + chr(0x202E) + 'b',
+        ],
+        ids=[
+            'escape',
+            'space',
+            'space-secret',
+            'newline',
+            'too-long',
+            'empty',
+            'list',
+            'dict',
+            'int',
+            'null',
+            'marker',
+            'colon',
+            'slash',
+            'markup',
+            'non-ascii',
+            'bidi',
+        ],
+    )
+    def test_anything_but_a_plain_label_becomes_unknown(self, tmp_path, parser, label, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings, target, secret, name = self._ingest(tmp_path, parser, label)
+        assert findings[0]['type'] == f'external:{parser}:unknown'
+        assert findings[0]['full_value'] == secret
+        warnings = [r.getMessage() for r in caplog.records if 'reported as' in r.getMessage()]
+        assert warnings == [
+            f'1 {name} finding(s) had a {"DetectorName" if parser == "trufflehog" else "RuleID"}'
+            " that is not a plain label (letters, digits, '.', '_' or '-', at most 64"
+            " characters); reported as 'unknown'."
+        ]
+        for fmt, text in self._outputs(findings, target).items():
+            assert secret not in text, fmt
+            assert '\x1b' not in text, fmt
+
+    @pytest.mark.parametrize('label', ['a', 'r' * 64, 'aws-access_token.v2', 'AWS'])
+    def test_plain_labels_are_kept(self, tmp_path, parser, label, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings, _, _, _ = self._ingest(tmp_path, parser, label)
+        assert findings[0]['type'] == f'external:{parser}:{label}'
+        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+
+    def test_missing_label_is_unknown_without_a_warning(self, tmp_path, parser, caplog):
+        ingest, report, target, _, _ = _PARSER_CASES[parser](tmp_path, 'x')
+        field = 'DetectorName' if parser == 'trufflehog' else 'RuleID'
+        records = (
+            [json.loads(line) for line in report.read_text().splitlines() if line]
+            if parser == 'trufflehog'
+            else json.loads(report.read_text())
+        )
+        for r in records:
+            del r[field]
+        body = (
+            '\n'.join(json.dumps(r) for r in records)
+            if parser == 'trufflehog'
+            else json.dumps(records)
+        )
+        report.write_text(body, encoding='utf-8')
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert findings[0]['type'] == f'external:{parser}:unknown'
+        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+
+
+def test_dedup_severity_log_masks_secrets_in_types(caplog):
+    # PA-04: the log names both findings' types, and an ingested type holds a
+    # report's label.
+    secret = 'AKIAIOSFODNN7EXAMPLE'
+    other = 'ghp_' + 'x9Kq2Lm8Rt4Wv6Yb1Nc3Pd5Fg7Hj0Sa2Ue4Io'
+    path = f'/repo/{secret}/app.py'  # SR-07: the path can hold one too
+    findings = [
+        _make_finding(file=path, ftype=f'external:gitleaks:{other}', severity='medium'),
+        _make_finding(file=path, ftype=f'external:trufflehog:{secret}', severity='critical'),
+        _make_finding(full_value=other, line=11),
+    ]
+    with caplog.at_level(logging.INFO, logger='credactor'):
+        result = deduplicate_findings(findings)
+    assert len(result) == 2
+    assert result[0]['severity'] == 'critical'
+    (message,) = [r.getMessage() for r in caplog.records if 'raised severity' in r.getMessage()]
+    assert secret not in message
+    assert other not in message
+    assert 'external:gitleaks:ghp_[REDACTED]' in message
+    assert 'external:trufflehog:AKIA[REDACTED]' in message
+    assert '/repo/AKIA[REDACTED]/app.py:10' in message
+
+
+def _with_commit(parser, tmp_path, commit):
+    """Write one finding carrying *commit* for *parser*; return (ingest, report, target)."""
+    if parser == 'gitleaks':
+        target, _ = _make_target(tmp_path)
+        report = _write_report(tmp_path, [_make_gitleaks_finding(Commit=commit)])
+        return ingest_gitleaks, report, target
+    if parser == 'betterleaks':
+        target, _ = _make_bl_target(tmp_path)
+        report = _write_betterleaks_report(tmp_path, [_make_betterleaks_finding(Commit=commit)])
+        return ingest_betterleaks, report, target
+    target, _ = _make_th_target(tmp_path)
+    finding = _make_trufflehog_finding(
+        SourceMetadata={'Data': {'Git': {'file': 'src/config.py', 'line': 1, 'commit': commit}}}
+    )
+    return ingest_trufflehog, _write_ndjson(tmp_path, [finding]), target
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestReportCommits:
+    """A report's commit id is emitted verbatim in JSON, so only a hex id
+    that is not part of the secret is kept."""
+
+    def _ingest(self, tmp_path, parser, commit, caplog):
+        ingest, report, target = _with_commit(parser, tmp_path, commit)
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 1, 'the finding is kept'
+        warned = [r.getMessage() for r in caplog.records if 'commit id' in r.getMessage()]
+        return findings[0], warned
+
+    @pytest.mark.parametrize(
+        'commit', ['abc1234', 'ABCDEF0123456789abcdef0123456789abcdef01', 'a1' * 32]
+    )
+    def test_hex_commit_is_kept(self, tmp_path, parser, commit, caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+        assert finding['commit'] == commit[:12]
+        assert warned == []
+
+    @pytest.mark.parametrize(
+        'commit',
+        ['##[error]abc', 'abc 1234', 'abc123', 'g' * 12, 'a' * 65, 'AKIAIOSFODNN'],
+        ids=['marker', 'space', 'short', 'not-hex', 'long', 'secret'],
+    )
+    def test_anything_else_is_dropped_and_counted(self, tmp_path, parser, commit, caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+        assert 'commit' not in finding
+        name = {'gitleaks': 'Gitleaks', 'betterleaks': 'Betterleaks', 'trufflehog': 'TruffleHog'}
+        assert warned == [
+            f'1 {name[parser]} finding(s) had a commit id that is not 7 to 64 hex characters, '
+            'or shares part of the secret; ingested without it.'
+        ]
+
+
+@pytest.mark.parametrize(
+    ('secret', 'commit', 'kept'),
+    [
+        ('deadbeefcafe0123456789ab', 'deadbeefcafe0123456789ab', False),  # the secret
+        ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
+        ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
+        ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
+    ],
+    ids=['equal', 'inside', 'overlap', 'short-overlap'],
+)
+def test_commit_sharing_the_secret_is_dropped(tmp_path, secret, commit, kept):
+    # Gitleaks only: the three parsers share _report_commit.
+    target, config_py = _make_target(tmp_path)
+    config_py.write_text(f'token = "{secret}"\n', encoding='utf-8')
+    record = _make_gitleaks_finding(Secret=secret, Match=f'token = "{secret}"', Commit=commit)
+    report = _write_report(tmp_path, [record])
+    (finding,) = ingest_gitleaks(str(report), str(target), new_ingest_stats())
+    assert ('commit' in finding) is kept
+
+
+def test_skipped_trufflehog_record_does_not_count_its_commit(tmp_path, caplog):
+    target, _ = _make_th_target(tmp_path)
+    git = {'file': 'missing.py', 'line': 1, 'commit': 'not-a-commit'}
+    record = _make_trufflehog_finding(SourceMetadata={'Data': {'Git': git}})
+    with caplog.at_level(logging.WARNING, logger='credactor'):
+        findings = ingest_trufflehog(str(_write_ndjson(tmp_path, [record])), str(target))
+    assert findings == []
+    assert not [r for r in caplog.records if 'commit id' in r.getMessage()]
+
+
+def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):
+    # The CLI passes one stats dict to every parser, so each summary is a
+    # delta against what that parser saw on entry.
+    stats = new_ingest_stats()
+    gl_target, _ = _make_target(tmp_path / 'gl')
+    gl = _write_report(tmp_path / 'gl', [_make_gitleaks_finding(RuleID='a b', Commit='x y')] * 2)
+    th_target, _ = _make_th_target(tmp_path / 'th')
+    th = _write_ndjson(tmp_path / 'th', [_make_trufflehog_finding()])
+    with caplog.at_level(logging.WARNING, logger='credactor'):
+        ingest_gitleaks(str(gl), str(gl_target), stats)
+        ingest_trufflehog(str(th), str(th_target), stats)
+    messages = [r.getMessage() for r in caplog.records]
+    assert [m.split(' finding')[0] for m in messages if 'plain label' in m] == ['2 Gitleaks']
+    assert [m.split(' finding')[0] for m in messages if 'commit id' in m] == ['2 Gitleaks']
+    assert not [m for m in messages if 'TruffleHog' in m]
+
+
+def _record_for(parser, tmp_path, secret, line_text):
+    """One record reporting *secret* on line 1 of src/app.py, which holds
+    *line_text*; returns (ingest, report, target)."""
+    target = tmp_path / 'repo'
+    (target / 'src').mkdir(parents=True)
+    (target / 'src' / 'app.py').write_text(line_text + '\n', encoding='utf-8')
+    if parser == 'gitleaks':
+        rec = _make_gitleaks_finding(File='src/app.py', StartLine=1, Secret=secret, Match=line_text)
+        return ingest_gitleaks, _write_report(tmp_path, [rec]), target
+    if parser == 'betterleaks':
+        rec = _make_betterleaks_finding(
+            File='src/app.py',
+            Attributes={'path': 'src/app.py', 'resource': 'fs.content'},
+            StartLine=1,
+            Secret=secret,
+            Match=line_text,
+        )
+        return ingest_betterleaks, _write_betterleaks_report(tmp_path, [rec]), target
+    rec = _make_trufflehog_finding(
+        Raw=secret, SourceMetadata={'Data': {'Filesystem': {'file': 'src/app.py', 'line': 1}}}
+    )
+    return ingest_trufflehog, _write_ndjson(tmp_path, [rec]), target
+
+
+@pytest.mark.parametrize('parser', sorted(_PARSER_CASES))
+class TestImplausibleSecrets:
+    """SR-15: a reported secret that is not one plausible token (under 4 word
+    characters, whitespace at an edge, a line break, or a credential name) is
+    reported but never drives a rewrite."""
+
+    @pytest.mark.parametrize(
+        'secret',
+        [
+            'a',
+            'ab',
+            'api',
+            'password',
+            'API_KEY',
+            'token',
+            'db_password',
+            'x-api-key',
+            'my_api_key',
+            'abc ',
+            ' abcd',
+            'password ',
+            '    ',
+            '----',
+            'a-b-c',
+            'abcd1234\n',
+            'ab\ncd1234',
+            'abcd1234\r',
+        ],
+    )
+    def test_kept_and_refused(self, tmp_path, parser, secret, caplog):
+        ingest, report, target = _record_for(parser, tmp_path, secret, 'x = 1')
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert finding['full_value'] == secret
+        assert finding.get('refuse_reason')
+        assert any('not a single token' in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        'secret',
+        [
+            'hunt',
+            'Hx7Kq2Lm9Pz4',
+            'Password123',
+            'token9Xk2Lm4Qp',
+            'Secret_2024',
+            'sb_secret_AbCdEf123456GhIjKl789012',
+            'password-reset-flow',
+            'abcd==',
+        ],
+    )
+    def test_plausible_secret_is_not_refused(self, tmp_path, parser, secret):
+        ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
+        (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert 'refuse_reason' not in finding
+
+
+def test_trufflehog_line_with_an_oversized_number_is_skipped(tmp_path):
+    # json.loads raises a plain ValueError for an integer over 4300 digits;
+    # the line is skipped like any other that does not parse.
+    target, _ = _make_th_target(tmp_path)
+    good = json.dumps(_make_trufflehog_finding())
+    bad = good.replace('"line": 1', '"line": 1' + '0' * 5000)
+    report = tmp_path / 'th.json'
+    report.write_text(good + '\n' + bad + '\n', encoding='utf-8')
+    assert len(ingest_trufflehog(str(report), str(target))) == 1
+
+
+@pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks'])
+def test_json_report_with_an_oversized_number_names_the_file(tmp_path, parser):
+    report = tmp_path / 'r.json'
+    report.write_text('[{"StartLine": 1' + '0' * 5000 + '}]', encoding='utf-8')
+    target, _ = _make_target(tmp_path)
+    ingest = ingest_gitleaks if parser == 'gitleaks' else ingest_betterleaks
+    with pytest.raises(ValueError, match=r'r\.json'):
+        ingest(str(report), str(target))
+
+
+def test_credential_name_check_is_linear_on_a_long_secret():
+    # SR-15: the name pattern backtracks on long input, so it runs only on a
+    # value short enough to be a name. Quadratic, this takes tens of seconds.
+    from credactor.ingest import _implausible_secret
+
+    secret = '_secret' * 15000 + '!'
+    start = time.perf_counter()
+    assert _implausible_secret(secret) is False
+    assert time.perf_counter() - start < 1.0
+
+
+# ---------------------------------------------------------------------------
+# SR-19: a malformed field never crashes a run
+# ---------------------------------------------------------------------------
+
+_SR19_SECRET = 'Hx7Kq2Lm9Pz4Wr5Tn8'
+_SR19_LINE = f'token = "{_SR19_SECRET}"'
+_SR19_BAD = [[], [1], {}, {'a': 1}, 0, 7, 1.5, None, True]
+_SR19_SURROGATE = chr(0xD800)
+
+
+def _sr19_record(parser: str) -> dict:
+    if parser == 'gitleaks':
+        return _make_gitleaks_finding(
+            File='src/app.py',
+            StartLine=1,
+            Secret=_SR19_SECRET,
+            Match=_SR19_LINE,
+            RuleID='generic-api-key',
+            Tags=['high'],
+            Commit='abcdef1234567',
+        )
+    if parser == 'betterleaks':
+        return _make_betterleaks_finding(
+            File='src/app.py',
+            Attributes={'path': 'src/app.py', 'resource': 'fs.content', 'git.sha': 'abcdef12345'},
+            StartLine=1,
+            Secret=_SR19_SECRET,
+            Match=_SR19_LINE,
+            RuleID='generic-api-key',
+            ValidationStatus='valid',
+            ComponentSets=[{'a': 1}],
+        )
+    return _make_trufflehog_finding(
+        Raw=_SR19_SECRET,
+        DetectorName='Github',
+        Verified=True,
+        SourceMetadata={
+            'Data': {'Git': {'file': 'src/app.py', 'line': 1, 'commit': 'abcdef1234567'}}
+        },
+    )
+
+
+def _sr19_set(record: dict, field: str, value) -> None:
+    *parents, last = field.split('/')
+    for key in parents:
+        record = record[key]
+    record[last] = value
+
+
+def _sr19_ingest(parser: str, tmp_path: Path, record, stats=None):
+    target = tmp_path / 'repo'
+    (target / 'src').mkdir(parents=True, exist_ok=True)
+    (target / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+    if parser == 'gitleaks':
+        ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+    elif parser == 'betterleaks':
+        ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+    else:
+        ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+    stats = stats if stats is not None else new_ingest_stats()
+    return ingest(str(report), str(target), stats), stats
+
+
+_SR19_LABEL_FIELDS = {
+    'gitleaks': ['RuleID', 'Tags', 'Commit', 'Match', 'StartLine'],
+    'betterleaks': [
+        'RuleID',
+        'Tags',
+        'Commit',
+        'Match',
+        'StartLine',
+        'ValidationStatus',
+        'ComponentSets',
+        'Attributes/resource',
+        'Attributes/git.sha',
+    ],
+    'trufflehog': [
+        'DetectorName',
+        'Verified',
+        'SourceMetadata/Data/Git/line',
+        'SourceMetadata/Data/Git/commit',
+    ],
+}
+_SR19_LOCATION_FIELDS = {
+    'gitleaks': ['Secret', 'File'],
+    'betterleaks': ['Secret', 'Attributes/path', 'SymlinkFile'],
+    'trufflehog': ['Raw', 'SourceMetadata/Data/Git/file'],
+}
+_SR19_RULE_FIELDS = {'RuleID', 'DetectorName'}
+
+
+def _sr19_cases(fields: dict) -> list:
+    return [
+        pytest.param(parser, field, value, id=f'{parser}-{field}-{value!r}')
+        for parser, names in fields.items()
+        for field in names
+        for value in _SR19_BAD
+    ]
+
+
+class TestMalformedFields:
+    """SR-19: a report field of the wrong type is replaced, not fatal. A bad
+    label keeps the finding (a bad rule id becomes unknown); a bad location
+    or secret is a counted invalid record. Neither raises."""
+
+    @pytest.mark.parametrize(('parser', 'field', 'value'), _sr19_cases(_SR19_LABEL_FIELDS))
+    def test_bad_label_keeps_the_finding(self, tmp_path, parser, field, value):
+        record = _sr19_record(parser)
+        _sr19_set(record, field, value)
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        (finding,) = deduplicate_findings(findings)
+        assert finding['full_value'] == _SR19_SECRET
+        assert stats['invalid_record'] == 0
+        if field in _SR19_RULE_FIELDS:
+            assert finding['type'] == f'external:{parser}:unknown'
+        for render in (print_report, json_report, sarif_report):
+            with mock.patch('sys.stdout', new_callable=io.StringIO):
+                render([finding], str(tmp_path / 'repo'))
+
+    @pytest.mark.parametrize(('parser', 'field', 'value'), _sr19_cases(_SR19_LOCATION_FIELDS))
+    def test_bad_location_or_secret_is_invalid(self, tmp_path, parser, field, value):
+        record = _sr19_record(parser)
+        _sr19_set(record, field, value)
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+
+    @pytest.mark.parametrize('parser', sorted(_SR19_LOCATION_FIELDS))
+    def test_secret_with_a_lone_surrogate_is_invalid(self, tmp_path, parser):
+        record = _sr19_record(parser)
+        field = 'Raw' if parser == 'trufflehog' else 'Secret'
+        record[field] = _SR19_SECRET + _SR19_SURROGATE
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+
+
+_SR19_SEVERITY = {
+    'gitleaks': '_gitleaks_severity',
+    'betterleaks': '_betterleaks_severity',
+    'trufflehog': '_trufflehog_severity',
+}
+
+
+@pytest.mark.parametrize('parser', sorted(_SR19_SEVERITY))
+class TestRecordBackstop:
+    """SR-19: an error while reading a record's other fields keeps the finding
+    from its location and secret (rule unknown), and an error there too
+    counts it invalid. A field added later cannot crash the run."""
+
+    def test_error_in_a_label_keeps_the_finding(self, tmp_path, parser, caplog):
+        from credactor import ingest as ingest_module
+
+        name = _SR19_SEVERITY[parser]
+        real = getattr(ingest_module, name)
+
+        def severity(label, *args):
+            if label != 'unknown':
+                raise TypeError('unhashable')
+            return real(label, *args)
+
+        with (
+            mock.patch(f'credactor.ingest.{name}', severity),
+            caplog.at_level(logging.WARNING, logger='credactor'),
+        ):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
+        assert finding['type'] == f'external:{parser}:unknown'
+        assert finding['full_value'] == _SR19_SECRET
+        assert finding['line'] == 1
+        assert stats['invalid_record'] == 0
+        assert any(
+            'could not be read in full (TypeError)' in r.getMessage() for r in caplog.records
+        )
+
+    def test_error_in_the_core_fields_counts_invalid(self, tmp_path, parser, caplog):
+        with (
+            mock.patch('credactor.ingest._mark_implausible', side_effect=AttributeError),
+            caplog.at_level(logging.WARNING, logger='credactor'),
+        ):
+            findings, stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
+        assert findings == []
+        assert stats['invalid_record'] == 1
+        assert any('skipped as invalid' in r.getMessage() for r in caplog.records)
+
+    def test_failed_retry_is_not_counted_either(self, tmp_path, parser):
+        # Both attempts move a counter before they fail; the record ends up
+        # counted as invalid and nothing else.
+        record = _sr19_record(parser)
+        if parser == 'gitleaks':
+            record['File'] = '.git/config'
+        elif parser == 'betterleaks':
+            record['File'] = '.git/config'
+            record['Attributes']['path'] = '.git/config'
+        else:
+            record['SourceMetadata']['Data']['Git']['file'] = '.git/config'
+        (tmp_path / 'repo' / '.git').mkdir(parents=True)
+        (tmp_path / 'repo' / '.git' / 'config').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        with mock.patch('credactor.ingest._mark_implausible', side_effect=TypeError):
+            findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+        assert stats['protected_path'] == 0
+
+    def test_failed_attempt_is_not_counted_twice(self, tmp_path, parser):
+        # The first attempt counts a relabelled rule id, then fails on the
+        # commit; the retry reads neither, so nothing stays counted.
+        record = _sr19_record(parser)
+        record['DetectorName' if parser == 'trufflehog' else 'RuleID'] = 'not a label!'
+
+        def commit(value, secret, stats):
+            if value:
+                raise KeyError('x')
+            return ''
+
+        with mock.patch('credactor.ingest._report_commit', commit):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert finding['type'] == f'external:{parser}:unknown'
+        assert stats['relabelled'] == 0
+
+
+def _salvage_on_label_error(parser):
+    # The severity call fails for any rule but 'unknown', so only the retry
+    # from the core fields succeeds.
+    from credactor import ingest as ingest_module
+
+    name = _SR19_SEVERITY[parser]
+    real = getattr(ingest_module, name)
+
+    def severity(label, *args):
+        if label != 'unknown':
+            raise TypeError('unhashable')
+        return real(label, *args)
+
+    return mock.patch(f'credactor.ingest.{name}', severity)
+
+
+def test_backstop_keeps_a_filesystem_trufflehog_record(tmp_path):
+    record = _sr19_record('trufflehog')
+    record['SourceMetadata'] = {'Data': {'Filesystem': {'file': 'src/app.py', 'line': 1}}}
+    with _salvage_on_label_error('trufflehog'):
+        (finding,), stats = _sr19_ingest('trufflehog', tmp_path, record)
+    assert finding['type'] == 'external:trufflehog:unknown'
+    assert stats['unsupported_source'] == 0
+
+
+@pytest.mark.parametrize(
+    ('parser', 'field'),
+    [('gitleaks', 'SymlinkFile'), ('betterleaks', 'SymlinkFile'), ('betterleaks', 'fs.symlink')],
+)
+def test_backstop_keeps_the_symlink_path(tmp_path, parser, field):
+    # The retry reads the symlink field like the first attempt, so it still
+    # resolves through the link and not through the real-path field.
+    (tmp_path / 'repo' / 'src').mkdir(parents=True)
+    _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+    record = _sr19_record(parser)
+    record['File'] = 'src/missing.py'
+    if parser == 'betterleaks':
+        record['Attributes']['path'] = 'src/missing.py'
+    if field == 'fs.symlink':
+        record['Attributes']['fs.symlink'] = 'src/link.py'
+    else:
+        record['SymlinkFile'] = 'src/link.py'
+    with _salvage_on_label_error(parser):
+        (finding,), _ = _sr19_ingest(parser, tmp_path, record)
+    assert finding['file'] == str((tmp_path / 'repo' / 'src' / 'app.py').resolve())
+    assert finding['type'] == f'external:{parser}:unknown'
+
+
+@pytest.mark.parametrize('parser', sorted(_SR19_SEVERITY))
+class TestGitPathsAtIngest:
+    """SR-16: every parser marks a finding under .git at ingest, as given or
+    through a symlink, so the refusal carries its reason and is counted."""
+
+    def _git_record(self, tmp_path, parser, path):
+        (tmp_path / 'repo' / '.git').mkdir(parents=True, exist_ok=True)
+        (tmp_path / 'repo' / '.git' / 'config').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        return _with_path(parser, path)
+
+    def test_path_given_under_git(self, tmp_path, parser):
+        record = self._git_record(tmp_path, parser, '.git/config')
+        (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+    def test_target_that_is_git_itself(self, tmp_path, parser):
+        # No .git component lies below the target; the whole path is checked.
+        record = self._git_record(tmp_path, parser, 'config')
+        target = tmp_path / 'repo' / '.git'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        stats = new_ingest_stats()
+        (finding,) = ingest(str(report), str(target), stats)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+    def test_symlink_into_git(self, tmp_path, parser):
+        record = self._git_record(tmp_path, parser, 'alias.py')
+        _symlink_or_skip(tmp_path / 'repo' / 'alias.py', os.path.join('.git', 'config'))
+        (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+
+@pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks'])
+def test_backstop_leaves_the_redacted_report_fatal(tmp_path, parser):
+    # SR-19: the backstop catches only type errors, never the ValueError
+    # that refuses a report written with --redact.
+    record = _sr19_record(parser)
+    record['Secret'] = 'REDACTED'
+    with pytest.raises(ValueError, match='redact'):
+        _sr19_ingest(parser, tmp_path, record)
+
+
+# ---------------------------------------------------------------------------
+# PA-05: a line number the report does not give never authorises a write
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+_BAD_LINES = [
+    pytest.param('x', id='word'),
+    pytest.param('3', id='digit-string'),
+    pytest.param(True, id='true'),
+    pytest.param(0, id='zero'),
+    pytest.param(-1, id='negative'),
+    pytest.param(1.5, id='float'),
+    pytest.param(None, id='null'),
+    pytest.param(_MISSING, id='missing'),
+]
+_LINE_FIELDS = {
+    'gitleaks': 'StartLine',
+    'betterleaks': 'StartLine',
+    'trufflehog': 'SourceMetadata/Data/Git/line',
+}
+
+
+def _with_line(parser: str, value) -> dict:
+    record = _sr19_record(parser)
+    *parents, last = _LINE_FIELDS[parser].split('/')
+    holder = record
+    for key in parents:
+        holder = holder[key]
+    if value is _MISSING:
+        del holder[last]
+    else:
+        holder[last] = value
+    return record
+
+
+@pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
+class TestInvalidLineNumbers:
+    """PA-05: an invalid or missing line number keeps the finding at
+    line 0, reported and unresolved, and refuses the write. It was line 1."""
+
+    @pytest.mark.parametrize('value', _BAD_LINES)
+    def test_kept_at_line_zero_and_refused(self, tmp_path, parser, value, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, _with_line(parser, value))
+        assert finding['line'] == 0
+        assert finding['full_value'] == _SR19_SECRET
+        assert 'line number' in finding['refuse_reason']
+        assert stats['bad_line'] == 1
+        assert stats['invalid_record'] == 0
+        assert any('no valid line number' in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize('value', [1, 2])
+    def test_valid_line_is_kept(self, tmp_path, parser, value):
+        (finding,), stats = _sr19_ingest(parser, tmp_path, _with_line(parser, value))
+        assert finding['line'] == value
+        assert 'refuse_reason' not in finding
+        assert stats['bad_line'] == 0
+
+
+# ---------------------------------------------------------------------------
+# SR-18: an ingested symlink path is followed, and the run says so
+# ---------------------------------------------------------------------------
+
+
+def _symlink_or_skip(link: Path, target: str) -> None:
+    # Windows needs to be told when the target is a directory.
+    is_dir = (link.parent / target).is_dir()
+    try:
+        os.symlink(target, link, target_is_directory=is_dir)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not supported')
+
+
+def _with_path(parser: str, path: str) -> dict:
+    record = _sr19_record(parser)
+    if parser == 'gitleaks':
+        record['File'] = path
+    elif parser == 'betterleaks':
+        record['File'] = path
+        record['Attributes']['path'] = path
+    else:
+        record['SourceMetadata']['Data']['Git']['file'] = path
+    return record
+
+
+@pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
+class TestIngestedSymlinkPaths:
+    """SR-18: a report path through a symlink is taken as the
+    file it points to, as before, with a warning naming both."""
+
+    def _ingest(self, tmp_path, parser, path, caplog):
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,), _ = _sr19_ingest(parser, tmp_path, _with_path(parser, path))
+        real = str((tmp_path / 'repo' / 'src' / 'app.py').resolve())
+        warnings = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        return finding, real, warnings
+
+    def test_link_to_a_file_is_followed_and_named(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/link.py', caplog)
+        assert finding['file'] == real
+        (message,) = warnings
+        # The target is shown with forward slashes on every platform.
+        assert "path 'src/link.py' goes through a symlink" in message
+        assert "taken as its target 'src/app.py'" in message
+
+    def test_one_warning_per_linked_path(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
+        records = [_with_path(parser, 'src/link.py') for _ in range(3)]
+        for index, record in enumerate(records):
+            _sr19_set(record, _LINE_FIELDS[parser], index + 1)
+        (tmp_path / 'repo' / 'src' / 'app.py').write_text((_SR19_LINE + '\n') * 3, encoding='utf-8')
+        target = tmp_path / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, records)
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, records)
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, records)
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            findings = ingest(str(report), str(target), new_ingest_stats())
+        assert len(findings) == 3
+        assert sum('symlink' in r.getMessage() for r in caplog.records) == 1
+
+    def test_absolute_path_through_a_linked_parent_of_the_root(self, tmp_path, parser, caplog):
+        # A link above the root is not the report naming another file.
+        real_parent = tmp_path / 'real'
+        (real_parent / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'alias', 'real')
+        (real_parent / 'repo' / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        path = str(tmp_path / 'alias' / 'repo' / 'src' / 'app.py')
+        record = _with_path(parser, path)
+        target = real_parent / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            (finding,) = ingest(str(report), str(target), new_ingest_stats())
+        assert finding['file'] == str((target / 'src' / 'app.py').resolve())
+        assert not any('symlink' in r.getMessage() for r in caplog.records)
+
+    def test_absolute_path_through_an_alias_to_a_link_inside(self, tmp_path, parser, caplog):
+        real_parent = tmp_path / 'real'
+        (real_parent / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'alias', 'real')
+        _symlink_or_skip(real_parent / 'repo' / 'src' / 'link.py', 'app.py')
+        (real_parent / 'repo' / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        record = _with_path(parser, str(tmp_path / 'alias' / 'repo' / 'src' / 'link.py'))
+        target = real_parent / 'repo'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        with caplog.at_level(logging.WARNING, logger='credactor'):
+            ingest(str(report), str(target), new_ingest_stats())
+        (message,) = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        assert "taken as its target 'src/app.py'" in message
+
+    def test_symlink_loop_does_not_end_the_run(self, tmp_path, parser):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'loop', 'loop')
+        findings, _ = _sr19_ingest(parser, tmp_path, _with_path(parser, 'loop/x.py'))
+        assert findings == []
+
+    def test_link_to_a_directory_is_followed_and_named(self, tmp_path, parser, caplog):
+        (tmp_path / 'repo' / 'src').mkdir(parents=True)
+        _symlink_or_skip(tmp_path / 'repo' / 'lnk', 'src')
+        finding, real, warnings = self._ingest(tmp_path, parser, 'lnk/app.py', caplog)
+        assert finding['file'] == real
+        (message,) = warnings
+        assert 'lnk/app.py' in message
+
+    def test_plain_path_has_no_warning(self, tmp_path, parser, caplog):
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/app.py', caplog)
+        assert finding['file'] == real
+        assert warnings == []
+
+
+@pytest.mark.parametrize('error', [RuntimeError('Symlink loop'), OSError(40, 'loop'), ValueError])
+def test_unresolvable_path_is_counted_invalid(tmp_path, error):
+    # Python 3.11 and 3.12 raise RuntimeError for a symlink loop.
+    from credactor.ingest import _resolve_external_finding_path
+
+    stats = new_ingest_stats()
+    with mock.patch.object(Path, 'resolve', side_effect=error):
+        found = _resolve_external_finding_path(
+            'x.py', str(tmp_path), str(tmp_path), scanner_name='Gitleaks', stats=stats
+        )
+    assert found is None
+    assert stats['invalid_record'] == 1

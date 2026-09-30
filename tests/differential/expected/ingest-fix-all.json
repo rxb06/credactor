@@ -1,0 +1,171 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-fix-all",
+ "exit": 1,
+ "findings": {
+  "README.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "external:gitleaks:private-key",
+    "value": "8bcac7908eb95041"
+   }
+  ],
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "<v:14c2529eb4498c5d>_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "dsn.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "0e1f844a475a96f0",
+    "raw": "DSN = \"<v:0e1f844a475a96f0>\"",
+    "severity": "high",
+    "type": "pattern:connection string",
+    "value": "0e1f844a475a96f0"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "36a72c120ba0c1b5",
+    "raw": "DSN = \"<v:0e1f844a475a96f0>\"",
+    "severity": "medium",
+    "type": "external:gitleaks:pg",
+    "value": "36a72c120ba0c1b5"
+   }
+  ],
+  "lines.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 0,
+    "preview": "b8498412b57d7cac",
+    "raw": "",
+    "refuse_reason": "the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand",
+    "severity": "critical",
+    "type": "external:gitleaks:github-pat",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "short.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "14c2529eb4498c5d",
+    "raw": "<v:14c2529eb4498c5d>_key = load()",
+    "refuse_reason": "the reported secret is too short, a credential name or not a single token, so it cannot be replaced safely; check the report and fix the value by hand",
+    "severity": "medium",
+    "type": "external:gitleaks:generic",
+    "value": "14c2529eb4498c5d"
+   }
+  ],
+  "stale.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "x = 1",
+    "severity": "critical",
+    "type": "external:gitleaks:aws-access-token",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/short.py:1 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "INFO",
+   "Deduplicated 1 finding(s).",
+   1
+  ],
+  [
+   "WARNING",
+   "1 Gitleaks finding(s) have no valid line number in the report: they are reported at line 0, but not rewritten.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 Gitleaks finding(s) report a secret that is too short, a credential name or not a single token: they are reported, but not rewritten.",
+   1
+  ],
+  [
+   "WARNING",
+   "2 finding(s) in file(s) with ingested findings could not be applied \u2014 if the tree changed since the scan, the report is stale: regenerate it and re-run.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/README.md:1: refusing to redact a multi-line private key block: replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/lines.py:0: not rewritten: the report gives no valid line number, so the line to rewrite is unknown; find the value and fix it by hand.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/short.py:1: not rewritten: the reported secret is too short, a credential name or not a single token, so it cannot be replaced safely; check the report and fix the value by hand.",
+   1
+  ],
+  [
+   "WARNING",
+   "Plaintext backup created beside original file.\n  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.",
+   1
+  ],
+  [
+   "WARNING",
+   "Reported value not found on line 1 in <root>/dsn.py: stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
+   1
+  ],
+  [
+   "WARNING",
+   "Reported value not found on line 1 in <root>/stale.py: stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
+   1
+  ]
+ ],
+ "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; PA-05: lines.py's line \"x\" is kept at line 0 and not written; SR-24 is still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
+ "reported": true,
+ "tree_after": {
+  "README.md": "a6ff0fdb8882fe94",
+  "app.py": "284f4c29bf3be045",
+  "app.py.bak": "aef561de5aaa378b",
+  "dsn.py": "d7a6b8474ea077b9",
+  "dsn.py.bak": "229873979a5b077a",
+  "lines.py": "45a8413dbe30dc78",
+  "lines.py.bak": "0c24368e177fd09f",
+  "report/gl.json": "e0d588d70afdff6f",
+  "short.py": "8ee075c4c8213876",
+  "stale.py": "9e26bf369911c45c",
+  "stale.py.bak": "9e26bf369911c45c"
+ }
+}

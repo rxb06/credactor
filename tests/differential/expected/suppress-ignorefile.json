@@ -1,0 +1,62 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "suppress-ignorefile",
+ "exit": 1,
+ "findings": {
+  "lines.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "one = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/gen/a.py suppressed by allowlist (file-level)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/ignored.py suppressed by allowlist (file-level)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/lines.py:2 suppressed by allowlist (file:line)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/values.py:1 suppressed by allowlist (value-literal)",
+   1
+  ],
+  [
+   "WARNING",
+   ".credactorignore defines 1 value-literal suppression(s); these hide any matching value everywhere with no per-finding signal; review them for detection-bypass.",
+   1
+  ],
+  [
+   "WARNING",
+   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line; re-check them after large edits.",
+   1
+  ]
+ ],
+ "note": "SR-09 adds signals for these suppressions",
+ "reported": true,
+ "tree_after": {
+  ".credactorignore": "1bfe252a3a3e83d8",
+  "gen/a.py": "aef561de5aaa378b",
+  "ignored.py": "aef561de5aaa378b",
+  "lines.py": "e9a3a8465f543440",
+  "values.py": "f18a6ac66e9c9d9a"
+ }
+}

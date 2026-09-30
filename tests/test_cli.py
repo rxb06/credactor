@@ -1,9 +1,13 @@
 """Tests for CLI argument parsing and main entry point."""
 
+import contextlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -122,6 +126,43 @@ class TestMainExitCodes:
         with pytest.raises(SystemExit) as exc_info:
             main(['--ci', target])
         assert exc_info.value.code == 1
+
+    def test_suppressed_pem_header_does_not_hide_a_key_after_it(self, make_file):
+        # SR-08: an ignored header used to hide every following line.
+        # credactor:ignore
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file(
+            'k.py', f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{key}"\n'
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize(
+        'error',
+        [
+            RuntimeError('boom\n::error::x'),
+            OSError('boom\n::error::x'),
+            ValueError('boom\n::error::x'),
+            UnicodeDecodeError('utf-8', b'boom\n::error::x', 0, 1, 'boom'),
+        ],
+        ids=['runtime', 'os', 'value', 'decode'],
+    )
+    def test_unexpected_exception_exits_2_not_1(self, monkeypatch, capsys, error):
+        # T15a: exit 1 means "findings found", so a crash must not use it.
+        from credactor import cli
+
+        def boom(argv):
+            raise error
+
+        monkeypatch.setattr(cli, '_main_inner', boom)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '.'])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert 'Traceback' in err
+        assert f'{type(error).__name__}: ' in err
+        assert not [ln for ln in err.split('\n') if ln.lstrip().startswith('::')]
 
     def test_dry_run_with_findings_exits_1(self, make_file):
         # credactor:ignore
@@ -396,6 +437,446 @@ class TestGitleaksFileTargetRejection:
         with pytest.raises(SystemExit) as exc_info:
             main(['--from-gitleaks', report, src_file])
         assert exc_info.value.code == 2
+
+
+class TestIngestIntoGit:
+    """SR-16: an ingested finding under .git is reported but never rewritten."""
+
+    TOKEN = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+
+    def _project(self, tmp_path, rel='.git/config'):
+        repo = tmp_path / 'repo'
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f'url = https://x:{self.TOKEN}@github.com/o/r.git\n', encoding='utf-8')
+        return repo, target
+
+    def _report(self, tmp_path, rel):
+        report = tmp_path / 'gl.json'
+        record = {
+            'File': rel,
+            'StartLine': 1,
+            'Secret': self.TOKEN,
+            'Match': self.TOKEN,
+            'RuleID': 'github-pat',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        return report
+
+    def _run(self, *argv):
+        with pytest.raises(SystemExit) as exc_info:
+            main(list(argv))
+        return exc_info.value.code
+
+    @pytest.mark.parametrize('rel', ['.git/config', '.git/hooks/pre-commit', 'sub/.git/config'])
+    def test_fix_all_leaves_git_untouched_and_exits_1(self, tmp_path, rel, capsys):
+        repo, target = self._project(tmp_path, rel)
+        before = target.read_bytes()
+        report = self._report(tmp_path, rel)
+        code = self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo))
+        assert code == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
+        err = capsys.readouterr().err
+        assert '.git' in err and 'not rewritten' in err
+
+    def test_ci_still_reports_it(self, tmp_path, capsys):
+        repo, _ = self._project(tmp_path)
+        report = self._report(tmp_path, '.git/config')
+        assert self._run('--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)) == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data['count'] == 1
+
+    def test_case_variant_on_a_case_insensitive_filesystem(self, tmp_path):
+        repo, target = self._project(tmp_path)
+        if not (repo / '.GIT' / 'config').exists():
+            pytest.skip('case-sensitive filesystem')
+        before = target.read_bytes()
+        report = self._report(tmp_path, '.GIT/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_symlink_into_git(self, tmp_path):
+        repo, target = self._project(tmp_path)
+        (repo / 'alias.py').symlink_to(target)
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'alias.py')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_git_that_is_a_symlink_to_another_directory(self, tmp_path):
+        # The resolved path has no .git component; the path the report gave does.
+        repo = tmp_path / 'repo'
+        (repo / 'realgit').mkdir(parents=True)
+        target = repo / 'realgit' / 'config'
+        target.write_text(f'url = https://x:{self.TOKEN}@github.com/o/r.git\n', encoding='utf-8')
+        (repo / '.git').symlink_to(repo / 'realgit')
+        before = target.read_bytes()
+        report = self._report(tmp_path, '.git/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+
+    def test_git_file_of_a_worktree(self, tmp_path):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / '.git').write_text(f'gitdir: /tmp/{self.TOKEN}\n', encoding='utf-8')
+        before = (repo / '.git').read_bytes()
+        report = self._report(tmp_path, '.git')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert (repo / '.git').read_bytes() == before
+
+    @pytest.mark.parametrize(
+        ('key', 'name'),
+        [
+            ('from_gitleaks', 'Gitleaks'),
+            ('from_trufflehog', 'TruffleHog'),
+            ('from_betterleaks', 'Betterleaks'),
+        ],
+    )
+    def test_config_file_ingest_is_named_before_writing(self, tmp_path, capsys, key, name):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        (repo / 'src' / 'a.py').write_text(f'k = "{self.TOKEN}"\n', encoding='utf-8')
+        report = self._report(tmp_path, 'src/a.py')
+        (repo / '.credactor.toml').write_text(
+            f'[ingest]\n{key} = "{report.as_posix()}"\n', encoding='utf-8'
+        )
+        self._run('--fix-all', '--yes', '--config', str(repo / '.credactor.toml'), str(repo))
+        # The path is printed as the config file spells it.
+        assert f'Applying the {name} report {report.as_posix()}' in capsys.readouterr().err
+
+    @pytest.mark.parametrize('mode', [['--ci'], ['--dry-run'], ['--staged']])
+    def test_config_file_ingest_is_not_named_in_a_read_only_run(self, tmp_path, capsys, mode):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        (repo / 'src' / 'a.py').write_text('x = 1\n', encoding='utf-8')
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        report = self._report(tmp_path, 'src/a.py')
+        (repo / '.credactor.toml').write_text(
+            f'[ingest]\nfrom_gitleaks = "{report.as_posix()}"\n', encoding='utf-8'
+        )
+        with contextlib.chdir(repo):
+            self._run(*mode, '--config', str(repo / '.credactor.toml'), '.')
+        assert 'Applying the' not in capsys.readouterr().err
+
+    def test_target_that_is_git_itself(self, tmp_path):
+        # The target is .git, so no .git component lies below it; the whole
+        # path still counts.
+        repo, target = self._project(tmp_path)
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'config')
+        code = self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo / '.git'))
+        assert code == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
+
+    def test_target_inside_git(self, tmp_path):
+        repo, target = self._project(tmp_path, '.git/hooks/pre-commit')
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'pre-commit')
+        hooks = str(repo / '.git' / 'hooks')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), hooks) == 1
+        assert target.read_bytes() == before
+
+
+class TestIngestedValuesAtTheSink:
+    """SR-15: an ingested value is only replaced where it stands as a whole
+    token, and an implausible one is never written."""
+
+    def _run_fix(self, tmp_path, secret, line_text):
+        repo = tmp_path / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        target = repo / 'src' / 'app.py'
+        target.write_text(line_text + '\n', encoding='utf-8')
+        report = tmp_path / 'gl.json'
+        record = {
+            'File': 'src/app.py',
+            'StartLine': 1,
+            'Secret': secret,
+            'Match': line_text,
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        before = target.read_bytes()
+        codes = []
+        for argv in (['--ci'], ['--fix-all', '--yes', '--no-backup']):
+            with pytest.raises(SystemExit) as exc_info:
+                main([*argv, '--from-gitleaks', str(report), str(repo)])
+            codes.append(exc_info.value.code)
+        return codes, before, target.read_bytes()
+
+    @pytest.mark.parametrize('secret', ['a', 'api', 'password'])
+    def test_implausible_secret_leaves_the_file_alone(self, tmp_path, secret):
+        codes, before, after = self._run_fix(tmp_path, secret, 'api_key = load_password()')
+        assert codes == [1, 1]
+        assert after == before
+
+    def test_value_only_inside_a_longer_word_is_not_replaced(self, tmp_path, capsys):
+        codes, before, after = self._run_fix(tmp_path, 'pass', 'password_hint = compass()')
+        assert codes == [1, 1]
+        assert after == before
+        assert 'only inside a longer word' in capsys.readouterr().err
+
+    def test_realistic_secret_still_redacts(self, tmp_path):
+        codes, _, after = self._run_fix(tmp_path, 'Hx7Kq2Lm9Pz4Wr5', 'k = "Hx7Kq2Lm9Pz4Wr5"')
+        assert codes == [1, 0]
+        assert b'Hx7Kq2Lm9Pz4Wr5' not in after
+
+    def test_whole_token_is_replaced_not_the_first_occurrence(self, tmp_path):
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text('passport = "pass"\n', encoding='utf-8')
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'pass',
+            'value_preview': 'pass',
+            'raw': 'passport = "pass"',
+        }
+        assert batch_replace_in_file(str(path), [finding], Config(no_backup=True)) == (1, 0)
+        assert path.read_text(encoding='utf-8').startswith('passport = "')
+        assert '"pass"' not in path.read_text(encoding='utf-8')
+
+    def test_env_mode_fallback_replaces_the_whole_token(self, tmp_path):
+        # Not a quoted literal of its own, so env mode falls back to the sentinel.
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text('note = "passport pass"\n', encoding='utf-8')
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'pass',
+            'value_preview': 'pass',
+            'raw': 'note = "passport pass"',
+        }
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(str(path), [finding], config) == (1, 0)
+        assert path.read_text(encoding='utf-8') == 'note = "passport REDACTED_BY_CREDACTOR"\n'
+
+    def test_password_in_a_connection_string_still_redacts(self, tmp_path):
+        # ':' and '@' are token boundaries. Called on the sink directly: the
+        # native scanner reports the whole URL, which would redact it first.
+        from credactor.config import Config
+        from credactor.redactor import batch_replace_in_file
+
+        path = tmp_path / 'app.py'
+        path.write_text(
+            'DSN = "postgres://app:Hx7Kq2Lm9Pz4Wr5@db.example.com/app"\n', encoding='utf-8'
+        )
+        finding = {
+            'file': str(path),
+            'line': 1,
+            'type': 'external:gitleaks:generic-api-key',
+            'severity': 'medium',
+            'full_value': 'Hx7Kq2Lm9Pz4Wr5',
+            'value_preview': 'Hx7Kq2Lm9Pz4Wr5',
+            'raw': path.read_text(encoding='utf-8').rstrip(),
+        }
+        assert batch_replace_in_file(str(path), [finding], Config(no_backup=True)) == (1, 0)
+        after = path.read_text(encoding='utf-8')
+        assert 'Hx7Kq2Lm9Pz4Wr5' not in after
+        assert 'postgres://app:' in after and '@db.example.com/app' in after
+
+
+class TestIngestedKeyHeaders:
+    """SR-17: a report whose secret is a private key's BEGIN line is refused,
+    whatever the rule is called, so the key is never left headerless."""
+
+    _KEY = (
+        '-----BEGIN ENCRYPTED PRIVATE KEY-----\n'
+        'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qFCzXY1CVHwPGVJP2XBpX3XY1p\n'
+        '-----END ENCRYPTED PRIVATE KEY-----\n'
+    )
+
+    def _run(self, tmp_path, flag, report_text):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        target = repo / 'README.md'
+        target.write_text(self._KEY, encoding='utf-8')
+        report = tmp_path / 'report.json'
+        report.write_text(report_text, encoding='utf-8')
+        before = target.read_bytes()
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', flag, str(report), str(repo)])
+        return exc_info.value.code, before, target.read_bytes()
+
+    def test_gitleaks_header_only_secret_refused(self, tmp_path):
+        record = {
+            'File': 'README.md',
+            'StartLine': 1,
+            'Secret': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'Match': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'RuleID': 'private-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        code, before, after = self._run(tmp_path, '--from-gitleaks', json.dumps([record]))
+        assert code == 1
+        assert after == before
+
+    def test_trufflehog_header_only_secret_refused(self, tmp_path):
+        record = {
+            'Raw': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'SourceMetadata': {'Data': {'Filesystem': {'file': 'README.md', 'line': 1}}},
+            'DetectorName': 'PrivateKey',
+            'Verified': False,
+        }
+        code, before, after = self._run(tmp_path, '--from-trufflehog', json.dumps(record) + '\n')
+        assert code == 1
+        assert after == before
+
+
+class TestMalformedReportFieldsCLI:
+    """SR-19: a malformed report field neither crashes the run nor hides the
+    finding."""
+
+    def _run(self, tmp_path, capsys, **fields):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / 'app.py').write_text('k = "Hx7Kq2Lm9Pz4Wr5"\n', encoding='utf-8')
+        record = {
+            'File': 'app.py',
+            'StartLine': 1,
+            'Secret': 'Hx7Kq2Lm9Pz4Wr5',
+            'Match': 'k = "Hx7Kq2Lm9Pz4Wr5"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+            **fields,
+        }
+        report = tmp_path / 'gl.json'
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)])
+        out, err = capsys.readouterr()
+        assert 'Traceback' not in err
+        return exc_info.value.code, out, err
+
+    @pytest.mark.parametrize('rule_id', [[1], {'a': 1}, 7, None])
+    def test_bad_rule_id_keeps_the_finding(self, tmp_path, capsys, rule_id):
+        code, out, _ = self._run(tmp_path, capsys, RuleID=rule_id, Tags={'x': 1})
+        assert code == 1
+        types = {f['type'] for f in json.loads(out)['findings']}
+        assert 'external:gitleaks:unknown' in types
+
+    def test_secret_with_a_lone_surrogate_is_invalid(self, tmp_path, capsys):
+        code, _, err = self._run(tmp_path, capsys, Secret='Hx7Kq2Lm9Pz4Wr5' + chr(0xD800))
+        # No finding is left, so the run exits 0, and the warning says why.
+        assert code == 0
+        assert '1 Gitleaks record(s) skipped as invalid' in err
+
+
+_NO_LINE = object()
+
+
+class TestInvalidLineNumbersCLI:
+    """PA-05: a finding whose report gives no valid line number is
+    reported and unresolved under --ci and --fix-all, and the file is never
+    written."""
+
+    _SECRET = 'Hx7Kq2Lm9Pz4Wr5'
+
+    def _report(self, tmp_path, parser, line):
+        if parser == 'trufflehog':
+            source = {'file': 'app.py'}
+            if line is not _NO_LINE:
+                source['line'] = line
+            record = {
+                'Raw': self._SECRET,
+                'DetectorName': 'Generic',
+                'Verified': False,
+                'SourceMetadata': {'Data': {'Filesystem': source}},
+            }
+            path = tmp_path / 'th.json'
+            path.write_text(json.dumps(record) + '\n', encoding='utf-8')
+            return '--from-trufflehog', path
+        record = {
+            'File': 'app.py',
+            'Secret': self._SECRET,
+            'Match': f'k = "{self._SECRET}"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        if line is not _NO_LINE:
+            record['StartLine'] = line
+        path = tmp_path / f'{parser}.json'
+        path.write_text(json.dumps([record]), encoding='utf-8')
+        return f'--from-{parser}', path
+
+    @pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks', 'trufflehog'])
+    @pytest.mark.parametrize('line', ['x', '3', True, 0, -1, 1.5, _NO_LINE])
+    def test_reported_unresolved_and_not_written(self, tmp_path, capsys, parser, line):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        target = repo / 'app.py'
+        target.write_text(f'k = "{self._SECRET}"\n', encoding='utf-8')
+        flag, report = self._report(tmp_path, parser, line)
+        before = target.read_bytes()
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '-f', 'json', flag, str(report), str(repo)])
+        assert exc_info.value.code == 1
+        (finding,) = json.loads(capsys.readouterr().out)['findings']
+        assert finding['line'] == 0
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', flag, str(report), str(repo)])
+        assert exc_info.value.code == 1
+        assert target.read_bytes() == before
+
+
+class TestIngestedSymlinkCLI:
+    """SR-18: --fix-all on a report that names a symlink
+    rewrites the file it points to, leaves the link, and says which file."""
+
+    def test_target_redacted_link_kept_and_named(self, tmp_path, capsys):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        real = repo / 'real.py'
+        real.write_text('k = "Hx7Kq2Lm9Pz4Wr5"\n', encoding='utf-8')
+        link = repo / 'link.py'
+        try:
+            os.symlink('real.py', link)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        record = {
+            'File': 'link.py',
+            'StartLine': 1,
+            'Secret': 'Hx7Kq2Lm9Pz4Wr5',
+            'Match': 'k = "Hx7Kq2Lm9Pz4Wr5"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        report = tmp_path / 'gl.json'
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', '--from-gitleaks', str(report), str(repo)])
+        assert exc_info.value.code == 0
+        assert link.is_symlink()
+        assert 'Hx7Kq2Lm9Pz4Wr5' not in real.read_text(encoding='utf-8')
+        err = capsys.readouterr().err
+        assert "'link.py' goes through a symlink" in err
+        assert "'real.py'" in err
 
 
 class TestConfigFileIngestCLI:
@@ -732,6 +1213,114 @@ class TestPhase1Fixes:
         out = capsys.readouterr().out
         assert 'Safe for commits' not in out
         assert 'entropy floor' in out
+
+
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedReadFailures:
+    """SR-14: the pre-commit gate cannot call a commit clean when it could
+    not read it."""
+
+    def _repo(self, tmp_path):
+        run = dict(cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(['git', 'init', '-q'], **run)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **run)
+        subprocess.run(['git', 'config', 'user.name', 't'], **run)
+        (tmp_path / 'app.py').write_text('x = 1\n', encoding='utf-8')
+        subprocess.run(['git', 'add', 'app.py'], **run)
+        return tmp_path
+
+    def test_corrupt_index_exits_2(self, tmp_path):
+        repo = self._repo(tmp_path)
+        subprocess.run(['git', 'commit', '-qm', 'x'], cwd=repo, check=True, capture_output=True)
+        index = repo / '.git' / 'index'
+        index.write_bytes(b'DIRC\0\0\0\2\0\0\0\5garbage')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert index.read_bytes() == b'DIRC\0\0\0\2\0\0\0\5garbage'  # left alone
+
+    def test_unreadable_staged_blob_exits_2_without_fail_on_error(self, tmp_path, capsys):
+        repo = self._repo(tmp_path)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show']:
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert 'staged file(s) could not be read' in capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedEntries:
+    """What --staged reads from the index."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    def _repo(self, path):
+        path.mkdir(parents=True, exist_ok=True)
+        self._git(path, 'init', '-q')
+        (path / 'x.py').write_text('x = 1\n', encoding='utf-8')
+        self._git(path, 'add', 'x.py')
+        self._git(path, 'commit', '-qm', 'x')
+        return path
+
+    def _staged(self, repo):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        return exc_info.value.code
+
+    def test_submodule_with_a_scanned_name_is_skipped(self, tmp_path):
+        # A gitlink is a commit id with no blob in the superproject, so
+        # showing it can fail ('bad object'); it must not be read at all, or
+        # the hook would fail every commit that adds or bumps the submodule.
+        sub = self._repo(tmp_path / 'sub')
+        repo = self._repo(tmp_path / 'main')
+        self._git(
+            repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', str(sub), 'lib/three.js'
+        )
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show'] and args[2].endswith('lib/three.js'):
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with mock.patch('credactor.walker.subprocess.run', side_effect=run):
+            assert self._staged(repo) == 0
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='file names with a colon')
+    def test_path_that_looks_like_a_stage_number(self, tmp_path):
+        # 'git show :0:x.py' would be stage 0 of x.py, not the file '0:x.py'.
+        repo = self._repo(tmp_path / 'main')
+        (repo / '0:x.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', '0:x.py')
+        assert self._staged(repo) == 1
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_symlink_replaced_by_a_file_is_scanned(self, tmp_path):
+        repo = self._repo(tmp_path / 'main')
+        (repo / 'cfg.py').symlink_to('x.py')
+        self._git(repo, 'add', 'cfg.py')
+        self._git(repo, 'commit', '-qm', 'link')
+        (repo / 'cfg.py').unlink()
+        (repo / 'cfg.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', 'cfg.py')
+        assert self._staged(repo) == 1
 
 
 class TestStagedReadOnly:

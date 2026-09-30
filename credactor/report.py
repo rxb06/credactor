@@ -10,12 +10,22 @@ from __future__ import annotations
 import html
 import json
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__
 from .types import Finding
-from .utils import group_by_file, mask_secret, relativize, sanitize_for_terminal
+from .utils import (
+    KNOWN_MIN_LEN,
+    OutputMasker,
+    defuse_json_ci_commands,
+    group_by_file,
+    mask_secret,
+    name_secrets,
+    relativize,
+    sanitize_for_display,
+)
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers (#31)
@@ -47,7 +57,7 @@ def _c(text: str, color: str, *, use_color: bool = True) -> str:
     return f'{code}{text}{_COLORS["reset"]}' if code else text
 
 
-def _should_use_color(no_color: bool, stream: TextIO = sys.stdout) -> bool:
+def _should_use_color(no_color: bool, stream: TextIO) -> bool:
     """Determine whether to use ANSI color output on *stream*."""
     if no_color:
         return False
@@ -62,7 +72,7 @@ def print_report(
     root: str,
     *,
     no_color: bool = False,
-    stream: TextIO = sys.stdout,
+    stream: TextIO | None = None,
 ) -> None:
     """Print the human-readable text report (secrets masked, paths sanitized).
 
@@ -73,9 +83,15 @@ def print_report(
     """
     if not findings:
         return
+    if stream is None:
+        stream = sys.stdout  # looked up per call, so redirection is honoured
     color = _should_use_color(no_color, stream)
     root_path = Path(root).resolve()
     by_file = group_by_file(findings)
+    # SR-05/PA-04/SR-07: every value found in the run is masked wherever the
+    # report shows it: in lines, types (an ingested type holds a report's
+    # label) and paths.
+    masker = OutputMasker(f['full_value'] for f in findings)
 
     print(f'\n{"=" * 70}', file=stream)
     header = f'  CREDENTIAL SCAN REPORT  --  {len(findings)} finding(s) in {len(by_file)} file(s)'
@@ -83,18 +99,19 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
     for filepath, file_findings in sorted(by_file.items()):
-        safe_rel = sanitize_for_terminal(relativize(filepath, root_path))
-        print(_c(f'  FILE: {safe_rel}', 'bold', use_color=color), file=stream)
+        rel = relativize(filepath, root_path)
+        shown_rel = masker.show_name(rel)
+        print(_c(f'  FILE: {shown_rel}', 'bold', use_color=color), file=stream)
+        if shown_rel != sanitize_for_display(rel):
+            print(f'  Note: {_NAME_NOTE}.', file=stream)
         print(f'  {"─" * 60}', file=stream)
         for finding in file_findings:
             severity = finding['severity']
             sev_color = _SEVERITY_COLOR.get(severity, 'dim')
 
-            # #2/#29 — mask the credential in the raw line display
-            masked_raw = _mask_in_line(finding['raw'], finding['full_value'])
-
-            safe_type = sanitize_for_terminal(finding['type'])
-            safe_raw = sanitize_for_terminal(masked_raw[:120])
+            # #2/#29: mask the credentials in the raw line display.
+            safe_raw = _mask_in_line(finding['raw'], finding['full_value'], masker)
+            safe_type = masker.show_name(finding['type'])
             sev_label = _c(f'[{severity.upper()}]', sev_color, use_color=color)
             print(f'  Line {finding["line"]:>4}  {sev_label}  [{safe_type}]', file=stream)
             print(f'           {safe_raw}', file=stream)
@@ -106,57 +123,75 @@ def print_report(
     print(f'{"=" * 70}\n', file=stream)
 
 
-def _mask_in_line(raw_line: str, full_value: str) -> str:
-    """Replace the credential in the raw line with a masked version.
+_RAW_DISPLAY = 120
+# SR-07: the name itself is the leak, so renaming is part of the fix.
+_NAME_NOTE = 'the path holds a secret, so rename the file or directory as well'
 
-    If ``full_value`` is not a verbatim substring of ``raw_line`` the substring
-    replace would silently no-op and print the raw line WITH the secret. This
-    happens for ingested findings whose stored value differs from the on-disk
-    form (e.g. a TruffleHog URL-decoded value vs the encoded source). Fail
-    closed: show only the masked value rather than the raw line, so a credential
-    is never emitted unmasked.
+
+def _mask_in_line(raw_line: str, full_value: str, masker: OutputMasker) -> str:
+    """Return the raw line with every known value masked, safe to display and
+    cut to ``_RAW_DISPLAY`` characters after masking.
+
+    If ``full_value`` is not a verbatim substring of ``raw_line``, masking
+    would silently no-op and print the raw line WITH the secret. This happens
+    for ingested findings whose stored value differs from the on-disk form
+    (e.g. a TruffleHog URL-decoded value vs the encoded source). Fail closed:
+    show only the masked value rather than the raw line, so a credential is
+    never emitted unmasked. The same holds for a value too short for
+    ``KnownSecrets`` to mask inside other text.
     """
-    masked = mask_secret(full_value)
-    if full_value and full_value in raw_line:
-        return raw_line.replace(full_value, masked, 1)
-    return masked
+    if len(full_value) >= KNOWN_MIN_LEN and full_value in raw_line:
+        return masker.show_line(raw_line, limit=_RAW_DISPLAY)
+    return sanitize_for_display(mask_secret(full_value))
 
 
 # ---------------------------------------------------------------------------
 # JSON output (#7)
 # ---------------------------------------------------------------------------
 def json_report(findings: list[Finding], root: str) -> str:
-    """Return findings as a JSON string."""
+    """Return findings as a JSON string.
+
+    The raw source line is not emitted. It must never be added without the
+    masking the text report applies to it (``_mask_in_line``).
+    """
     root_path = Path(root).resolve()
-    output = []
-    for f in findings:
-        rel = relativize(f['file'], root_path)
-        output.append(
-            {
-                'file': rel,
-                'line': f['line'],
-                'type': f['type'],
-                'severity': f['severity'],
-                'value': mask_secret(f['full_value']),
-                'commit': f.get('commit'),
-            }
-        )
-    return json.dumps({'findings': output, 'count': len(output)}, indent=2)
+    names = name_secrets(f['full_value'] for f in findings)  # PA-04, SR-07
+    output = [
+        {
+            'file': names.redact(relativize(f['file'], root_path)),
+            'line': f['line'],
+            'type': names.redact(f['type']),
+            'severity': f['severity'],
+            'value': mask_secret(f['full_value']),
+            'commit': f.get('commit'),
+        }
+        for f in findings
+    ]
+    # SR-06: JSON often goes to stdout in a pipeline, so a job log reads it.
+    return defuse_json_ci_commands(json.dumps({'findings': output, 'count': len(output)}, indent=2))
 
 
 # ---------------------------------------------------------------------------
 # SARIF output (#7)
 # ---------------------------------------------------------------------------
 def sarif_report(findings: list[Finding], root: str) -> str:
-    """Return findings as a SARIF 2.1.0 JSON string."""
+    """Return findings as a SARIF 2.1.0 JSON string.
+
+    The raw source line is read only to compute columns and is not emitted.
+    It must never be added without the masking the text report applies to it
+    (``_mask_in_line``).
+    """
     root_path = Path(root).resolve()
 
     rules: dict[str, dict[str, Any]] = {}
     rule_index: dict[str, int] = {}
     results = []
+    # PA-04: the type becomes the rule id, its descriptions and the message,
+    # and an ingested type holds a report's label, so it is masked first.
+    names = name_secrets(f['full_value'] for f in findings)
 
     for f in findings:
-        safe_type = html.escape(f['type'])
+        safe_type = html.escape(names.redact(f['type']))
         rule_id = safe_type.replace(':', '-')
         if rule_id not in rules:
             rule_index[rule_id] = len(rules)
@@ -177,13 +212,19 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 },
             }
 
+        # SR-07: a secret in the path is masked. That breaks the link to the
+        # file, which is accepted: the name is the leak.
         rel = relativize(f['file'], root_path)
+        uri = names.redact(rel)
+        name_note = f'. {_NAME_NOTE.capitalize()}.' if uri != rel else ''
 
         # Column positions for precise annotation. Omit them when the value
-        # isn't found on the stored line rather than pointing at a wrong column.
+        # isn't found on the stored line rather than pointing at a wrong column,
+        # and for a multi-line finding, whose raw is the whole block.
         raw_line = f['raw']
         full_val = f['full_value']
-        idx = raw_line.find(full_val) if full_val else -1
+        multiline = f['type'].startswith('multiline:')
+        idx = raw_line.find(full_val) if full_val and not multiline else -1
 
         region: dict[str, Any] = {
             'startLine': f['line'],
@@ -192,6 +233,11 @@ def sarif_report(findings: list[Finding], root: str) -> str:
         if idx >= 0:
             region['startColumn'] = idx + 1
             region['endColumn'] = idx + 1 + len(full_val)
+        location: dict[str, Any] = {'artifactLocation': {'uri': uri}}
+        if f['line'] >= 1:
+            # PA-05: line 0 is a line the report did not give; SARIF lines
+            # start at 1, so the result names the file only.
+            location['region'] = region
 
         results.append(
             {
@@ -200,18 +246,11 @@ def sarif_report(findings: list[Finding], root: str) -> str:
                 'level': _sarif_level(f['severity']),
                 'message': {
                     'text': (
-                        f'Potential credential detected: {html.escape(f["type"])}'
-                        f' ({html.escape(mask_secret(f["full_value"]))})'
+                        f'Potential credential detected: {safe_type}'
+                        f' ({html.escape(mask_secret(f["full_value"]))}){name_note}'
                     ),
                 },
-                'locations': [
-                    {
-                        'physicalLocation': {
-                            'artifactLocation': {'uri': rel},
-                            'region': region,
-                        },
-                    }
-                ],
+                'locations': [{'physicalLocation': location}],
             }
         )
 
@@ -237,7 +276,7 @@ def sarif_report(findings: list[Finding], root: str) -> str:
             }
         ],
     }
-    return json.dumps(sarif, indent=2)
+    return defuse_json_ci_commands(json.dumps(sarif, indent=2))  # SR-06
 
 
 _SARIF_LEVELS = {
@@ -257,11 +296,19 @@ def _sarif_level(severity: str) -> str:
 # Gitignore skip report
 # ---------------------------------------------------------------------------
 def print_gitignore_skipped(
-    skipped: list[str], root: str, *, no_color: bool = False, stream: TextIO = sys.stdout
+    skipped: list[str],
+    root: str,
+    *,
+    no_color: bool = False,
+    stream: TextIO | None = None,
+    values: Iterable[str] = (),
 ) -> None:
-    """List the files a ``.gitignore`` pattern excluded from the scan."""
+    """List the files a ``.gitignore`` pattern excluded from the scan, with
+    the secret *values* found in the run masked in their names (SR-07)."""
     if not skipped:
         return
+    if stream is None:
+        stream = sys.stdout
     root_path = Path(root).resolve()
     color = _should_use_color(no_color, stream)
     print(
@@ -272,7 +319,7 @@ def print_gitignore_skipped(
         ),
         file=stream,
     )
+    masker = OutputMasker(values)
     for s in sorted(skipped):
-        rel = relativize(s, root_path)
-        print(f'    {sanitize_for_terminal(rel)}', file=stream)
+        print(f'    {masker.show_name(relativize(s, root_path))}', file=stream)
     print(file=stream)

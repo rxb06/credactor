@@ -1,0 +1,28 @@
+{
+ "argv": [
+  "--ci",
+  "notes.md"
+ ],
+ "case": "single-file-target",
+ "exit": 1,
+ "findings": {
+  "notes.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "deploy key: <v:1a5d44a2dca19669>",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "a named file is scanned even with an unscanned extension",
+ "reported": true,
+ "tree_after": {
+  "notes.md": "faee1feb235e497d",
+  "other.py": "aef561de5aaa378b"
+ }
+}

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -20,7 +21,7 @@ from .report import json_report, print_gitignore_skipped, print_report, sarif_re
 from .scanner import scan_file
 from .suppressions import AllowList
 from .types import Finding
-from .utils import group_by_file, sanitize_for_terminal
+from .utils import group_by_file, sanitize_for_display
 from .walker import (
     GitUnavailableError,
     scan_git_history,
@@ -284,12 +285,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Console entry point: run the scan and exit (130 on Ctrl-C)."""
+    """Console entry point: run the scan and exit (130 on Ctrl-C, 2 on an
+    unexpected error)."""
     try:
         _main_inner(argv)
     except KeyboardInterrupt:
         print('\nInterrupted.', file=sys.stderr)
         sys.exit(130)
+    except Exception:
+        # T15a: an uncaught exception would exit 1, which a gate reads as
+        # "findings found". Print the traceback, one sanitized line at a time
+        # (its text can hold file content), and exit 2 like any other error.
+        for line in traceback.format_exc().splitlines():
+            print(sanitize_for_display(line), file=sys.stderr)
+        _fatal('Unexpected error; please report it with the traceback above.')
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +332,12 @@ def _handle_errored_files(errored_files: list[str], config: Config) -> None:
     """Report files that errored during scan; honour ``--fail-on-error``."""
     if not errored_files:
         return
+    # One argument per path, so the log formatter sanitizes each (SR-06);
+    # the line breaks belong to the template.
     logger.warning(
-        '%d file(s) could not be scanned:\n%s',
+        '%d file(s) could not be scanned:' + '\n  - %s' * len(errored_files),
         len(errored_files),
-        '\n'.join(f'  - {sanitize_for_terminal(fp)}' for fp in errored_files),
+        *errored_files,
     )
     if config.fail_on_error:
         _fatal('Exiting due to --fail-on-error.')
@@ -516,7 +527,7 @@ def _validate_target(target: str) -> Path:
 
 def _print_banner(target_resolved_path: Path) -> None:
     """Emit the scan-start banner and the network-mount warning if relevant."""
-    print(f'Scanning: {target_resolved_path}', file=sys.stderr)
+    print(f'Scanning: {sanitize_for_display(str(target_resolved_path))}', file=sys.stderr)
     print('  Note: Credactor scans forward (into subdirectories) only.', file=sys.stderr)
     print('  For best results, point it at your project root directory.', file=sys.stderr)
     resolved = str(target_resolved_path)
@@ -578,19 +589,30 @@ def _collect_findings(
     target: str,
     config: Config,
     allowlist: AllowList,
-) -> tuple[list[Finding], list[str]]:
+) -> tuple[list[Finding], list[str], list[str]]:
     """Dispatch the native scan based on ``staged_only``/``scan_history``/walk.
 
-    Returns ``(findings, errored_files)``. Also runs the JSON-file
-    side-walk when ``--scan-json`` is set in directory mode.
+    Returns ``(findings, errored_files, gitignore_skipped)``. Also runs the
+    JSON-file side-walk when ``--scan-json`` is set in directory mode.
     """
     # L4: a not-a-repo / git-unavailable failure for --staged/--scan-history is a
     # hard error (exit 2), never a false-clean exit 0.
     try:
         if config.staged_only:
-            return scan_staged_files(target, config=config, allowlist=allowlist)
+            findings, errored = scan_staged_files(target, config=config, allowlist=allowlist)
+            if errored:
+                # SR-14: a pre-commit gate cannot call a commit clean when it
+                # could not read part of it, so this is fatal with or without
+                # --fail-on-error.
+                logger.warning(
+                    '%d staged file(s) could not be read:' + '\n  - %s' * len(errored),
+                    len(errored),
+                    *errored,
+                )
+                _fatal('Exiting: the staged content could not be checked.')
+            return findings, errored, []
         if config.scan_history:
-            return scan_git_history(target, config=config, allowlist=allowlist), []
+            return scan_git_history(target, config=config, allowlist=allowlist), [], []
     except GitUnavailableError as exc:
         _fatal('%s', exc)
 
@@ -609,13 +631,13 @@ def _collect_findings(
                 '"# credactor:ignore", or scan the directory.'
             )
         try:
-            return scan_file(target, config=config, allowlist=allowlist), []
+            return scan_file(target, config=config, allowlist=allowlist), [], []
         except (OSError, UnicodeDecodeError) as exc:
             # UnicodeDecodeError: a confidently-detected multibyte encoding
             # (e.g. truncated UTF-16) that fails mid-stream is an unreadable
             # file, not a crash — same errored-files contract as OSError.
             logger.warning('Cannot read %s: %s', target, exc)
-            return [], [target]
+            return [], [target], []
 
     findings, gitignore_skipped, json_files, errored_files = walk_and_scan(
         target,
@@ -623,16 +645,14 @@ def _collect_findings(
         allowlist=allowlist,
     )
 
-    if config.output_format == 'text':
-        print_gitignore_skipped(gitignore_skipped, target, no_color=config.no_color)
-        # Avoid a false-clean impression: .json files are collected but only
-        # scanned under --scan-json, so flag that the type was held back.
-        if not config.scan_json and json_files:
-            print(
-                f'  [note] {len(json_files)} .json file(s) present but not scanned — '
-                f'pass --scan-json to include them.',
-                file=sys.stderr,
-            )
+    # Avoid a false-clean impression: .json files are collected but only
+    # scanned under --scan-json, so flag that the type was held back.
+    if config.output_format == 'text' and not config.scan_json and json_files:
+        print(
+            f'  [note] {len(json_files)} .json file(s) present but not scanned; '
+            f'pass --scan-json to include them.',
+            file=sys.stderr,
+        )
 
     if config.scan_json and json_files:
         # --scan-json is already the explicit opt-in, so scan every collected
@@ -646,7 +666,7 @@ def _collect_findings(
                 logger.warning('Cannot read %s: %s', path, exc)
                 errored_files.append(path)
 
-    return findings, errored_files
+    return findings, errored_files, gitignore_skipped
 
 
 def _ingest_external(
@@ -809,11 +829,26 @@ def _main_inner(argv: list[str] | None = None) -> None:
         if not args.from_betterleaks:
             _fatal('--from-betterleaks requires a non-empty report path')
         config.from_betterleaks = args.from_betterleaks
-
     # Validate invocation flags AFTER the config file is applied so a
     # .credactor.toml [ingest] table can't slip past the --scan-history/ingest
     # rejection (mirrors the post-config _validate_replacement / H5 check below).
     _validate_invocation(config)
+    # SR-16: a report named in the config file's [ingest] table is applied like
+    # one given as a flag. Before a run that can write, say which, so an entry
+    # that came in with the repository does not act unseen. This runs after
+    # _validate_invocation, which makes --staged and --scan-history read-only.
+    if not (config.ci_mode or config.dry_run):
+        for name, flag, path in (
+            ('Gitleaks', args.from_gitleaks, config.from_gitleaks),
+            ('TruffleHog', args.from_trufflehog, config.from_trufflehog),
+            ('Betterleaks', args.from_betterleaks, config.from_betterleaks),
+        ):
+            if path and flag is None:
+                logger.warning(
+                    'Applying the %s report %s named in the [ingest] table of the config file.',
+                    name,
+                    path,
+                )
 
     # M10: an explicit --replacement overrides a config-file 'replacement'
     # (precedence CLI > config > default). argparse default is None, so a
@@ -835,9 +870,19 @@ def _main_inner(argv: list[str] | None = None) -> None:
     allowlist = AllowList(target)
     _print_banner(target_resolved_path)
 
-    findings, errored_files = _collect_findings(target, config, allowlist)
+    findings, errored_files, gitignore_skipped = _collect_findings(target, config, allowlist)
+    errored_files = allowlist.errored + errored_files  # SR-13: an unsafe .credactorignore
     findings = _ingest_external(findings, target, config, allowlist)
     _handle_errored_files(errored_files, config)
+    if config.output_format == 'text':
+        # SR-07: printed once the findings are final, so a skipped name that
+        # holds a secret found in the run is masked.
+        print_gitignore_skipped(
+            gitignore_skipped,
+            target,
+            no_color=config.no_color,
+            values=[f['full_value'] for f in findings],
+        )
 
     _emit_report(findings, target, config)
     if not findings:

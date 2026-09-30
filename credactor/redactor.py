@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import shutil
+import string
 import sys
 import tempfile
 from pathlib import Path
@@ -17,11 +18,13 @@ from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
 from .types import Finding
 from .utils import (
+    OutputMasker,
     detect_encoding,
     group_by_file,
+    in_git_dir,
     mask_secret,
     relativize,
-    sanitize_for_terminal,
+    sanitize_for_display,
 )
 
 
@@ -88,7 +91,36 @@ def _derive_env_var_name(finding: Finding) -> str:
     # xml-attr keys (e.g. "password]);evil()//").  Env var names must be
     # alphanumeric + underscore only.
     sanitized = re.sub(r'[^A-Za-z0-9_]', '', raw)
-    return sanitized if sanitized else 'CREDENTIAL'
+    # T15b: the name is text the scanned file or a report supplied, so it can
+    # spell the secret itself, and written into the file it would leave a copy
+    # behind. Letters and digits are compared, ignoring case and separators,
+    # so a provider prefix such as sk_live_ is not taken for the secret.
+    name = re.sub(r'[^A-Z0-9]', '', sanitized.upper())
+    value = re.sub(r'[^A-Z0-9]', '', _credential_part(finding.get('full_value', '')).upper())
+    shares = any(
+        name[i : i + _ENV_NAME_SHARED] in value for i in range(len(name) - _ENV_NAME_SHARED + 1)
+    )
+    return sanitized if sanitized and not shares else 'CREDENTIAL'
+
+
+# A derived env var name that shares this many letters and digits in a row
+# with the secret is not used.
+_ENV_NAME_SHARED = 8
+_PEM_ARMOR_RE = re.compile(r'-----(?:BEGIN|END)[^-]*-----')
+_URL_USERINFO_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*)@')
+
+
+def _credential_part(value: str) -> str:
+    """The part of *value* that is secret, for the env var name check: a URL
+    keeps only its password (its user when there is none), and a PEM block
+    drops its armor lines. The scheme, host and armor name what the value
+    is, which is also what the variable name says."""
+    value = _PEM_ARMOR_RE.sub('', value)
+    url = _URL_USERINFO_RE.match(value)
+    if url:
+        user, _, rest = url.group(1).partition(':')
+        value = rest or user
+    return value
 
 
 def _env_ref_for_language(var_name: str, ext: str) -> str:
@@ -110,7 +142,7 @@ def _env_ref_for_language(var_name: str, ext: str) -> str:
     return f'${{{var_name}}}'
 
 
-def _replace_quoted(original: str, full_value: str, replacement: str) -> str:
+def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -> str:
     """Insert a bare env expression in place of a *quoted* credential literal,
     consuming the surrounding quotes so it isn't left nested inside them
     (api_key = "os.environ[...]" would be invalid syntax).
@@ -133,7 +165,126 @@ def _replace_quoted(original: str, full_value: str, replacement: str) -> str:
             if other in replacement and other in original.replace(token, '', 1):
                 break
             return original.replace(token, replacement, 1)
-    return original.replace(full_value, DEFAULT_REPLACEMENT, 1)
+    return original[:at] + DEFAULT_REPLACEMENT + original[at + len(full_value) :]
+
+
+# The scanners that write the reports are Go programs, whose word boundary is
+# ASCII, so a token right next to CJK text is still a whole token.
+_WORD_CHARS = frozenset(string.ascii_letters + string.digits + '_')
+
+
+def _value_position(line: str, finding: Finding) -> int | None:
+    """Where on *line* the finding's value is replaced, or None.
+
+    A native value comes from an anchored pattern match, so its first
+    occurrence is it. An ingested value is whatever the report says (SR-15),
+    so only an occurrence that stands as a whole token counts: no ASCII letter,
+    digit or underscore on either side, so 'pass' is never replaced inside
+    'password'. The search is linear in the length of the line.
+    """
+    value = finding['full_value']
+    at = line.find(value)
+    if at < 0 or not finding['type'].startswith('external:'):
+        return at if at >= 0 else None
+    while at >= 0:
+        end = at + len(value)
+        before = line[at - 1] if at else ''
+        after = line[end] if end < len(line) else ''
+        if before not in _WORD_CHARS and after not in _WORD_CHARS:
+            return at
+        at = line.find(value, at + 1)
+    return None
+
+
+def _holds_key_marker(text: str) -> bool:
+    """Whether *text* holds a BEGIN or END private key marker (SR-17).
+
+    Checked on each finding's value and on every line a replacement would
+    change, never on the finding's type alone: a report can call a key's BEGIN
+    line anything. Rewriting part of a marker line leaves the key material in
+    the file with its header gone, so the next scan reports the file clean.
+    """
+    upper = text.upper()
+    return 'PRIVATE KEY' in upper and ('-----BEGIN' in upper or '-----END' in upper)
+
+
+def _is_key_block(text: str) -> bool:
+    """Whether *text* holds a whole private key, a BEGIN marker with an END
+    marker after it, as a service-account JSON file keeps one on one line.
+    Replacing such a value removes the key and both markers."""
+    upper = text.upper()
+    begin = upper.find('-----BEGIN')
+    return begin >= 0 and 'PRIVATE KEY' in upper and upper.find('-----END', begin) > begin
+
+
+def _replace_one(
+    lines: list[str],
+    finding: Finding,
+    config: Config,
+    filepath: str,
+    marker_lines: dict[int, bool],
+) -> str:
+    """Replace *finding* in *lines*, warning when it cannot be. Returns
+    'replaced', 'failed', or 'refused' for a replacement refused on purpose.
+    *marker_lines* caches, per line index, whether the line holds a key marker
+    (a replacement never adds one, and a marker line is only ever changed when
+    the whole key goes)."""
+    lineno = finding['line']
+    value = finding['full_value']
+    idx = lineno - 1
+    if idx < 0 or idx >= len(lines):
+        # Line 0 is an unknown line (PA-05); index -1 would be the last.
+        logger.warning('Line %d out of range in %s; skipping.', lineno, filepath)
+        return 'failed'
+    original = lines[idx]
+    at = _value_position(original, finding)
+    if at is None and value in original:
+        logger.warning(
+            'Reported value on line %d in %s appears only inside a longer word, '
+            'so it is not replaced there. Check the report.',
+            lineno,
+            filepath,
+        )
+        return 'refused'
+    if at is None:
+        if finding['type'].startswith('external:'):
+            # K-5/K03: for an ingested finding this is almost always a stale
+            # report (line drift, rotated value, .git/objects noise) or a
+            # multi-line value, so name the real causes.
+            logger.warning(
+                'Reported value not found on line %d in %s: stale report '
+                '(file changed since the scan), multi-line value, or '
+                'already redacted. Regenerate the scanner report and re-run.',
+                lineno,
+                filepath,
+            )
+        else:
+            logger.warning(
+                'Value no longer found on line %d in %s (already replaced?).',
+                lineno,
+                filepath,
+            )
+        return 'failed'
+    replacement, takes_quotes = _make_replacement(finding, config, filepath)
+    if takes_quotes:
+        new_line = _replace_quoted(original, value, replacement, at)
+    else:
+        new_line = original[:at] + replacement + original[at + len(value) :]
+    if idx not in marker_lines:
+        marker_lines[idx] = _holds_key_marker(original)
+    if marker_lines[idx] and (not _is_key_block(value) or _holds_key_marker(new_line)):
+        # SR-17: a marker line changes only when the replacement takes the
+        # whole key with it.
+        logger.warning(
+            '%s:%d: not rewritten: the line holds a private key marker, and changing '
+            'it would leave the key in the file while the next scan reports it clean. '
+            'Rotate the key and remove the block manually.',
+            filepath,
+            lineno,
+        )
+        return 'refused'
+    lines[idx] = new_line
+    return 'replaced'
 
 
 # ---------------------------------------------------------------------------
@@ -388,14 +539,29 @@ def _sweep_stray_copies(
     pat = re.compile(
         r'(?<!\w)(?:'
         + '|'.join(re.escape(v) for v in sorted(values, key=len, reverse=True))
-        + r')(?!\w)'
+        + r')(?!\w)',
+        re.ASCII,
     )
     stray_count = 0
+    kept = 0
     for idx in range(len(lines)):
         if idx + 1 in preserved:
             continue
-        lines[idx], n = pat.subn(lambda _m: stray, lines[idx])
+        swept, n = pat.subn(lambda _m: stray, lines[idx])
+        if n and _holds_key_marker(lines[idx]):
+            # SR-17: a marker line is never changed, not even by the sweep.
+            kept += n
+            continue
+        lines[idx] = swept
         stray_count += n
+    if kept:
+        logger.warning(
+            '%s: left %d cop%s of redacted value(s) on lines that hold a private key '
+            'marker; remove them by hand.',
+            filepath,
+            kept,
+            'y' if kept == 1 else 'ies',
+        )
     if stray_count:
         # Default-visible (stderr): the file was modified beyond the
         # adjudicated findings — the summary alone would under-report it.
@@ -410,6 +576,54 @@ def _sweep_stray_copies(
         )
 
 
+def _writable_findings(filepath: str, file_findings: list[Finding]) -> tuple[list[Finding], int]:
+    """Split off the findings that must not be written here, warning for
+    each; returns the rest and how many were refused."""
+    # SR-16: nothing under .git (repository metadata and hooks, not source) is
+    # ever rewritten, whoever passed the finding in. The whole path counts, as
+    # given and resolved, so neither a root at or inside .git nor a linked
+    # directory into it gets past.
+    if in_git_dir(filepath, os.sep) or in_git_dir(os.path.realpath(filepath), os.sep):
+        logger.warning('%s: not rewritten: the path is inside .git.', filepath)
+        return [], len(file_findings)
+    writable: list[Finding] = []
+    for f in file_findings:
+        if f.get('refuse_reason'):
+            # Marked at ingest: reported, never written.
+            logger.warning('%s:%d: not rewritten: %s.', filepath, f['line'], f['refuse_reason'])
+        elif f['type'].endswith('private key block') or (
+            _holds_key_marker(f['full_value']) and not _is_key_block(f['full_value'])
+        ):
+            # The finding carries only its BEGIN header line as the match
+            # value: a line-based replacement would rewrite the header, leave
+            # the key material and END marker in the file, and, with the
+            # header gone, the next scan would report the file clean. SR-17:
+            # the value decides, so an ingested header typed by a report's
+            # rule id is refused too; the type is only an extra trigger. A
+            # value holding the whole block (BEGIN to END on one line) takes
+            # the key with it, so it may be replaced.
+            logger.warning(
+                '%s:%d: refusing to redact a multi-line private key block: '
+                'replacing its header line would leave the key material in the '
+                'file while the next scan reports it clean. Rotate the key and '
+                'remove the block manually.',
+                filepath,
+                f['line'],
+            )
+        elif '\n' in f['full_value'] or '\r' in f['full_value']:
+            # A replacement works within one line; a value holding a line break
+            # cannot match there, and one ending in it would join two lines.
+            logger.warning(
+                '%s:%d: not rewritten: the value spans lines, so it cannot be '
+                'replaced within one. Fix it by hand.',
+                filepath,
+                f['line'],
+            )
+        else:
+            writable.append(f)
+    return writable, len(file_findings) - len(writable)
+
+
 def batch_replace_in_file(
     filepath: str,
     file_findings: list[Finding],
@@ -417,6 +631,8 @@ def batch_replace_in_file(
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
+    root: str | None = None,
+    tally: dict[str, int] | None = None,
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
@@ -431,33 +647,23 @@ def batch_replace_in_file(
     if not file_findings:
         return 0, 0
 
-    # A private-key-block finding carries only its BEGIN header line as the
-    # match value: a line-based replacement would rewrite the header, leave the
-    # entire key material and END marker in the file, and — with the header
-    # gone — the next scan would report the file clean. Fail closed: refuse,
-    # warn, count unresolved; the key must be rotated and removed by hand.
-    key_blocks = [f for f in file_findings if f['type'].endswith('private key block')]
-    if key_blocks:
-        for f in key_blocks:
-            logger.warning(
-                '%s:%d: refusing to redact a multi-line private key block — '
-                'replacing its header line would leave the key material in the '
-                'file while the next scan reports it clean. Rotate the key and '
-                'remove the block manually.',
-                filepath,
-                f['line'],
-            )
-        # Re-enter with the key blocks stripped so every downstream outcome
-        # (success, symlink refusal, read/write errors) counts them unresolved.
-        rest = [f for f in file_findings if not f['type'].endswith('private key block')]
+    writable, refused = _writable_findings(filepath, file_findings)
+    if refused:
+        # Re-enter with the refused findings stripped, so every downstream
+        # outcome (success, symlink refusal, read/write errors) counts them
+        # unresolved.
         replaced, failed = batch_replace_in_file(
             filepath,
-            rest,
+            writable,
             config,
             sweep_exclude_lines=sweep_exclude_lines,
             skip_backup=skip_backup,
+            root=root,
+            tally=tally,
         )
-        return replaced, failed + len(key_blocks)
+        if tally is not None:
+            tally['refused'] = tally.get('refused', 0) + refused
+        return replaced, failed + refused
 
     # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
     # the file it points at, so the live secret would remain in the target while
@@ -501,8 +707,11 @@ def batch_replace_in_file(
             # os.replace() which cannot overwrite an open file on Windows.
             lock_fh.close()
             lock_fh = None
-        except OSError:
-            pass  # Lock contention — proceed without lock
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
     except OSError:
         pass
 
@@ -536,60 +745,44 @@ def batch_replace_in_file(
 
         replaced = 0
         failed = 0
+        refused_here = 0
         failed_lines: set[int] = set()
+        replaced_values: set[str] = set()
+        refused_values: set[str] = set()
+        marker_lines: dict[int, bool] = {}
 
         # Sort by line number descending so earlier replacements don't shift later ones
         sorted_findings = sorted(file_findings, key=lambda f: f['line'], reverse=True)
 
         for finding in sorted_findings:
-            lineno = finding['line']
-            full_value = finding['full_value']
-            idx = lineno - 1
-
-            if idx >= len(lines):
-                logger.warning('Line %d out of range in %s — skipping.', lineno, filepath)
-                failed += 1
-                failed_lines.add(lineno)
+            outcome = _replace_one(lines, finding, config, filepath, marker_lines)
+            if outcome == 'replaced':
+                replaced += 1
+                replaced_values.add(finding['full_value'])
                 continue
-
-            original = lines[idx]
-            if full_value not in original:
-                if finding['type'].startswith('external:'):
-                    # K-5/K03: for an ingested finding this is almost always a
-                    # stale report (line drift, rotated value, .git/objects
-                    # noise) or a multi-line value — '(already replaced?)'
-                    # misdiagnoses those, so name the real causes.
-                    logger.warning(
-                        'Reported value not found on line %d in %s — stale report '
-                        '(file changed since the scan), multi-line value, or '
-                        'already redacted. Regenerate the scanner report and re-run.',
-                        lineno,
-                        filepath,
-                    )
-                else:
-                    logger.warning(
-                        'Value no longer found on line %d in %s (already replaced?).',
-                        lineno,
-                        filepath,
-                    )
-                failed += 1
-                failed_lines.add(lineno)
-                continue
-
-            replacement, takes_quotes = _make_replacement(finding, config, filepath)
-            if takes_quotes:
-                lines[idx] = _replace_quoted(original, full_value, replacement)
-            else:
-                lines[idx] = original.replace(full_value, replacement, 1)
-            replaced += 1
+            failed += 1
+            failed_lines.add(finding['line'])
+            if outcome == 'refused':
+                refused_here += 1
+                refused_values.add(finding['full_value'])
+        if tally is not None:
+            tally['refused'] = tally.get('refused', 0) + refused_here
 
         # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by
         # known findings the caller did not approve here (sweep_exclude_lines)
         # and lines whose own replacement just failed keep their content —
-        # each finding's adjudication owns its line.
+        # each finding's adjudication owns its line. A value refused on its
+        # own line (inside a longer word, or on a key marker line) and not
+        # replaced anywhere drives no sweep either: it was never confirmed as
+        # a token here.
         if replaced:
+            unconfirmed = refused_values - replaced_values
             _sweep_stray_copies(
-                lines, file_findings, config, set(sweep_exclude_lines) | failed_lines, filepath
+                lines,
+                [f for f in file_findings if f['full_value'] not in unconfirmed],
+                config,
+                set(sweep_exclude_lines) | failed_lines,
+                filepath,
             )
 
         if not _write_atomic(filepath, lines, encoding):
@@ -616,6 +809,7 @@ def replace_single(
     *,
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
+    root: str | None = None,
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
@@ -627,6 +821,7 @@ def replace_single(
         config,
         sweep_exclude_lines=sweep_exclude_lines,
         skip_backup=skip_backup,
+        root=root,
     )
     return replaced > 0
 
@@ -697,20 +892,30 @@ def interactive_review(
     print(f"  Answer y to replace each value with '{replacement_desc}', n (or Enter) to skip.")
     print(f'{"=" * 70}\n')
 
+    # PA-04, SR-07: the type (an ingested one holds a report's label) and the
+    # path can hold a secret.
+    masker = OutputMasker(f['full_value'] for f in findings)
+
     for i, finding in enumerate(findings, 1):
         rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_terminal(rel)
-        safe_type = sanitize_for_terminal(finding['type'])
-        safe_masked = sanitize_for_terminal(masked)
+        safe_rel = masker.show_name(rel)
+        safe_type = masker.show_name(finding['type'])
+        safe_masked = sanitize_for_display(masked)
 
         print(f'  [{i}/{total}]  {safe_rel}  --  line {finding["line"]}')
         print(f'  Type     : {safe_type}')
         print(f'  Severity : {finding.get("severity", "medium")}')
         print(f'  Value    : {safe_masked}')
         print()
+
+        # SR-16: nothing to ask about a finding that must not be rewritten.
+        if finding.get('refuse_reason'):
+            print(f'  -- Not rewritten: {sanitize_for_display(finding["refuse_reason"])}.\n')
+            skipped += 1
+            continue
 
         while True:
             try:
@@ -740,6 +945,7 @@ def interactive_review(
                     config,
                     sweep_exclude_lines=frozenset(others),
                     skip_backup=fpath in backed_up_files,
+                    root=root,
                 )
                 if ok:
                     backed_up_files.add(fpath)
@@ -779,11 +985,16 @@ def fix_all(
     failed_in_ingested_files = 0
 
     for filepath, file_findings in by_file.items():
-        replaced, failed = batch_replace_in_file(filepath, file_findings, config)
+        tally = {'refused': 0}
+        replaced, failed = batch_replace_in_file(
+            filepath, file_findings, config, root=root, tally=tally
+        )
         total_replaced += replaced
         total_failed += failed
         if failed and any(f['type'].startswith('external:') for f in file_findings):
-            failed_in_ingested_files += failed
+            # A finding refused on purpose is not a sign of a stale report, so
+            # it does not count toward the hint below.
+            failed_in_ingested_files += max(failed - tally['refused'], 0)
 
     _print_summary(total_replaced, total_failed, len(findings), config, label='failed')
     if failed_in_ingested_files:

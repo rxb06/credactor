@@ -1,0 +1,21 @@
+{
+ "argv": [
+  "--scan-history",
+  "."
+ ],
+ "case": "history-empty-repo",
+ "exit": 0,
+ "findings": {},
+ "log": [
+  [
+   "INFO",
+   "No commits to scan yet: fatal: your current branch 'main' does not have any commits yet",
+   1
+  ]
+ ],
+ "note": "a repository with no commits must stay a clean exit (SR-14)",
+ "reported": true,
+ "tree_after": {
+  "README.txt": "5891b5b522d5df08"
+ }
+}
