@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import shutil
+import string
 import sys
 import tempfile
 from pathlib import Path
@@ -169,7 +170,7 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
 
 # The scanners that write the reports are Go programs, whose word boundary is
 # ASCII, so a token right next to CJK text is still a whole token.
-_WORD_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_')
+_WORD_CHARS = frozenset(string.ascii_letters + string.digits + '_')
 
 
 def _value_position(line: str, finding: Finding) -> int | None:
@@ -233,7 +234,7 @@ def _replace_one(
     idx = lineno - 1
     if idx < 0 or idx >= len(lines):
         # Line 0 is an unknown line (PA-05); index -1 would be the last.
-        logger.warning('Line %d out of range in %s — skipping.', lineno, filepath)
+        logger.warning('Line %d out of range in %s; skipping.', lineno, filepath)
         return 'failed'
     original = lines[idx]
     at = _value_position(original, finding)
@@ -251,7 +252,7 @@ def _replace_one(
             # report (line drift, rotated value, .git/objects noise) or a
             # multi-line value, so name the real causes.
             logger.warning(
-                'Reported value not found on line %d in %s — stale report '
+                'Reported value not found on line %d in %s: stale report '
                 '(file changed since the scan), multi-line value, or '
                 'already redacted. Regenerate the scanner report and re-run.',
                 lineno,
