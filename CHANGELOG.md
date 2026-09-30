@@ -14,6 +14,14 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **A directory swapped for a symlink cannot redirect a rewrite outside the
+  scan root.** Only the file itself was checked for being a symlink, so a
+  directory on its path replaced by a symlink during the run could send the
+  backup and the rewrite outside the tree. `--fix-all`,
+  interactive approvals and the end-of-review sweep now check, just before the
+  backup and again just before the rename, that the path still reaches a file
+  inside the scan root through real directories. If not, the file is not
+  written and its findings stay unresolved (exit 1).
 - **Backups are private, and hold exactly what was edited.** A `.bak` was
   made with `copy2`, which copied the source file's mode onto it, so a
   readable source gave a readable backup (a setuid one a setuid backup), and a

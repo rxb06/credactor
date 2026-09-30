@@ -24,6 +24,7 @@ from .utils import (
     detect_encoding,
     group_by_file,
     in_git_dir,
+    is_within_root,
     mask_secret,
     relativize,
     sanitize_for_display,
@@ -471,15 +472,25 @@ def _secure_delete(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 # Batch replacement per file (#14)
 # ---------------------------------------------------------------------------
-def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
+def _write_atomic(
+    filepath: str,
+    lines: list[str],
+    encoding: str,
+    guard: Callable[[], bool] | None = None,
+) -> bool:
     """Write *lines* via a temp file + ``os.replace`` so a mid-write crash
-    leaves the original intact. Returns False (after logging) on failure."""
+    leaves the original intact. *guard*, when given, runs once the temp file
+    is complete and just before the rename; if it returns False the temp
+    file is removed and nothing is published. Returns False (after logging a
+    write error) on failure."""
     dir_name = os.path.dirname(filepath) or '.'
     tmp_path: str | None = None
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
         with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
             fh.writelines(lines)
+        if guard is not None and not guard():
+            return False
         os.replace(tmp_path, filepath)
         tmp_path = None  # rename succeeded — nothing to clean up
         return True
@@ -499,6 +510,7 @@ def _rewrite_file(
     *,
     verb: str,
     backup: bool,
+    root: str | None = None,
 ) -> str:
     """The one write path (PA-14). Every rewrite goes through here: a batch
     replacement, an interactive approval, and the end-of-review sweep.
@@ -515,6 +527,11 @@ def _rewrite_file(
     The new content is published atomically (PA-02), the original mode is
     restored with its special bits, and under --secure-delete the backup is
     then wiped.
+
+    With *root*, the path must also still reach a file inside it through real
+    directories only (SR-20), checked just before the backup and again just
+    before the rename, so a directory on the path swapped for a symlink cannot
+    send the backup or the write outside the scan root.
 
     Returns 'written', 'unchanged', or 'failed' when the file was refused or
     could not be read, backed up or written (each logged).
@@ -582,6 +599,12 @@ def _rewrite_file(
         if not edit(lines):
             return 'unchanged'
 
+        def still_safe() -> bool:
+            return _still_safe_to_write(filepath, root, seen)
+
+        if not still_safe():
+            return 'failed'
+
         # #1: back up before writing, from the bytes that were read.
         bak: str | None = None
         if backup and not config.no_backup:
@@ -590,15 +613,7 @@ def _rewrite_file(
                 logger.error('Backup failed for %s; skipping replacements.', filepath)
                 return 'failed'
 
-        if _changed_on_disk(filepath, seen):
-            logger.warning(
-                '%s changed on disk while it was being redacted, so it is not '
-                'rewritten. Re-run once nothing else is editing it.',
-                filepath,
-            )
-            return 'failed'
-
-        if not _write_atomic(filepath, lines, encoding):
+        if not _write_atomic(filepath, lines, encoding, guard=still_safe):
             return 'failed'
 
         # Restore original file permissions
@@ -628,11 +643,58 @@ def _changed_on_disk(filepath: str, seen: tuple[int, int, int, int]) -> bool:
         return True
 
 
+def _still_safe_to_write(filepath: str, root: str | None, seen: tuple[int, int, int, int]) -> bool:
+    """Warn and return False when *filepath* must not be written now: it left
+    the scan root (SR-20), or it is not the file that was read (SR-24)."""
+    if root is not None and _outside_root(filepath, root):
+        logger.warning(
+            '%s no longer reaches a file inside the scan root through real '
+            'directories (a directory on its path was moved or replaced by a '
+            'symlink), so it is not rewritten.',
+            filepath,
+        )
+        return False
+    if _changed_on_disk(filepath, seen):
+        logger.warning(
+            '%s changed on disk while it was being redacted, so it is not '
+            'rewritten. Re-run once nothing else is editing it.',
+            filepath,
+        )
+        return False
+    return True
+
+
+def _outside_root(filepath: str, root: str) -> bool:
+    """Whether *filepath* no longer reaches a file inside *root* by real
+    directories: it resolves outside the root, or a component between the
+    root and the file is a symlink. A link above the root does not count."""
+    real_root = os.path.realpath(root)
+    if not is_within_root(os.path.realpath(filepath), real_root):
+        return True
+    path = os.path.abspath(filepath)
+    for base in (os.path.abspath(root), real_root):
+        if is_within_root(path, base):
+            break
+    else:
+        # Inside the root only once resolved: something on the way is a link.
+        return True
+    prefix = base
+    for part in Path(os.path.relpath(path, base)).parts:
+        if part == os.curdir:
+            continue
+        prefix = os.path.join(prefix, part)
+        if os.path.islink(prefix):
+            return True
+    return False
+
+
 def _final_file_sweep(
     filepath: str,
     approved: list[Finding],
     preserve_lines: set[int],
     config: Config,
+    *,
+    root: str | None = None,
 ) -> None:
     """End-of-review sweep over one file with the session's full knowledge.
 
@@ -652,7 +714,7 @@ def _final_file_sweep(
         _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
         return lines != before
 
-    _rewrite_file(filepath, config, edit, verb='sweep', backup=False)
+    _rewrite_file(filepath, config, edit, verb='sweep', backup=False, root=root)
 
 
 def _sweep_stray_copies(
@@ -834,7 +896,9 @@ def batch_replace_in_file(
     # it with the already-redacted file and lose the earlier secret's
     # original). The first approval's .bak already holds every line's true
     # original.
-    outcome = _rewrite_file(filepath, config, edit, verb='redact', backup=not skip_backup)
+    outcome = _rewrite_file(
+        filepath, config, edit, verb='redact', backup=not skip_backup, root=root
+    )
     if outcome == 'failed':
         # Refused, or unreadable, not backed up, or not written: every finding
         # stays unresolved.
@@ -972,7 +1036,7 @@ def interactive_review(
     def _run_final_sweeps() -> None:
         for fp, approved in approved_by_file.items():
             preserve = lines_by_file[fp] - {f['line'] for f in approved}
-            _final_file_sweep(fp, approved, preserve, config)
+            _final_file_sweep(fp, approved, preserve, config, root=root)
 
     replacement_desc = config.custom_replacement
     if config.replace_mode == 'env':

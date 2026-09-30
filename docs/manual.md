@@ -327,7 +327,10 @@ it. Verified behaviour:
   file is rewritten it is checked against what was read. If its size,
   modification time or inode changed meanwhile (an editor saved it, another
   run touched it), it is left as it now is, with a warning, and its findings
-  stay unresolved (exit 1). Re-run once nothing else is editing the tree.
+  stay unresolved (exit 1). Re-run once nothing else is editing the tree. The
+  same holds when a directory on the file's path was moved or replaced by a
+  symlink: a rewrite only goes to a file that is still inside the scan target
+  through real directories.
 
 ```bash
 credactor --fix-all --secure-delete .                 # redact, wipe backups

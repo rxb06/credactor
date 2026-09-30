@@ -1597,13 +1597,11 @@ class TestReadOncePlanFirst:
     def test_file_changed_during_the_run_is_left_alone(
         self, make_file, monkeypatch, credactor_caplog
     ):
-        # Another writer changes the file after the read: the backup still
-        # holds the bytes that were read, and the file is not rewritten.
+        # Another writer changes the file after the read: the change is seen
+        # before the backup, so nothing is written, not even a .bak.
         import credactor.redactor as redactor
 
         path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
-        with open(path, 'rb') as fh:
-            original = fh.read()
         real_apply = redactor._apply_findings
 
         def apply_then_edit(*args, **kwargs):
@@ -1615,9 +1613,32 @@ class TestReadOncePlanFirst:
         monkeypatch.setattr(redactor, '_apply_findings', apply_then_edit)
         assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (0, 1)
         assert Path(path).read_text(encoding='utf-8') == 'edited by someone else = True\n'
+        assert not os.path.exists(path + '.bak')
+        assert any('changed on disk' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_backup_holds_the_bytes_read(self, make_file, monkeypatch):
+        # A change the stat cannot see (same size, mtime put back) still does
+        # not reach the backup: it is written from the bytes that were read,
+        # not copied from the file again.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        real_apply = redactor._apply_findings
+
+        def apply_then_rewrite_unseen(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            with open(path, 'r+b') as fh:
+                fh.write(b'K')
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_rewrite_unseen)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
         with open(path + '.bak', 'rb') as fh:
             assert fh.read() == original
-        assert any('changed on disk' in r.getMessage() for r in credactor_caplog.records)
 
     def test_file_changed_after_the_backup_is_left_alone(self, make_file, monkeypatch):
         import credactor.redactor as redactor
@@ -1723,6 +1744,152 @@ class TestBackupModes:
         assert len(warned) == 1
 
 
+def _link_dir_or_skip(link, target):
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not supported')
+
+
+class TestParentSwap:
+    """SR-20: a directory on the path swapped for a symlink, before the
+    rewrite or while it runs, must not redirect the write outside the scan
+    root. The outside file is left byte-identical, and no backup is written
+    outside the root."""
+
+    def _tree(self, tmp_path):
+        root = tmp_path / 'root'
+        (root / 'sub').mkdir(parents=True)
+        inside = root / 'sub' / 'a.py'
+        inside.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        (outside / 'a.py').write_text(f'k = "{_AWS_KEY}"  # outside\n', encoding='utf-8')
+        return root, inside, outside
+
+    def _swap(self, root, outside):
+        os.rename(root / 'sub', root / 'sub_moved')
+        _link_dir_or_skip(root / 'sub', outside)
+
+    def test_swap_before_the_rewrite(self, tmp_path):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        result = batch_replace_in_file(str(inside), [finding], Config(), root=str(root))
+        assert result == (0, 1)
+        assert (outside / 'a.py').read_bytes() == before
+        assert not (outside / 'a.py.bak').exists()
+
+    def test_directory_moved_out_after_the_backup(self, tmp_path, monkeypatch):
+        # The file keeps its inode, size and mtime, so only the root check
+        # before publishing can tell.
+        import credactor.redactor as redactor
+
+        root, inside, _ = self._tree(tmp_path)
+        away = tmp_path / 'away'
+        real_backup = redactor._create_backup
+
+        def backup_then_move(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            os.rename(root / 'sub', away)
+            _link_dir_or_skip(root / 'sub', away)
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_move)
+        before = inside.read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        result = batch_replace_in_file(str(inside), [finding], Config(), root=str(root))
+        assert result == (0, 1)
+        assert (away / 'a.py').read_bytes() == before
+        assert not [p for p in away.iterdir() if p.name.endswith('.credactor.tmp')]
+
+    def test_fix_all_passes_the_root(self, tmp_path, credactor_caplog):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        assert fix_all([finding], str(root), Config()) == 1
+        assert (outside / 'a.py').read_bytes() == before
+        assert any('scan root' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_interactive_approval_passes_the_root(self, tmp_path, monkeypatch):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        assert interactive_review([finding], str(root), Config()) == 1
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_swap_to_a_directory_inside_the_root(self, tmp_path):
+        # The path still resolves inside the root, but through a link: the
+        # file written would not be the one that was scanned.
+        root, inside, _ = self._tree(tmp_path)
+        other = root / 'other'
+        other.mkdir()
+        (other / 'a.py').write_text(f'k = "{_AWS_KEY}"  # other\n', encoding='utf-8')
+        before = (other / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        os.rename(root / 'sub', root / 'sub_moved')
+        _link_dir_or_skip(root / 'sub', other)
+        assert batch_replace_in_file(str(inside), [finding], Config(), root=str(root)) == (0, 1)
+        assert (other / 'a.py').read_bytes() == before
+
+    def test_interactive_final_sweep_passes_the_root(self, tmp_path, monkeypatch):
+        # Both findings are approved, then the directory is swapped before the
+        # end-of-review sweep, which would clear the copy of the first value
+        # left on the second finding's line.
+        import credactor.redactor as redactor
+
+        root, inside, outside = self._tree(tmp_path)
+        inside.write_text(f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"  # {_AWS_KEY}\n', encoding='utf-8')
+        (outside / 'a.py').write_text(f'# {_AWS_KEY}\n', encoding='utf-8')
+        before = (outside / 'a.py').read_bytes()
+        first = _mk_finding(str(inside), _AWS_KEY, line=1)
+        second = _mk_finding(str(inside), _PASSWORD, line=2)
+        real_single = redactor.replace_single
+        calls = []
+
+        def single_then_swap(*args, **kwargs):
+            ok = real_single(*args, **kwargs)
+            calls.append(ok)
+            if len(calls) == 2:
+                self._swap(root, outside)
+            return ok
+
+        monkeypatch.setattr(redactor, 'replace_single', single_then_swap)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review([first, second], str(root), Config())
+        assert calls == [True, True]
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_final_sweep_checks_the_root(self, tmp_path):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        self._swap(root, outside)
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        _final_file_sweep(str(inside), [finding], set(), Config(no_backup=True), root=str(root))
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_single_file_target_is_its_own_root(self, tmp_path):
+        path = tmp_path / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert batch_replace_in_file(str(path), [finding], Config(), root=str(path)) == (1, 0)
+
+    def test_root_reached_through_a_link_above_it(self, tmp_path):
+        # A link above the root (macOS /tmp, say) is not a swap below it.
+        real = tmp_path / 'real'
+        (real / 'root').mkdir(parents=True)
+        _link_dir_or_skip(tmp_path / 'alias', real)
+        path = tmp_path / 'alias' / 'root' / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        finding = _mk_finding(str(path), _AWS_KEY)
+        root = str(tmp_path / 'alias' / 'root')
+        assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
@@ -1781,9 +1948,9 @@ class TestGuardPins:
                 held['read'] = locked_elsewhere()
             return real_open(file, *args, **kwargs)
 
-        def spy_write(filepath, lines, encoding):
+        def spy_write(filepath, lines, encoding, **kwargs):
             held['write'] = locked_elsewhere()
-            return real_write(filepath, lines, encoding)
+            return real_write(filepath, lines, encoding, **kwargs)
 
         monkeypatch.setattr(fcntl, 'flock', recorder)
         monkeypatch.setattr(redactor, 'open', spy_open, raising=False)
