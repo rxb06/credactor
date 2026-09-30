@@ -1523,6 +1523,40 @@ class TestGitAtTheSink:
         assert config.read_bytes() == before
 
 
+class TestOneWritePath:
+    """PA-14: the end-of-review sweep writes through the same path as every
+    other rewrite, so it gets the same lock, and it still makes no backup of
+    its own and leaves an unchanged file alone."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='fcntl is POSIX only')
+    def test_final_sweep_takes_the_lock(self, make_file, monkeypatch):
+        import fcntl
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        taken = []
+        real_flock = fcntl.flock
+        monkeypatch.setattr(fcntl, 'flock', lambda fd, op: taken.append(op) or real_flock(fd, op))
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert taken
+        assert _AWS_KEY not in Path(path).read_text(encoding='utf-8')
+
+    def test_final_sweep_keeps_the_sessions_backup(self, make_file):
+        # The first approval backed the file up; the sweep must not replace
+        # that backup with the already-redacted file.
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# {_AWS_KEY}\n')
+        Path(path + '.bak').write_text('original\n', encoding='utf-8')
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], {1}, Config())
+        assert Path(path + '.bak').read_text(encoding='utf-8') == 'original\n'
+        assert Path(path).read_text(encoding='utf-8').endswith('# REDACTED_BY_CREDACTOR\n')
+
+    def test_final_sweep_leaves_an_unchanged_file_alone(self, make_file, monkeypatch):
+        path = make_file('a.py', 'x = 1\n')
+        calls = []
+        monkeypatch.setattr(os, 'replace', lambda *a, **k: calls.append(a))
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert calls == []
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""

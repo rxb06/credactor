@@ -150,6 +150,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **Every rewrite goes through one write path.** The end-of-review sweep in
+  interactive mode kept its own copy of the symlink refusal, the atomic write
+  and the mode restore. It now shares the path that `--fix-all` and each
+  interactive approval use, so it also takes the advisory lock, and later
+  write-path checks apply to all three at once.
 - **An ingested finding with no valid line number is reported at line 0.**
   It was reported at line 1. In SARIF such a result names the file with no
   region, since SARIF lines start at 1. Two copies of one finding, one with a

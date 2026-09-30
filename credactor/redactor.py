@@ -12,6 +12,7 @@ import shutil
 import string
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from ._log import logger
@@ -461,6 +462,115 @@ def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
                 os.unlink(tmp_path)
 
 
+def _rewrite_file(
+    filepath: str,
+    config: Config,
+    edit: Callable[[list[str]], bool],
+    *,
+    verb: str,
+    backup: bool,
+    write_unchanged: bool = False,
+) -> str:
+    """The one write path (PA-14). Every rewrite goes through here: a batch
+    replacement, an interactive approval, and the end-of-review sweep.
+
+    It refuses a symlink (S1), takes the advisory lock (SEC-15), reads the file
+    keeping each line's terminator, makes the backup when *backup* is set and
+    backups are on (a failed backup aborts the file), lets *edit* change the
+    lines in place, publishes atomically (PA-02), restores the original mode
+    with its special bits, and wipes the backup under --secure-delete once the
+    file changed. *edit* returns whether it changed anything; an unchanged
+    file is only written when *write_unchanged* is set.
+
+    Returns 'written', 'unchanged', or 'failed' when the file was refused or
+    could not be read, backed up or written (each logged).
+    """
+    # S1: os.replace would rewrite the LINK node, not the file it points at,
+    # so the secret would remain in the target while we report success.
+    if os.path.islink(filepath):
+        logger.warning(
+            'Refusing to %s symlink %s: os.replace would rewrite the link, not its '
+            'target, so the secret would remain in the target file. Resolve the '
+            'symlink and re-run.',
+            verb,
+            filepath,
+        )
+        return 'failed'
+
+    # #16: detect the encoding
+    encoding = detect_encoding(filepath)
+
+    # Preserve file permissions (include setuid/setgid/sticky bits)
+    try:
+        orig_stat = os.stat(filepath)
+        orig_mode: int | None = orig_stat.st_mode & 0o7777
+    except OSError:
+        orig_mode = None
+
+    # Acquire advisory file lock to mitigate TOCTOU races between read and
+    # replace.  Uses fcntl on Unix; on Windows fcntl is unavailable so the
+    # handle is closed immediately to avoid blocking os.replace().
+    lock_fh = None
+    try:
+        lock_fh = open(filepath, 'r')  # noqa: SIM115
+        try:
+            import fcntl
+
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            # Windows: fcntl is unavailable, so close the handle to avoid blocking
+            # os.replace() which cannot overwrite an open file on Windows.
+            lock_fh.close()
+            lock_fh = None
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
+    except OSError:
+        pass
+
+    try:
+        try:
+            # newline='' preserves each line's original terminator (CRLF/LF) so
+            # redaction never normalizes line endings on untouched lines.
+            with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
+                lines = fh.readlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a detected multibyte encoding (e.g.
+            # truncated UTF-16) failing mid-stream must fail THIS file only.
+            logger.error('Cannot read %s: %s', filepath, exc)
+            return 'failed'
+
+        # #1: back up before modifying (immediately after the read).
+        bak: str | None = None
+        if backup and not config.no_backup:
+            bak = _create_backup(filepath, config)
+            if bak is None:
+                logger.error('Backup failed for %s; skipping replacements.', filepath)
+                return 'failed'
+
+        changed = edit(lines)
+        if not changed and not write_unchanged:
+            return 'unchanged'
+
+        if not _write_atomic(filepath, lines, encoding):
+            return 'failed'
+
+        # Restore original file permissions
+        if orig_mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(filepath, orig_mode)
+
+        if bak and config.secure_delete and changed:
+            _secure_delete(bak)
+
+        return 'written'
+    finally:
+        if lock_fh is not None:
+            lock_fh.close()
+
+
 def _final_file_sweep(
     filepath: str,
     approved: list[Finding],
@@ -474,34 +584,18 @@ def _final_file_sweep(
     finding B's line survives even after B itself is approved. This pass
     re-sweeps the file for ALL approved values, preserving only the lines
     whose findings were skipped, failed, or never adjudicated (interrupt).
-    The write is atomic; under --secure-delete the .bak from the first
-    replacement is already wiped, so changes here are not recoverable (by
-    design for --secure-delete) — atomicity still guarantees no half-write.
+    It is written through the same path as every other rewrite. It makes no
+    backup: the first approval to the file made one, and under
+    --secure-delete that one is already wiped, so changes here are not
+    recoverable (by design for --secure-delete).
     """
-    if os.path.islink(filepath):
-        logger.warning(
-            'Refusing to sweep symlink %s: os.replace would rewrite the link, not its target.',
-            filepath,
-        )
-        return
-    try:
-        encoding = detect_encoding(filepath)
-        with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
-            lines = fh.readlines()
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.error('Cannot read %s: %s', filepath, exc)
-        return
-    before = list(lines)
-    _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
-    if lines == before:
-        return
-    try:
-        orig_mode: int | None = os.stat(filepath).st_mode
-    except OSError:
-        orig_mode = None
-    if _write_atomic(filepath, lines, encoding) and orig_mode is not None:
-        with contextlib.suppress(OSError):
-            os.chmod(filepath, orig_mode)
+
+    def edit(lines: list[str]) -> bool:
+        before = list(lines)
+        _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
+        return lines != before
+
+    _rewrite_file(filepath, config, edit, verb='sweep', backup=False)
 
 
 def _sweep_stray_copies(
@@ -665,141 +759,83 @@ def batch_replace_in_file(
             tally['refused'] = tally.get('refused', 0) + refused
         return replaced, failed + refused
 
-    # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
-    # the file it points at, so the live secret would remain in the target while
-    # we report success. Fail closed: skip, warn, count all findings unresolved.
-    if os.path.islink(filepath):
-        logger.warning(
-            'Refusing to redact symlink %s: os.replace would rewrite the link, '
-            'not its target — the secret would remain in the target file. '
-            'Resolve the symlink and re-run.',
-            filepath,
-        )
-        return 0, len(file_findings)
-
     # S6: the CLI validates the replacement at its front door, but a library
     # caller building a Config directly skips that — re-check at the sink so an
     # out-of-charset (or empty) string is never written into a file.
     config.validate_replacement()
 
-    # #16 — detect encoding
-    encoding = detect_encoding(filepath)
+    counts = (0, 0)
 
-    # Preserve file permissions (include setuid/setgid/sticky bits)
-    try:
-        orig_stat = os.stat(filepath)
-        orig_mode = orig_stat.st_mode & 0o7777  # full mode including setuid/setgid
-    except OSError:
-        orig_mode = None
+    def edit(lines: list[str]) -> bool:
+        nonlocal counts
+        counts = _apply_findings(lines, file_findings, config, filepath, sweep_exclude_lines, tally)
+        return counts[0] > 0
 
-    # Acquire advisory file lock to mitigate TOCTOU races between read and
-    # replace.  Uses fcntl on Unix; on Windows fcntl is unavailable so the
-    # handle is closed immediately to avoid blocking os.replace().
-    lock_fh = None
-    try:
-        lock_fh = open(filepath, 'r')  # noqa: SIM115
-        try:
-            import fcntl
+    # skip_backup: interactive mode backs a file up once per session, on the
+    # FIRST approval; later approvals to the same file must NOT re-create the
+    # .bak (the per-file backup name is stable, so a second write would clobber
+    # it with the already-redacted file and lose the earlier secret's
+    # original). The first approval's .bak already holds every line's true
+    # original.
+    outcome = _rewrite_file(
+        filepath, config, edit, verb='redact', backup=not skip_backup, write_unchanged=True
+    )
+    if outcome == 'failed':
+        # Refused, or unreadable, not backed up, or not written: every finding
+        # stays unresolved.
+        return 0, len(file_findings)
+    return counts
 
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except ImportError:
-            # Windows: fcntl unavailable — close handle to avoid blocking
-            # os.replace() which cannot overwrite an open file on Windows.
-            lock_fh.close()
-            lock_fh = None
-        except OSError as exc:
-            # SEC-15: the lock is best effort. When it cannot be taken (usually
-            # contention), record why (visible under --verbose) and proceed
-            # unlocked (SR-01).
-            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
-    except OSError:
-        pass
 
-    try:
-        try:
-            # newline='' preserves each line's original terminator (CRLF/LF) so
-            # redaction never normalizes line endings on untouched lines.
-            with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
-                lines = fh.readlines()
-        except (OSError, UnicodeDecodeError) as exc:
-            # UnicodeDecodeError: a detected multibyte encoding (e.g.
-            # truncated UTF-16) failing mid-stream must fail THIS file only —
-            # an ingested finding pointing at such a file previously aborted
-            # the whole redaction run mid-loop.
-            logger.error('Cannot read %s: %s', filepath, exc)
-            return 0, len(file_findings)
+def _apply_findings(
+    lines: list[str],
+    file_findings: list[Finding],
+    config: Config,
+    filepath: str,
+    sweep_exclude_lines: frozenset[int],
+    tally: dict[str, int] | None,
+) -> tuple[int, int]:
+    """Replace each finding on *lines* in place, bottom to top so earlier
+    replacements do not shift later ones, then sweep stray copies. Returns
+    (replaced, failed)."""
+    replaced = 0
+    failed = 0
+    refused_here = 0
+    failed_lines: set[int] = set()
+    replaced_values: set[str] = set()
+    refused_values: set[str] = set()
+    marker_lines: dict[int, bool] = {}
 
-        # #1 — backup before modifying (immediately after read). skip_backup:
-        # interactive mode backs a file up once per session, on the FIRST
-        # approval; later approvals to the same file must NOT re-create the
-        # .bak (the per-file backup name is stable, so a second write would
-        # clobber it with the already-redacted file and lose the earlier
-        # secret's original). The first approval's .bak already holds every
-        # line's true original.
-        bak: str | None = None
-        if not config.no_backup and not skip_backup:
-            bak = _create_backup(filepath, config)
-            if bak is None:
-                logger.error('Backup failed for %s — skipping replacements.', filepath)
-                return 0, len(file_findings)
+    for finding in sorted(file_findings, key=lambda f: f['line'], reverse=True):
+        outcome = _replace_one(lines, finding, config, filepath, marker_lines)
+        if outcome == 'replaced':
+            replaced += 1
+            replaced_values.add(finding['full_value'])
+            continue
+        failed += 1
+        failed_lines.add(finding['line'])
+        if outcome == 'refused':
+            refused_here += 1
+            refused_values.add(finding['full_value'])
+    if tally is not None:
+        tally['refused'] = tally.get('refused', 0) + refused_here
 
-        replaced = 0
-        failed = 0
-        refused_here = 0
-        failed_lines: set[int] = set()
-        replaced_values: set[str] = set()
-        refused_values: set[str] = set()
-        marker_lines: dict[int, bool] = {}
-
-        # Sort by line number descending so earlier replacements don't shift later ones
-        sorted_findings = sorted(file_findings, key=lambda f: f['line'], reverse=True)
-
-        for finding in sorted_findings:
-            outcome = _replace_one(lines, finding, config, filepath, marker_lines)
-            if outcome == 'replaced':
-                replaced += 1
-                replaced_values.add(finding['full_value'])
-                continue
-            failed += 1
-            failed_lines.add(finding['line'])
-            if outcome == 'refused':
-                refused_here += 1
-                refused_values.add(finding['full_value'])
-        if tally is not None:
-            tally['refused'] = tally.get('refused', 0) + refused_here
-
-        # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by
-        # known findings the caller did not approve here (sweep_exclude_lines)
-        # and lines whose own replacement just failed keep their content —
-        # each finding's adjudication owns its line. A value refused on its
-        # own line (inside a longer word, or on a key marker line) and not
-        # replaced anywhere drives no sweep either: it was never confirmed as
-        # a token here.
-        if replaced:
-            unconfirmed = refused_values - replaced_values
-            _sweep_stray_copies(
-                lines,
-                [f for f in file_findings if f['full_value'] not in unconfirmed],
-                config,
-                set(sweep_exclude_lines) | failed_lines,
-                filepath,
-            )
-
-        if not _write_atomic(filepath, lines, encoding):
-            return 0, len(file_findings)
-
-        # Restore original file permissions
-        if orig_mode is not None:
-            with contextlib.suppress(OSError):
-                os.chmod(filepath, orig_mode)
-
-        if bak and config.secure_delete and replaced > 0:
-            _secure_delete(bak)
-
-        return replaced, failed
-    finally:
-        if lock_fh is not None:
-            lock_fh.close()
+    # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by known
+    # findings the caller did not approve here (sweep_exclude_lines) and lines
+    # whose own replacement just failed keep their content: each finding's
+    # adjudication owns its line. A value refused on its own line (inside a
+    # longer word, or on a key marker line) and not replaced anywhere drives no
+    # sweep either: it was never confirmed as a token here.
+    if replaced:
+        unconfirmed = refused_values - replaced_values
+        _sweep_stray_copies(
+            lines,
+            [f for f in file_findings if f['full_value'] not in unconfirmed],
+            config,
+            set(sweep_exclude_lines) | failed_lines,
+            filepath,
+        )
+    return replaced, failed
 
 
 def replace_single(
