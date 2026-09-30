@@ -63,11 +63,6 @@
   ],
   [
    "WARNING",
-   "<root>/dupes.py: also cleared 2 additional copies of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
-   1
-  ],
-  [
-   "WARNING",
    "<root>/lock.py: also cleared 1 additional copy of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
    1
   ],
@@ -77,11 +72,11 @@
    1
   ]
  ],
- "note": "SR-21: lock.py's revision pin is kept, api_key_rev is still swept; the dupes.py lines are current behaviour, which SR-22 changes",
+ "note": "SR-21: lock.py's revision pin is kept, api_key_rev is still swept; SR-22: dupes.py keeps its inline-ignored line 2 and its allowlisted line 3",
  "reported": true,
  "tree_after": {
   ".credactorignore": "319e4db3788b944b",
-  "dupes.py": "00872779da3a691a",
+  "dupes.py": "d075cfde255eb278",
   "lock.py": "436dd16d00820a91"
  }
 }

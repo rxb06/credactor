@@ -41,16 +41,11 @@
    "DEBUG",
    "<root>/app.py:2 suppressed by inline credactor:ignore",
    1
-  ],
-  [
-   "WARNING",
-   "<root>/app.py: also cleared 1 additional copy of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
-   1
   ]
  ],
- "note": "interactive approvals and the final sweep; SR-22 and PA-14 change this",
+ "note": "interactive approvals and the final sweep, which runs through the shared write path (PA-14); SR-22: the inline-ignored line 2 is never swept",
  "reported": true,
  "tree_after": {
-  "app.py": "38b5ed0e4808facc"
+  "app.py": "f54b1705a882f4ff"
  }
 }

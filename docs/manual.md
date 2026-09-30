@@ -292,6 +292,12 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   skipped and an approved finding, the approval releases the line for the
   sweep of *approved* values (disclosed by the `[WARN]`) — the skipped
   finding's own value is never cleared.
+- **The sweep never rewrites a suppressed line.** A line carrying
+  `credactor:ignore`, or one named by a `.credactorignore` `file:line` entry,
+  is left as it is by the sweep, in `--fix-all` and in interactive review, even
+  when it holds a copy of a value redacted elsewhere. (An ingested finding on
+  an inline-ignored line is still redacted itself; see
+  [Suppression layers and ingested findings](#suppression-layers-and-ingested-findings).)
 - **The sweep keeps a copy in a hash, commit or revision field.** A copy of a
   redacted value whose own key reads like a hash, digest, checksum, commit,
   revision or integrity field (`revision = "<hex>"`, `commit: <hex>`) is left

@@ -539,7 +539,9 @@ def _print_banner(target_resolved_path: Path) -> None:
         )
 
 
-def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int:
+def _handle_fix_all(
+    findings: list[Finding], target: str, config: Config, allowlist: AllowList
+) -> int:
     """Confirm with the user and run ``fix_all``. Returns unresolved count."""
     # With -f json/sarif the report on stdout must stay a single parseable
     # document, so every human-facing line here goes to stderr instead.
@@ -582,7 +584,7 @@ def _handle_fix_all(findings: list[Finding], target: str, config: Config) -> int
         if answer not in ('y', 'yes'):
             print('  Aborted.', file=out)
             sys.exit(1)
-    return fix_all(findings, target, config)
+    return fix_all(findings, target, config, allowlist)
 
 
 def _collect_findings(
@@ -892,7 +894,7 @@ def _main_inner(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     if config.fix_all:
-        unresolved = _handle_fix_all(findings, target, config)
+        unresolved = _handle_fix_all(findings, target, config, allowlist)
         sys.exit(1 if unresolved > 0 else 0)
 
     # Non-text formats in non-CI mode: report and exit 1
@@ -909,5 +911,5 @@ def _main_inner(argv: list[str] | None = None) -> None:
             'report, or --fix-all --yes to redact unattended.',
         )
         sys.exit(1)
-    unresolved = interactive_review(findings, target, config)
+    unresolved = interactive_review(findings, target, config, allowlist)
     sys.exit(1 if unresolved > 0 else 0)

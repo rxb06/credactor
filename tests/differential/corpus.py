@@ -767,8 +767,8 @@ CASES: list[Case] = [
             ),
         },
         argv=('--fix-all', '--yes', '--no-backup', '.'),
-        note="SR-21: lock.py's revision pin is kept, api_key_rev is still swept; the "
-        'dupes.py lines are current behaviour, which SR-22 changes',
+        note="SR-21: lock.py's revision pin is kept, api_key_rev is still swept; SR-22: "
+        'dupes.py keeps its inline-ignored line 2 and its allowlisted line 3',
     ),
     Case(
         id='fix-backup-collision-and-hardlink',
@@ -792,7 +792,8 @@ CASES: list[Case] = [
         },
         argv=('--no-backup', '.'),
         answers=('y', 'n', 'y'),
-        note='interactive approvals and the final sweep; SR-22 and PA-14 change this',
+        note='interactive approvals and the final sweep, which runs through the shared '
+        'write path (PA-14); SR-22: the inline-ignored line 2 is never swept',
     ),
     Case(
         id='dry-run-and-fix-all',

@@ -879,6 +879,59 @@ class TestIngestedSymlinkCLI:
         assert "'real.py'" in err
 
 
+class TestSweepRespectsSuppressions:
+    """SR-22: the copy sweep leaves a line the user suppressed, inline or by a
+    .credactorignore file:line entry, byte-identical, in --fix-all and in
+    interactive review. Other copies are still swept."""
+
+    KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def _repo(self, tmp_path, ignore=''):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / 'dupes.py').write_text(
+            f'first = "{self.KEY}"\n'
+            f'second = "{self.KEY}"  # credactor:ignore\n'
+            f'third = "{self.KEY}"\n'
+            f'# a copy: {self.KEY}\n',
+            encoding='utf-8',
+        )
+        if ignore:
+            (repo / '.credactorignore').write_text(ignore, encoding='utf-8')
+        return repo
+
+    def _lines(self, repo):
+        return (repo / 'dupes.py').read_text(encoding='utf-8').splitlines()
+
+    def test_fix_all_leaves_an_inline_ignored_line(self, tmp_path):
+        repo = self._repo(tmp_path)
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--yes', '--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert self.KEY not in lines[0] + lines[2] + lines[3]
+
+    def test_fix_all_leaves_a_file_line_entry(self, tmp_path):
+        repo = self._repo(tmp_path, ignore='dupes.py:3\n')
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--yes', '--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[2] == f'third = "{self.KEY}"'
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert self.KEY not in lines[0] + lines[3]
+
+    def test_interactive_review_leaves_them_too(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path, ignore='dupes.py:3\n')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        with pytest.raises(SystemExit):
+            main(['--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert lines[2] == f'third = "{self.KEY}"'
+        assert self.KEY not in lines[0] + lines[3]
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

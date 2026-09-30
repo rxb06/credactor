@@ -14,6 +14,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **The copy sweep leaves suppressed lines alone.** A suppressed value never
+  becomes a finding, so its line was not among the ones the sweep keeps, and
+  `--fix-all` rewrote a line marked `credactor:ignore` or named by a
+  `.credactorignore` `file:line` entry when it held a copy of a value redacted
+  elsewhere. The sweep now skips both, in `--fix-all`, each interactive
+  approval and the end-of-review sweep.
 - **The copy sweep keeps hash, commit and revision pins.** The scanner does
   not report a value keyed as a hash, commit or revision, but the sweep that
   clears further copies of a redacted value did not look at the key, so a

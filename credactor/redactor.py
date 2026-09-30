@@ -19,6 +19,7 @@ from pathlib import Path
 from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
 from .patterns import _is_hash_context_at
+from .suppressions import AllowList, has_inline_suppression
 from .types import Finding
 from .utils import (
     OutputMasker,
@@ -760,9 +761,10 @@ def _sweep_stray_copies(
     kept = 0
     hashed = 0
     for idx in range(len(lines)):
-        if idx + 1 in preserved:
-            continue
         line = lines[idx]
+        # SR-22: a line the user marked credactor:ignore is never swept.
+        if idx + 1 in preserved or has_inline_suppression(line):
+            continue
         parts: list[str] = []
         pos = 0
         n = 0
@@ -878,6 +880,7 @@ def batch_replace_in_file(
     skip_backup: bool = False,
     root: str | None = None,
     tally: dict[str, int] | None = None,
+    allowlist: AllowList | None = None,
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
@@ -905,6 +908,7 @@ def batch_replace_in_file(
             skip_backup=skip_backup,
             root=root,
             tally=tally,
+            allowlist=allowlist,
         )
         if tally is not None:
             tally['refused'] = tally.get('refused', 0) + refused
@@ -914,6 +918,11 @@ def batch_replace_in_file(
     # caller building a Config directly skips that — re-check at the sink so an
     # out-of-charset (or empty) string is never written into a file.
     config.validate_replacement()
+
+    # SR-22: lines a .credactorignore file:line entry names are the user's
+    # call, so the copy sweep leaves them as they are.
+    if allowlist is not None:
+        sweep_exclude_lines = sweep_exclude_lines | allowlist.suppressed_lines(filepath)
 
     counts = (0, 0)
 
@@ -997,6 +1006,7 @@ def replace_single(
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
     root: str | None = None,
+    allowlist: AllowList | None = None,
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
@@ -1009,6 +1019,7 @@ def replace_single(
         sweep_exclude_lines=sweep_exclude_lines,
         skip_backup=skip_backup,
         root=root,
+        allowlist=allowlist,
     )
     return replaced > 0
 
@@ -1020,6 +1031,7 @@ def interactive_review(
     findings: list[Finding],
     root: str,
     config: Config,
+    allowlist: AllowList | None = None,
 ) -> int:
     """Walk through every finding and ask the user whether to replace it.
 
@@ -1068,6 +1080,8 @@ def interactive_review(
     def _run_final_sweeps() -> None:
         for fp, approved in approved_by_file.items():
             preserve = lines_by_file[fp] - {f['line'] for f in approved}
+            if allowlist is not None:
+                preserve |= allowlist.suppressed_lines(fp)
             _final_file_sweep(fp, approved, preserve, config, root=root)
 
     replacement_desc = config.custom_replacement
@@ -1133,6 +1147,7 @@ def interactive_review(
                     sweep_exclude_lines=frozenset(others),
                     skip_backup=fpath in backed_up_files,
                     root=root,
+                    allowlist=allowlist,
                 )
                 if ok:
                     backed_up_files.add(fpath)
@@ -1159,6 +1174,7 @@ def fix_all(
     findings: list[Finding],
     root: str,
     config: Config,
+    allowlist: AllowList | None = None,
 ) -> int:
     """Replace all findings without prompting (#33).
 
@@ -1174,7 +1190,7 @@ def fix_all(
     for filepath, file_findings in by_file.items():
         tally = {'refused': 0}
         replaced, failed = batch_replace_in_file(
-            filepath, file_findings, config, root=root, tally=tally
+            filepath, file_findings, config, root=root, tally=tally, allowlist=allowlist
         )
         total_replaced += replaced
         total_failed += failed
