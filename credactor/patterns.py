@@ -422,3 +422,18 @@ def _is_hash_context_at(line: str, value_start: int) -> bool:
     if any(kw in key for kw in _CRED_KEYWORDS):
         return False
     return bool(_HASH_CONTEXT_RE.search(key))
+
+
+# The two value detectors that look at a value's shape only (bare hex, or
+# high-entropy Base64). The scanner applies the hash-field exemption to them
+# alone: a value one of the other detectors recognises (a provider prefix, a
+# JWT, a key header, a connection string) is a credential under any key.
+_HEURISTIC_VALUE_LABELS = ('hex credential', 'high-entropy string')
+
+
+def _known_format(value: str) -> bool:
+    """Whether a detector other than the two shape heuristics recognises
+    *value*, so no hash-like key can make it a hash output."""
+    return any(
+        vp.pattern.search(value) for vp in VALUE_PATTERNS if vp.label not in _HEURISTIC_VALUE_LABELS
+    )

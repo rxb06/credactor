@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
-from .patterns import _is_hash_context_at
+from .patterns import _is_hash_context_at, _known_format
 from .suppressions import AllowList, has_inline_suppression
 from .types import Finding
 from .utils import (
@@ -723,7 +723,8 @@ def _final_file_sweep(
 
     def edit(lines: list[str]) -> bool:
         before = list(lines)
-        _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
+        own = frozenset(f['line'] for f in approved)
+        _sweep_stray_copies(lines, approved, config, preserve_lines, filepath, own)
         return lines != before
 
     _rewrite_file(filepath, config, edit, verb='sweep', backup=False, root=root)
@@ -735,6 +736,7 @@ def _sweep_stray_copies(
     config: Config,
     preserved: set[int],
     filepath: str,
+    own_lines: frozenset[int] = frozenset(),
 ) -> None:
     """Clear remaining exact copies of redacted values beyond the
     adjudicated findings.
@@ -746,6 +748,9 @@ def _sweep_stray_copies(
     ``preserved`` (1-based) are never touched: they belong to known findings
     whose own adjudication — an explicit interactive skip, a pending prompt,
     or a failed replacement — owns them. Scope is bounded to this one file.
+    ``own_lines`` are the lines whose findings were just replaced: a
+    credactor:ignore marker does not stop the sweep there, since the finding
+    itself was redacted on that line.
     """
     stray = DEFAULT_REPLACEMENT if config.replace_mode == 'env' else config.custom_replacement
     values = {f['full_value'] for f in file_findings if f['full_value']}
@@ -767,19 +772,26 @@ def _sweep_stray_copies(
         + r')(?!\w)',
         re.ASCII,
     )
+    # SR-21: only a value the shape heuristics alone recognise can be a hash
+    # output; a known-format token is a credential under any key.
+    exemptable = {v: not _known_format(v) for v in values}
     stray_count = 0
     kept = 0
     hashed = 0
     for idx in range(len(lines)):
         line = lines[idx]
-        # SR-22: a line the user marked credactor:ignore is never swept.
-        if idx + 1 in preserved or has_inline_suppression(line):
+        if idx + 1 in preserved:
+            continue
+        matches = list(pat.finditer(line))
+        # SR-22: a line the user marked credactor:ignore is not swept, unless
+        # a finding on it was just replaced.
+        if not matches or (idx + 1 not in own_lines and has_inline_suppression(line)):
             continue
         parts: list[str] = []
         pos = 0
         n = 0
-        for match in pat.finditer(line):
-            if _hash_keyed(line, match.start()):
+        for match in matches:
+            if exemptable[match.group(0)] and _hash_keyed(line, match.start()):
                 # SR-21: a copy in a hash, commit or revision field is kept,
                 # as the scanner keeps it.
                 hashed += 1
@@ -825,12 +837,19 @@ def _sweep_stray_copies(
         )
 
 
+# How far back the key of a value is looked for: room for the longest key the
+# key pattern takes (128), its quotes, the operator and some spacing. Looking
+# back further cost time in proportion to the value's offset on the line.
+_KEY_WINDOW = 256
+
+
 def _hash_keyed(line: str, start: int) -> bool:
     """Whether the value starting at *start* on *line* is keyed like a hash,
     commit or revision field, by the scanner's own rule (a credential keyword
     in the key vetoes it)."""
     at = start - 1 if start and line[start - 1] in '"\'' else start
-    return _is_hash_context_at(line, at)
+    lo = max(0, at - _KEY_WINDOW)
+    return _is_hash_context_at(line[lo:at], at - lo)
 
 
 def _writable_findings(filepath: str, file_findings: list[Finding]) -> tuple[list[Finding], int]:
@@ -972,6 +991,7 @@ def _apply_findings(
     failed = 0
     refused_here = 0
     failed_lines: set[int] = set()
+    replaced_lines: set[int] = set()
     replaced_values: set[str] = set()
     refused_values: set[str] = set()
     marker_lines: dict[int, bool] = {}
@@ -981,6 +1001,7 @@ def _apply_findings(
         if outcome == 'replaced':
             replaced += 1
             replaced_values.add(finding['full_value'])
+            replaced_lines.add(finding['line'])
             continue
         failed += 1
         failed_lines.add(finding['line'])
@@ -1004,6 +1025,7 @@ def _apply_findings(
             config,
             set(sweep_exclude_lines) | failed_lines,
             filepath,
+            frozenset(replaced_lines),
         )
     return replaced, failed
 

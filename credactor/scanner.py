@@ -15,6 +15,7 @@ from pathlib import Path
 from ._log import logger
 from .config import ENTROPY_DEFAULT, MIN_LEN_DEFAULT, Config
 from .patterns import (
+    _HEURISTIC_VALUE_LABELS,
     _PEM_KEY_RE,
     ASSIGNMENT_RE,
     CRED_VAR_PATTERNS,
@@ -130,7 +131,6 @@ _MAX_BLOCK_SIZE = 8192
 # The two entropy-based value detectors share the same extra guards (path/slash +
 # quote-prefix, then hash-context suppression). Named once so the guard block and
 # its membership test cannot drift apart.
-_HEURISTIC_VALUE_LABELS = ('hex credential', 'high-entropy string')
 
 # POSIX env var name — used by the bare $VAR safe-value check.
 _ENV_VAR_NAME_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')

@@ -300,12 +300,14 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   when it holds a copy of a value redacted elsewhere. (An ingested finding on
   an inline-ignored line is still redacted itself; see
   [Suppression layers and ingested findings](#suppression-layers-and-ingested-findings).)
-- **The sweep keeps a copy in a hash, commit or revision field.** A copy of a
-  redacted value whose own key reads like a hash, digest, checksum, commit,
-  revision or integrity field (`revision = "<hex>"`, `commit: <hex>`) is left
-  in place, by the same rule the scanner uses to not report such a value, and
-  a `[WARN]` states how many were kept. A credential keyword in the key
-  (`api_key_rev`) still wins, so that copy is cleared.
+- **The sweep keeps a hex or Base64 copy in a hash, commit or revision
+  field.** A copy of a redacted value whose own key reads like a hash, digest,
+  checksum, commit, revision or integrity field (`revision = "<hex>"`,
+  `commit: <hex>`) is left in place, by the same rule the scanner uses to not
+  report such a value, and a `[WARN]` states how many were kept. A credential
+  keyword in the key (`api_key_rev`) still wins, and a known-format token (a
+  `ghp_` or `AKIA` key, a JWT, a connection string) is cleared under any key,
+  so those copies are cleared.
 
 ---
 

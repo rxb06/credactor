@@ -27,11 +27,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   elsewhere. The sweep now skips both, in `--fix-all`, each interactive
   approval and the end-of-review sweep.
 - **The copy sweep keeps hash, commit and revision pins.** The scanner does
-  not report a value keyed as a hash, commit or revision, but the sweep that
-  clears further copies of a redacted value did not look at the key, so a
-  revision pin that shared its bytes with a redacted token was rewritten. The
-  sweep now keeps such a copy, by the scanner's own rule (a credential keyword
-  in the key still wins), and says how many it kept.
+  not report a bare hex or Base64 value keyed as a hash, commit or revision,
+  but the sweep that clears further copies of a redacted value did not look at
+  the key, so a revision pin that shared its bytes with a redacted value was
+  rewritten. The sweep now keeps such a copy, by the scanner's own rule, and
+  says how many it kept. A credential keyword in the key still wins, and a
+  known-format token (a provider prefix, a JWT, a connection string) is
+  cleared under any key, as the scanner reports it under any key.
 - **A directory swapped for a symlink cannot redirect a rewrite outside the
   scan root.** Only the file itself was checked for being a symlink, so a
   directory on its path replaced by a symlink during the run could send the

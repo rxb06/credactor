@@ -1916,6 +1916,37 @@ class TestSweepSparesHashFields:
         assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
         assert self._HEX not in Path(path).read_text(encoding='utf-8')
 
+    def test_single_quoted_pin_is_kept(self, make_file):
+        path = make_file('deps.py', f"token = '{self._HEX}'\nrevision = '{self._HEX}'\n")
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8').splitlines()[1] == f"revision = '{self._HEX}'"
+
+    def test_known_format_token_under_a_hash_key_is_still_cleared(self, make_file):
+        # The scanner reports a known-format token under any key, so the
+        # exemption does not apply to it: only hex or Base64 values qualify.
+        path = make_file('app.py', f'cfg = {{"token": "{_GH_TOKEN}", "commit": "{_GH_TOKEN}"}}\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_interactive_clears_a_known_format_copy_under_a_hash_key(self, make_file, monkeypatch):
+        path = make_file('app.py', f'cfg = {{"token": "{_GH_TOKEN}", "commit": "{_GH_TOKEN}"}}\n')
+        findings = [_mk_finding(path, _GH_TOKEN, ftype='pattern:GitHub token')] * 2
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        assert interactive_review(findings, os.path.dirname(path), Config(no_backup=True)) == 0
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_sweep_is_linear_on_a_long_line(self, make_file):
+        # The key check looks back a bounded window, not the whole line.
+        filler = ('abcdefghij' * 100_000) + ''.join(f';var t{i}="{self._HEX}"' for i in range(20))
+        path = make_file('bundle.js', f'const token = "{self._HEX}";\n{filler}\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        start = time.perf_counter()
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert time.perf_counter() - start < 5.0
+        assert self._HEX not in Path(path).read_text(encoding='utf-8')
+
     def test_final_sweep_keeps_them_too(self, make_file):
         path = make_file('deps.py', f'# {self._HEX}\nrevision = "{self._HEX}"\n')
         finding = _mk_finding(path, self._HEX, ftype='variable:token')
@@ -1963,6 +1994,35 @@ class TestEnvModeLiteralShapes:
         config = Config(no_backup=True, replace_mode='env')
         assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
         assert Path(path).read_text(encoding='utf-8') == 'api_key = os.environ["API_KEY"]\n'
+
+
+class TestOwnLineOfAnIgnoredFinding:
+    """SR-22: a line marked credactor:ignore is skipped by the sweep only when
+    no finding was replaced on it. An ingested finding there is redacted
+    (documented), and the sweep then clears its other copies on that line."""
+
+    def test_second_copy_on_the_findings_own_line_is_cleared(self, make_file):
+        path = make_file(
+            'run.sh',
+            f'git clone https://{_GH_TOKEN}@github.com/o/r'
+            f' && echo {_GH_TOKEN} > .tok  # credactor:ignore\n',
+        )
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_other_ignored_lines_are_still_skipped(self, make_file):
+        path = make_file('run.sh', f'a={_GH_TOKEN}\nb={_GH_TOKEN}  # credactor:ignore\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines == ['a=REDACTED_BY_CREDACTOR', f'b={_GH_TOKEN}  # credactor:ignore']
+
+    def test_final_sweep_clears_an_approved_ignored_line(self, make_file):
+        path = make_file('run.sh', f'x=REDACTED_BY_CREDACTOR y={_GH_TOKEN}  # credactor:ignore\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
 
 
 class TestLineZeroAtTheSink:
