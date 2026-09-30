@@ -575,14 +575,14 @@ def _sweep_stray_copies(
         )
 
 
-def _writable_findings(
-    filepath: str, file_findings: list[Finding], root: str | None
-) -> tuple[list[Finding], int]:
+def _writable_findings(filepath: str, file_findings: list[Finding]) -> tuple[list[Finding], int]:
     """Split off the findings that must not be written here, warning for
     each; returns the rest and how many were refused."""
     # SR-16: nothing under .git (repository metadata and hooks, not source) is
-    # ever rewritten, whoever passed the finding in.
-    if in_git_dir(filepath, root if root is not None else os.sep):
+    # ever rewritten, whoever passed the finding in. The whole path counts, as
+    # given and resolved, so neither a root at or inside .git nor a linked
+    # directory into it gets past.
+    if in_git_dir(filepath, os.sep) or in_git_dir(os.path.realpath(filepath), os.sep):
         logger.warning('%s: not rewritten: the path is inside .git.', filepath)
         return [], len(file_findings)
     writable: list[Finding] = []
@@ -646,7 +646,7 @@ def batch_replace_in_file(
     if not file_findings:
         return 0, 0
 
-    writable, refused = _writable_findings(filepath, file_findings, root)
+    writable, refused = _writable_findings(filepath, file_findings)
     if refused:
         # Re-enter with the refused findings stripped, so every downstream
         # outcome (success, symlink refusal, read/write errors) counts them

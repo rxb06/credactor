@@ -180,9 +180,11 @@ def _mark_git_path(
     finding: Finding, raw_file: str, target_resolved: str, stats: dict[str, Any] | None
 ) -> None:
     """Refuse the write for a finding under .git, checking the path as the
-    report gave it and as it resolved, so a symlink into .git counts too."""
+    report gave it and as it resolved, so a symlink into .git counts too. The
+    whole path is checked, not only the part below the target, so a target
+    that is itself .git, or inside it, is covered."""
     joined = os.path.normpath(os.path.join(target_resolved, raw_file))
-    if in_git_dir(finding['file'], target_resolved) or in_git_dir(joined, target_resolved):
+    if in_git_dir(finding['file'], os.sep) or in_git_dir(joined, os.sep):
         finding['refuse_reason'] = _GIT_PATH_REASON
         if stats is not None:
             stats['protected_path'] += 1

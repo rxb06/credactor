@@ -3910,6 +3910,45 @@ class TestRecordBackstop:
         assert stats['relabelled'] == 0
 
 
+@pytest.mark.parametrize('parser', sorted(_SR19_SEVERITY))
+class TestGitPathsAtIngest:
+    """SR-16: every parser marks a finding under .git at ingest, as given or
+    through a symlink, so the refusal carries its reason and is counted."""
+
+    def _git_record(self, tmp_path, parser, path):
+        (tmp_path / 'repo' / '.git').mkdir(parents=True, exist_ok=True)
+        (tmp_path / 'repo' / '.git' / 'config').write_text(_SR19_LINE + '\n', encoding='utf-8')
+        return _with_path(parser, path)
+
+    def test_path_given_under_git(self, tmp_path, parser):
+        record = self._git_record(tmp_path, parser, '.git/config')
+        (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+    def test_target_that_is_git_itself(self, tmp_path, parser):
+        # No .git component lies below the target; the whole path is checked.
+        record = self._git_record(tmp_path, parser, 'config')
+        target = tmp_path / 'repo' / '.git'
+        if parser == 'gitleaks':
+            ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+        elif parser == 'betterleaks':
+            ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+        else:
+            ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+        stats = new_ingest_stats()
+        (finding,) = ingest(str(report), str(target), stats)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+    def test_symlink_into_git(self, tmp_path, parser):
+        record = self._git_record(tmp_path, parser, 'alias.py')
+        _symlink_or_skip(tmp_path / 'repo' / 'alias.py', '.git/config')
+        (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert '.git' in finding['refuse_reason']
+        assert stats['protected_path'] == 1
+
+
 @pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks'])
 def test_backstop_leaves_the_redacted_report_fatal(tmp_path, parser):
     # SR-19: the backstop catches only type errors, never the ValueError

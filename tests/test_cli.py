@@ -539,6 +539,24 @@ class TestIngestIntoGit:
         )
         self._run('--fix-all', '--yes', '--config', str(repo / '.credactor.toml'), str(repo))
         assert f'Applying the Gitleaks report {report}' in capsys.readouterr().err
+    def test_target_that_is_git_itself(self, tmp_path):
+        # The target is .git, so no .git component lies below it; the whole
+        # path still counts.
+        repo, target = self._project(tmp_path)
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'config')
+        code = self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo / '.git'))
+        assert code == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
+
+    def test_target_inside_git(self, tmp_path):
+        repo, target = self._project(tmp_path, '.git/hooks/pre-commit')
+        before = target.read_bytes()
+        report = self._report(tmp_path, 'pre-commit')
+        hooks = str(repo / '.git' / 'hooks')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), hooks) == 1
+        assert target.read_bytes() == before
 
 
 class TestIngestedValuesAtTheSink:

@@ -1503,6 +1503,26 @@ class TestLineBreakValueAtTheSink:
             assert f.read() == before
 
 
+class TestGitAtTheSink:
+    """SR-16: the sink refuses a path under .git as given or as resolved, so a
+    linked directory into .git is refused too."""
+
+    def test_linked_directory_into_git(self, tmp_path):
+        (tmp_path / '.git').mkdir()
+        config = tmp_path / '.git' / 'config'
+        config.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        try:
+            os.symlink('.git', tmp_path / 'meta')
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        path = str(tmp_path / 'meta' / 'config')
+        before = config.read_bytes()
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert config.read_bytes() == before
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
