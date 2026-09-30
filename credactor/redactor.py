@@ -15,6 +15,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
@@ -707,7 +708,7 @@ def _final_file_sweep(
     config: Config,
     *,
     root: str | None = None,
-) -> None:
+) -> bool:
     """End-of-review sweep over one file with the session's full knowledge.
 
     The per-approval sweeps exclude every other known finding line statically
@@ -719,15 +720,23 @@ def _final_file_sweep(
     backup: the first approval to the file made one, and under
     --secure-delete that one is already wiped, so changes here are not
     recoverable (by design for --secure-delete).
+
+    Returns False when the file needed a change that could not be written, so
+    copies of approved values may remain in it.
     """
+    counts = _SweepCounts()
 
     def edit(lines: list[str]) -> bool:
+        nonlocal counts
         before = list(lines)
         own = frozenset(f['line'] for f in approved)
-        _sweep_stray_copies(lines, approved, config, preserve_lines, filepath, own)
+        counts = _sweep_stray_copies(lines, approved, config, preserve_lines, filepath, own)
         return lines != before
 
-    _rewrite_file(filepath, config, edit, verb='sweep', backup=False, root=root)
+    if _rewrite_file(filepath, config, edit, verb='sweep', backup=False, root=root) == 'failed':
+        return False
+    _report_sweep(filepath, counts, config)
+    return True
 
 
 def _sweep_stray_copies(
@@ -737,9 +746,10 @@ def _sweep_stray_copies(
     preserved: set[int],
     filepath: str,
     own_lines: frozenset[int] = frozenset(),
-) -> None:
+) -> _SweepCounts:
     """Clear remaining exact copies of redacted values beyond the
-    adjudicated findings.
+    adjudicated findings, and return what was cleared and kept, for the
+    caller to report once the file is written.
 
     The per-finding replace handles one occurrence each, but the same secret
     literal can survive — a second occurrence on the finding's own line, a
@@ -755,7 +765,7 @@ def _sweep_stray_copies(
     stray = DEFAULT_REPLACEMENT if config.replace_mode == 'env' else config.custom_replacement
     values = {f['full_value'] for f in file_findings if f['full_value']}
     if not values:
-        return
+        return _SweepCounts()
     # One compiled alternation (longest value first so a short value can't
     # shadow a longer one). Word-boundary anchors protect a secret embedded in
     # a larger *word* token (123456789), but a copy bounded by a non-word char
@@ -776,8 +786,8 @@ def _sweep_stray_copies(
     # output; a known-format token is a credential under any key.
     exemptable = {v: not _known_format(v) for v in values}
     stray_count = 0
-    kept = 0
-    hashed = 0
+    kept: list[int] = []
+    hashed: list[int] = []
     for idx in range(len(lines)):
         line = lines[idx]
         if idx + 1 in preserved:
@@ -794,7 +804,7 @@ def _sweep_stray_copies(
             if exemptable[match.group(0)] and _hash_keyed(line, match.start()):
                 # SR-21: a copy in a hash, commit or revision field is kept,
                 # as the scanner keeps it.
-                hashed += 1
+                hashed.append(idx + 1)
                 continue
             parts += (line[pos : match.start()], stray)
             pos = match.end()
@@ -803,10 +813,38 @@ def _sweep_stray_copies(
             continue
         if _holds_key_marker(line):
             # SR-17: a marker line is never changed, not even by the sweep.
-            kept += n
+            kept += [idx + 1] * n
             continue
         lines[idx] = ''.join(parts) + line[pos:]
         stray_count += n
+    return _SweepCounts(stray_count, tuple(hashed), tuple(kept))
+
+
+class _SweepCounts(NamedTuple):
+    """What a sweep did: copies cleared, and the line of each copy kept
+    because it is keyed as a hash (SR-21) or sits on a key marker line
+    (SR-17)."""
+
+    cleared: int = 0
+    kept_hash: tuple[int, ...] = ()
+    kept_marker: tuple[int, ...] = ()
+
+
+def _report_sweep(filepath: str, counts: _SweepCounts, config: Config) -> None:
+    """Log what the sweep did to a file whose rewrite went through (or was not
+    needed). A kept copy is reported once per run, however many sweeps of the
+    file see it, so interactive review does not repeat it per approval."""
+
+    def new(kind: str, kept_lines: tuple[int, ...]) -> int:
+        count = 0
+        for lineno in sorted(set(kept_lines)):
+            key = (filepath, kind, lineno)
+            if key not in config.sweep_kept_reported:
+                config.sweep_kept_reported.add(key)
+                count += kept_lines.count(lineno)
+        return count
+
+    hashed = new('hash', counts.kept_hash)
     if hashed:
         logger.warning(
             '%s: kept %d cop%s of redacted value(s) keyed as a hash, commit or '
@@ -815,6 +853,7 @@ def _sweep_stray_copies(
             hashed,
             'y' if hashed == 1 else 'ies',
         )
+    kept = new('marker', counts.kept_marker)
     if kept:
         logger.warning(
             '%s: left %d cop%s of redacted value(s) on lines that hold a private key '
@@ -823,17 +862,17 @@ def _sweep_stray_copies(
             kept,
             'y' if kept == 1 else 'ies',
         )
-    if stray_count:
+    if counts.cleared:
         # Default-visible (stderr): the file was modified beyond the
-        # adjudicated findings — the summary alone would under-report it.
+        # adjudicated findings, and the summary alone would under-report it.
         # ("additional", not "unreported": a second occurrence on a finding's
         # own line is also cleared here.)
         logger.warning(
             '%s: also cleared %d additional cop%s of redacted value(s) '
             'beyond the adjudicated finding(s) (value-global sweep).',
             filepath,
-            stray_count,
-            'y' if stray_count == 1 else 'ies',
+            counts.cleared,
+            'y' if counts.cleared == 1 else 'ies',
         )
 
 
@@ -954,11 +993,16 @@ def batch_replace_in_file(
         sweep_exclude_lines = sweep_exclude_lines | allowlist.suppressed_lines(filepath)
 
     counts = (0, 0)
+    refused_here = 0
+    sweep = _SweepCounts()
 
     def edit(lines: list[str]) -> bool:
-        nonlocal counts
-        counts = _apply_findings(lines, file_findings, config, filepath, sweep_exclude_lines, tally)
-        return counts[0] > 0
+        nonlocal counts, refused_here, sweep
+        replaced, failed, refused_here, sweep = _apply_findings(
+            lines, file_findings, config, filepath, sweep_exclude_lines
+        )
+        counts = (replaced, failed)
+        return replaced > 0
 
     # skip_backup: interactive mode backs a file up once per session, on the
     # FIRST approval; later approvals to the same file must NOT re-create the
@@ -971,8 +1015,11 @@ def batch_replace_in_file(
     )
     if outcome == 'failed':
         # Refused, or unreadable, not backed up, or not written: every finding
-        # stays unresolved.
+        # stays unresolved, and nothing the edit planned is reported as done.
         return 0, len(file_findings)
+    if tally is not None:
+        tally['refused'] = tally.get('refused', 0) + refused_here
+    _report_sweep(filepath, sweep, config)
     return counts
 
 
@@ -982,11 +1029,10 @@ def _apply_findings(
     config: Config,
     filepath: str,
     sweep_exclude_lines: frozenset[int],
-    tally: dict[str, int] | None,
-) -> tuple[int, int]:
+) -> tuple[int, int, int, _SweepCounts]:
     """Replace each finding on *lines* in place, bottom to top so earlier
     replacements do not shift later ones, then sweep stray copies. Returns
-    (replaced, failed)."""
+    (replaced, failed, refused on purpose, what the sweep did)."""
     replaced = 0
     failed = 0
     refused_here = 0
@@ -1008,18 +1054,16 @@ def _apply_findings(
         if outcome == 'refused':
             refused_here += 1
             refused_values.add(finding['full_value'])
-    if tally is not None:
-        tally['refused'] = tally.get('refused', 0) + refused_here
-
     # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by known
     # findings the caller did not approve here (sweep_exclude_lines) and lines
     # whose own replacement just failed keep their content: each finding's
     # adjudication owns its line. A value refused on its own line (inside a
     # longer word, or on a key marker line) and not replaced anywhere drives no
     # sweep either: it was never confirmed as a token here.
+    sweep = _SweepCounts()
     if replaced:
         unconfirmed = refused_values - replaced_values
-        _sweep_stray_copies(
+        sweep = _sweep_stray_copies(
             lines,
             [f for f in file_findings if f['full_value'] not in unconfirmed],
             config,
@@ -1027,7 +1071,7 @@ def _apply_findings(
             filepath,
             frozenset(replaced_lines),
         )
-    return replaced, failed
+    return replaced, failed, refused_here, sweep
 
 
 def replace_single(
@@ -1109,12 +1153,24 @@ def interactive_review(
     # calls it once per approval — hence the per-session guard.
     backed_up_files: set[str] = set()
 
-    def _run_final_sweeps() -> None:
+    def _run_final_sweeps() -> int:
+        """Sweep each file with approvals; return how many could not be
+        written, so copies of approved values may remain in them."""
+        unwritten = 0
         for fp, approved in approved_by_file.items():
             preserve = lines_by_file[fp] - {f['line'] for f in approved}
             if allowlist is not None:
                 preserve |= allowlist.suppressed_lines(fp)
-            _final_file_sweep(fp, approved, preserve, config, root=root)
+            if not _final_file_sweep(fp, approved, preserve, config, root=root):
+                unwritten += 1
+        if unwritten:
+            logger.warning(
+                '%d file(s) may still hold copies of approved values: the '
+                'end-of-review sweep could not rewrite them (see above). Each '
+                'counts as unresolved.',
+                unwritten,
+            )
+        return unwritten
 
     replacement_desc = config.custom_replacement
     if config.replace_mode == 'env':
@@ -1156,7 +1212,7 @@ def interactive_review(
             except (KeyboardInterrupt, EOFError):
                 # Completes the already-approved adjudications only: pending
                 # and skipped findings' lines are preserved by construction.
-                _run_final_sweeps()
+                unwritten = _run_final_sweeps()
                 print(
                     f'\n\n  Interrupted — {replaced} replacement(s) already '
                     f'applied. No further changes will be made.'
@@ -1167,7 +1223,7 @@ def interactive_review(
                     # replacement, so there is nothing to point at.
                     print('  .bak backups exist for modified files.')
                 _print_summary(replaced, skipped, total, config)
-                return total - replaced
+                return total - replaced + unwritten
 
             if answer in ('y', 'yes'):
                 fpath = finding['file']
@@ -1197,9 +1253,9 @@ def interactive_review(
             else:
                 print("  Please enter 'y' or 'n'.")
 
-    _run_final_sweeps()
+    unwritten = _run_final_sweeps()
     _print_summary(replaced, skipped, total, config)
-    return total - replaced
+    return total - replaced + unwritten
 
 
 def fix_all(

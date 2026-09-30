@@ -2025,6 +2025,89 @@ class TestOwnLineOfAnIgnoredFinding:
         assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
 
 
+class TestSweepReportsWhatWasWritten:
+    """The sweep's counts are logged only once the file is written, a kept
+    copy is reported once per run, and an end-of-review sweep that cannot be
+    written leaves the run unresolved."""
+
+    _HEX = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+
+    def test_no_cleared_message_when_the_backup_fails(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# {_AWS_KEY}\n')
+        monkeypatch.setattr(redactor, '_create_backup', lambda *a, **k: None)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (0, 1)
+        messages = [r.getMessage() for r in credactor_caplog.records]
+        assert not any('also cleared' in m for m in messages)
+        assert any('Backup failed' in m for m in messages)
+
+    def test_kept_copy_is_reported_once_in_interactive_review(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        path = make_file(
+            'deploy.py',
+            f'password = "{self._HEX}"\nsecret = "{self._HEX}"\nrevision = "{self._HEX}"\n',
+        )
+        findings = [
+            _mk_finding(path, self._HEX, ftype='variable:password', line=1),
+            _mk_finding(path, self._HEX, ftype='variable:secret', line=2),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        kept = [r for r in credactor_caplog.records if 'keyed as a hash' in r.getMessage()]
+        assert len(kept) == 1
+
+    def test_refused_final_sweep_leaves_the_run_unresolved(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"  # {_AWS_KEY}\n')
+        findings = [
+            _mk_finding(path, _AWS_KEY, line=1),
+            _mk_finding(path, _PASSWORD, line=2),
+        ]
+        real_sweep = redactor._final_file_sweep
+
+        def sweep_with_a_change_on_disk(*args, **kwargs):
+            real_sweep_stray = redactor._sweep_stray_copies
+
+            def sweep_then_edit(*a, **k):
+                result = real_sweep_stray(*a, **k)
+                with open(path, 'a', encoding='utf-8') as fh:
+                    fh.write('# appended\n')
+                return result
+
+            monkeypatch.setattr(redactor, '_sweep_stray_copies', sweep_then_edit)
+            return real_sweep(*args, **kwargs)
+
+        monkeypatch.setattr(redactor, '_final_file_sweep', sweep_with_a_change_on_disk)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        unresolved = interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        assert unresolved == 1
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+        messages = [r.getMessage() for r in credactor_caplog.records]
+        assert not any('also cleared' in m for m in messages)
+
+    def test_failed_file_does_not_count_its_refusals(self, make_file, monkeypatch):
+        # A file that fails for another reason counts every finding as
+        # failed; a refusal inside it is not taken off the stale-report hint.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\npassword = load()\n')
+        monkeypatch.setattr(redactor, '_create_backup', lambda *a, **k: None)
+        tally = {'refused': 0}
+        findings = [
+            _mk_finding(path, _AWS_KEY),
+            _mk_finding(path, 'pass', ftype='external:gitleaks:generic', line=2),
+        ]
+        assert batch_replace_in_file(path, findings, Config(), tally=tally) == (0, 2)
+        assert tally == {'refused': 0}
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
