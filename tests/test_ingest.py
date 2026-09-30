@@ -4032,7 +4032,7 @@ class TestGitPathsAtIngest:
 
     def test_symlink_into_git(self, tmp_path, parser):
         record = self._git_record(tmp_path, parser, 'alias.py')
-        _symlink_or_skip(tmp_path / 'repo' / 'alias.py', '.git/config')
+        _symlink_or_skip(tmp_path / 'repo' / 'alias.py', os.path.join('.git', 'config'))
         (finding,), stats = _sr19_ingest(parser, tmp_path, record)
         assert '.git' in finding['refuse_reason']
         assert stats['protected_path'] == 1
@@ -4113,8 +4113,10 @@ class TestInvalidLineNumbers:
 
 
 def _symlink_or_skip(link: Path, target: str) -> None:
+    # Windows needs to be told when the target is a directory.
+    is_dir = (link.parent / target).is_dir()
     try:
-        os.symlink(target, link)
+        os.symlink(target, link, target_is_directory=is_dir)
     except (OSError, NotImplementedError):
         pytest.skip('symlinks not supported')
 

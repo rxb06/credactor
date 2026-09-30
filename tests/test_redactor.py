@@ -1512,7 +1512,7 @@ class TestGitAtTheSink:
         config = tmp_path / '.git' / 'config'
         config.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
         try:
-            os.symlink('.git', tmp_path / 'meta')
+            os.symlink('.git', tmp_path / 'meta', target_is_directory=True)
         except (OSError, NotImplementedError):
             pytest.skip('symlinks not supported')
         path = str(tmp_path / 'meta' / 'config')
