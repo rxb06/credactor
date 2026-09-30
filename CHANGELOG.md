@@ -22,6 +22,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   symlinks, and the redactor applies it again to any path it is given. A report
   named in the config file's `[ingest]` table is named on stderr before a run
   that can write.
+- **A malformed report record cannot crash the run.** A report secret holding
+  a lone surrogate (a `\ud800` escape, which no scanner writes) crashed
+  deduplication, so the run ended with a traceback instead of the invalid
+  record summary. Such a secret now makes the record invalid. As a backstop,
+  a record whose fields raise a type error while being read is read again
+  from its path, line and secret alone, and is kept with the rule `unknown`,
+  or counted invalid if that fails too, with a warning naming the record.
 - **A private key's marker line is never rewritten, whatever the finding is
   called.** The refusal to redact a key block keyed on the native finding
   type, so an ingested finding whose secret was a key's BEGIN line was

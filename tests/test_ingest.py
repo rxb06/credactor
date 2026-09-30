@@ -3659,3 +3659,214 @@ class TestImplausibleSecrets:
         ingest, report, target = _record_for(parser, tmp_path, secret, f'x = "{secret}"')
         (finding,) = ingest(str(report), str(target), new_ingest_stats())
         assert 'refuse_reason' not in finding
+
+
+# ---------------------------------------------------------------------------
+# SR-19: a malformed field never crashes a run
+# ---------------------------------------------------------------------------
+
+_SR19_SECRET = 'Hx7Kq2Lm9Pz4Wr5Tn8'
+_SR19_LINE = f'token = "{_SR19_SECRET}"'
+_SR19_BAD = [[], [1], {}, {'a': 1}, 0, 7, 1.5, None, True]
+_SR19_SURROGATE = chr(0xD800)
+
+
+def _sr19_record(parser: str) -> dict:
+    if parser == 'gitleaks':
+        return _make_gitleaks_finding(
+            File='src/app.py',
+            StartLine=1,
+            Secret=_SR19_SECRET,
+            Match=_SR19_LINE,
+            RuleID='generic-api-key',
+            Tags=['high'],
+            Commit='abcdef1234567',
+        )
+    if parser == 'betterleaks':
+        return _make_betterleaks_finding(
+            File='src/app.py',
+            Attributes={'path': 'src/app.py', 'resource': 'fs.content', 'git.sha': 'abcdef12345'},
+            StartLine=1,
+            Secret=_SR19_SECRET,
+            Match=_SR19_LINE,
+            RuleID='generic-api-key',
+            ValidationStatus='valid',
+            ComponentSets=[{'a': 1}],
+        )
+    return _make_trufflehog_finding(
+        Raw=_SR19_SECRET,
+        DetectorName='Github',
+        Verified=True,
+        SourceMetadata={
+            'Data': {'Git': {'file': 'src/app.py', 'line': 1, 'commit': 'abcdef1234567'}}
+        },
+    )
+
+
+def _sr19_set(record: dict, field: str, value) -> None:
+    *parents, last = field.split('/')
+    for key in parents:
+        record = record[key]
+    record[last] = value
+
+
+def _sr19_ingest(parser: str, tmp_path: Path, record, stats=None):
+    target = tmp_path / 'repo'
+    (target / 'src').mkdir(parents=True, exist_ok=True)
+    (target / 'src' / 'app.py').write_text(_SR19_LINE + '\n', encoding='utf-8')
+    if parser == 'gitleaks':
+        ingest, report = ingest_gitleaks, _write_report(tmp_path, [record])
+    elif parser == 'betterleaks':
+        ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
+    else:
+        ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
+    stats = stats if stats is not None else new_ingest_stats()
+    return ingest(str(report), str(target), stats), stats
+
+
+_SR19_LABEL_FIELDS = {
+    'gitleaks': ['RuleID', 'Tags', 'Commit', 'Match', 'StartLine'],
+    'betterleaks': [
+        'RuleID',
+        'Tags',
+        'Commit',
+        'Match',
+        'StartLine',
+        'ValidationStatus',
+        'ComponentSets',
+        'Attributes/resource',
+        'Attributes/git.sha',
+    ],
+    'trufflehog': [
+        'DetectorName',
+        'Verified',
+        'SourceMetadata/Data/Git/line',
+        'SourceMetadata/Data/Git/commit',
+    ],
+}
+_SR19_LOCATION_FIELDS = {
+    'gitleaks': ['Secret', 'File'],
+    'betterleaks': ['Secret', 'Attributes/path', 'SymlinkFile'],
+    'trufflehog': ['Raw', 'SourceMetadata/Data/Git/file'],
+}
+_SR19_RULE_FIELDS = {'RuleID', 'DetectorName'}
+
+
+def _sr19_cases(fields: dict) -> list:
+    return [
+        pytest.param(parser, field, value, id=f'{parser}-{field}-{value!r}')
+        for parser, names in fields.items()
+        for field in names
+        for value in _SR19_BAD
+    ]
+
+
+class TestMalformedFields:
+    """SR-19: a report field of the wrong type is replaced, not fatal. A bad
+    label keeps the finding (a bad rule id becomes unknown); a bad location
+    or secret is a counted invalid record. Neither raises."""
+
+    @pytest.mark.parametrize(('parser', 'field', 'value'), _sr19_cases(_SR19_LABEL_FIELDS))
+    def test_bad_label_keeps_the_finding(self, tmp_path, parser, field, value):
+        record = _sr19_record(parser)
+        _sr19_set(record, field, value)
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        (finding,) = deduplicate_findings(findings)
+        assert finding['full_value'] == _SR19_SECRET
+        assert stats['invalid_record'] == 0
+        if field in _SR19_RULE_FIELDS:
+            assert finding['type'] == f'external:{parser}:unknown'
+        for render in (print_report, json_report, sarif_report):
+            with mock.patch('sys.stdout', new_callable=io.StringIO):
+                render([finding], str(tmp_path / 'repo'))
+
+    @pytest.mark.parametrize(('parser', 'field', 'value'), _sr19_cases(_SR19_LOCATION_FIELDS))
+    def test_bad_location_or_secret_is_invalid(self, tmp_path, parser, field, value):
+        record = _sr19_record(parser)
+        _sr19_set(record, field, value)
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+
+    @pytest.mark.parametrize('parser', sorted(_SR19_LOCATION_FIELDS))
+    def test_secret_with_a_lone_surrogate_is_invalid(self, tmp_path, parser):
+        record = _sr19_record(parser)
+        field = 'Raw' if parser == 'trufflehog' else 'Secret'
+        record[field] = _SR19_SECRET + _SR19_SURROGATE
+        findings, stats = _sr19_ingest(parser, tmp_path, record)
+        assert findings == []
+        assert stats['invalid_record'] == 1
+
+
+_SR19_SEVERITY = {
+    'gitleaks': '_gitleaks_severity',
+    'betterleaks': '_betterleaks_severity',
+    'trufflehog': '_trufflehog_severity',
+}
+
+
+@pytest.mark.parametrize('parser', sorted(_SR19_SEVERITY))
+class TestRecordBackstop:
+    """SR-19: an error while reading a record's other fields keeps the finding
+    from its location and secret (rule unknown), and an error there too
+    counts it invalid. A field added later cannot crash the run."""
+
+    def test_error_in_a_label_keeps_the_finding(self, tmp_path, parser, caplog):
+        from credactor import ingest as ingest_module
+
+        name = _SR19_SEVERITY[parser]
+        real = getattr(ingest_module, name)
+
+        def severity(label, *args):
+            if label != 'unknown':
+                raise TypeError('unhashable')
+            return real(label, *args)
+
+        with (
+            mock.patch(f'credactor.ingest.{name}', severity),
+            caplog.at_level(logging.WARNING, logger='credactor'),
+        ):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
+        assert finding['type'] == f'external:{parser}:unknown'
+        assert finding['full_value'] == _SR19_SECRET
+        assert finding['line'] == 1
+        assert stats['invalid_record'] == 0
+        assert any(
+            'could not be read in full (TypeError)' in r.getMessage() for r in caplog.records
+        )
+
+    def test_error_in_the_core_fields_counts_invalid(self, tmp_path, parser, caplog):
+        with (
+            mock.patch('credactor.ingest._mark_implausible', side_effect=AttributeError),
+            caplog.at_level(logging.WARNING, logger='credactor'),
+        ):
+            findings, stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
+        assert findings == []
+        assert stats['invalid_record'] == 1
+        assert any('skipped as invalid' in r.getMessage() for r in caplog.records)
+
+    def test_failed_attempt_is_not_counted_twice(self, tmp_path, parser):
+        # The first attempt counts a relabelled rule id, then fails on the
+        # commit; the retry reads neither, so nothing stays counted.
+        record = _sr19_record(parser)
+        record['DetectorName' if parser == 'trufflehog' else 'RuleID'] = 'not a label!'
+
+        def commit(value, secret, stats):
+            if value:
+                raise KeyError('x')
+            return ''
+
+        with mock.patch('credactor.ingest._report_commit', commit):
+            (finding,), stats = _sr19_ingest(parser, tmp_path, record)
+        assert finding['type'] == f'external:{parser}:unknown'
+        assert stats['relabelled'] == 0
+
+
+@pytest.mark.parametrize('parser', ['gitleaks', 'betterleaks'])
+def test_backstop_leaves_the_redacted_report_fatal(tmp_path, parser):
+    # SR-19: the backstop catches only type errors, never the ValueError
+    # that refuses a report written with --redact.
+    record = _sr19_record(parser)
+    record['Secret'] = 'REDACTED'
+    with pytest.raises(ValueError, match='redact'):
+        _sr19_ingest(parser, tmp_path, record)

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -408,6 +409,79 @@ def _resolve_external_finding_path(
     return resolved
 
 
+def _usable_secret(value: object) -> bool:
+    """Whether a report's secret can be used: a non-empty string with no lone
+    surrogate. No scanner writes one (Go's JSON encoder turns invalid bytes
+    into U+FFFD), and one would crash the dedup hash (SR-19)."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+# SR-19: every field a parser reads is type-checked, but a field read later
+# must not be able to crash a run either. A record whose parse raises one of
+# these is parsed again from its location and secret alone, so it is kept with
+# the rule unknown; if that fails too, it is counted invalid.
+_RECORD_ERRORS = (TypeError, AttributeError, KeyError)
+_CORE_FIELDS = ('Secret', 'Raw', 'File', 'SymlinkFile', 'StartLine')
+_CORE_ATTRIBUTES = ('fs.symlink', 'path')
+_CORE_SOURCE_FIELDS = ('file', 'line')
+
+
+def _core_record(obj: dict[str, Any]) -> dict[str, Any]:
+    """The fields of *obj* that locate the finding and give its secret, in
+    the shape each parser reads them."""
+    core = {key: obj[key] for key in _CORE_FIELDS if key in obj}
+    attrs = obj.get('Attributes')
+    if isinstance(attrs, dict):
+        core['Attributes'] = {key: attrs[key] for key in _CORE_ATTRIBUTES if key in attrs}
+    meta = obj.get('SourceMetadata')
+    data = meta.get('Data') if isinstance(meta, dict) else None
+    if isinstance(data, dict):
+        sources = {
+            name: {key: entry[key] for key in _CORE_SOURCE_FIELDS if key in entry}
+            for name, entry in data.items()
+            if name in ('Filesystem', 'Git') and isinstance(entry, dict)
+        }
+        core['SourceMetadata'] = {'Data': sources}
+    return core
+
+
+def _parse_or_salvage(
+    parse: Callable[[dict[str, Any]], Finding | None],
+    obj: dict[str, Any],
+    stats: dict[str, Any],
+    where: str,
+) -> Finding | None:
+    """Run *parse* on *obj*, falling back to its core fields on an error."""
+    counters = {key: value for key, value in stats.items() if isinstance(value, int)}
+    try:
+        return parse(obj)
+    except _RECORD_ERRORS as exc:
+        error = type(exc).__name__
+    # Undo what the failed attempt counted, so the retry counts it once.
+    stats.update(counters)
+    try:
+        finding = parse(_core_record(obj))
+    except _RECORD_ERRORS:
+        stats.update(counters)
+        stats['invalid_record'] += 1
+        logger.warning('%s could not be read (%s); skipped as invalid.', where, error)
+        return None
+    if finding is not None:
+        logger.warning(
+            '%s could not be read in full (%s); kept its location and secret, '
+            'with the rule unknown.',
+            where,
+            error,
+        )
+    return finding
+
+
 # ---------------------------------------------------------------------------
 # Gitleaks parser
 # ---------------------------------------------------------------------------
@@ -498,6 +572,81 @@ def _reject_redacted_report(secret: str, *, scanner_name: str, flag: str) -> Non
         )
 
 
+def _parse_gitleaks_record(
+    obj: dict[str, Any],
+    target_resolved: str,
+    filepath_resolved: str,
+    stats: dict[str, Any],
+) -> Finding | None:
+    """Validate one Gitleaks record and build its Finding. Returns ``None``
+    (logged, and counted when the record is invalid) for a record to skip."""
+    # --- Secret ---
+    secret = obj.get('Secret', '')
+    if not _usable_secret(secret):
+        logger.info('Skipping Gitleaks finding with an empty or unusable Secret.')
+        stats['invalid_record'] += 1
+        return None
+    _reject_redacted_report(secret, scanner_name='Gitleaks', flag='--redact')
+
+    # --- File path ---
+    # Use SymlinkFile if non-empty, otherwise File
+    raw_file = obj.get('SymlinkFile') or obj.get('File', '')
+    if not isinstance(raw_file, str) or not raw_file:
+        logger.info('Skipping Gitleaks finding with non-string or empty File.')
+        stats['invalid_record'] += 1
+        return None
+
+    resolved = _resolve_external_finding_path(
+        raw_file,
+        target_resolved,
+        filepath_resolved,
+        scanner_name='Gitleaks',
+        stats=stats,
+    )
+    if resolved is None:
+        return None
+
+    # --- Line number ---
+    line = obj.get('StartLine', 1)
+    if not isinstance(line, int) or line < 1:
+        line = 1
+
+    # --- raw context line ---
+    match_ctx = obj.get('Match', '')
+    raw = match_ctx if isinstance(match_ctx, str) and match_ctx else _synthesise_raw(resolved, line)
+
+    # --- Type ---
+    rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
+    ftype = f'external:gitleaks:{rule_id}'
+
+    # --- Severity ---
+    tags = obj.get('Tags') or []
+    severity = _gitleaks_severity(rule_id, tags if isinstance(tags, list) else [])
+
+    # --- Finding dict ---
+    finding: Finding = {
+        'file': resolved,
+        'line': line,
+        'type': ftype,
+        'severity': severity,
+        'full_value': secret,
+        'value_preview': preview(secret),
+        'raw': raw,
+    }
+
+    # --- Commit (omit key when empty) ---
+    # type-check before slicing: a non-string Commit (e.g. int, list)
+    # would raise TypeError or produce an unhashable value that crashes
+    # deduplicate_findings later.
+    commit = _report_commit(obj.get('Commit', ''), secret, stats)
+    if commit:
+        finding['commit'] = commit
+    _mark_git_path(finding, raw_file, target_resolved, stats)
+    _mark_implausible(finding, stats)
+
+    return finding
+
+
 def ingest_gitleaks(
     filepath: str,
     target: str,
@@ -561,86 +710,23 @@ def ingest_gitleaks(
         data = data[:_MAX_FINDINGS]
 
     findings: list[Finding] = []
-    invalid = 0
+    invalid_start = stats['invalid_record']
 
-    for obj in data:
+    for index, obj in enumerate(data, start=1):
         if not isinstance(obj, dict):
             logger.info('Skipping non-object entry in Gitleaks report.')
-            invalid += 1
             stats['invalid_record'] += 1
             continue
-
-        # --- Secret ---
-        secret = obj.get('Secret', '')
-        if not isinstance(secret, str) or not secret:
-            logger.info('Skipping Gitleaks finding with empty Secret.')
-            invalid += 1
-            stats['invalid_record'] += 1
-            continue
-        _reject_redacted_report(secret, scanner_name='Gitleaks', flag='--redact')
-
-        # --- File path ---
-        # Use SymlinkFile if non-empty, otherwise File
-        raw_file = obj.get('SymlinkFile') or obj.get('File', '')
-        if not isinstance(raw_file, str) or not raw_file:
-            logger.info('Skipping Gitleaks finding with non-string or empty File.')
-            invalid += 1
-            stats['invalid_record'] += 1
-            continue
-
-        resolved = _resolve_external_finding_path(
-            raw_file,
-            target_resolved,
-            filepath_resolved,
-            scanner_name='Gitleaks',
-            stats=stats,
+        finding = _parse_or_salvage(
+            lambda rec: _parse_gitleaks_record(rec, target_resolved, filepath_resolved, stats),
+            obj,
+            stats,
+            f'Gitleaks record {index}',
         )
-        if resolved is None:
-            continue
+        if finding is not None:
+            findings.append(finding)
 
-        # --- Line number ---
-        line = obj.get('StartLine', 1)
-        if not isinstance(line, int) or line < 1:
-            line = 1
-
-        # --- raw context line ---
-        match_ctx = obj.get('Match', '')
-        if isinstance(match_ctx, str) and match_ctx:
-            raw = match_ctx
-        else:
-            raw = _synthesise_raw(resolved, line)
-
-        # --- Type ---
-        rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
-        ftype = f'external:gitleaks:{rule_id}'
-
-        # --- Severity ---
-        tags = obj.get('Tags') or []
-        severity = _gitleaks_severity(rule_id, tags if isinstance(tags, list) else [])
-
-        # --- Finding dict ---
-        finding: Finding = {
-            'file': resolved,
-            'line': line,
-            'type': ftype,
-            'severity': severity,
-            'full_value': secret,
-            'value_preview': preview(secret),
-            'raw': raw,
-        }
-
-        # --- Commit (omit key when empty) ---
-        # type-check before slicing — non-string Commit (e.g. int, list)
-        # would raise TypeError or produce an unhashable value that crashes
-        # deduplicate_findings later.
-        commit = _report_commit(obj.get('Commit', ''), secret, stats)
-        if commit:
-            finding['commit'] = commit
-        _mark_git_path(finding, raw_file, target_resolved, stats)
-        _mark_implausible(finding, stats)
-
-        findings.append(finding)
-
+    invalid = stats['invalid_record'] - invalid_start
     if invalid:
         # Same class as the A08 unsupported-source summary: the per-record
         # skips are INFO-only, so a wholly-invalid report (schema drift, or a
@@ -716,6 +802,153 @@ def _betterleaks_summaries(
             'is handled. Check those findings with the scanner directly.',
             component_sets,
         )
+
+
+def _parse_betterleaks_record(
+    obj: dict[str, Any],
+    target_resolved: str,
+    filepath_resolved: str,
+    stats: dict[str, Any],
+    own_unsupported: dict[str, Any],
+) -> Finding | None:
+    """Validate one Betterleaks record and build its Finding. Returns ``None``
+    (logged and counted) for a record to skip."""
+    # --- Secret ---
+    secret = obj.get('Secret', '')
+    if not _usable_secret(secret):
+        logger.info('Skipping Betterleaks finding with an empty or unusable Secret.')
+        stats['invalid_record'] += 1
+        return None
+    _reject_redacted_report(secret, scanner_name='Betterleaks', flag='--redact')
+
+    # --- Source metadata ---
+    # Attributes is the forward-looking source; File/SymlinkFile/Commit are
+    # deprecated mirrors that Betterleaks still populates. Read Attributes
+    # ahead of its mirror within each role so the parser survives their
+    # eventual removal.
+    raw_attrs = obj.get('Attributes')
+    attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
+    # The candidates are ordered by role, not by field generation: both
+    # symlink fields rank above both real-path fields, which is the
+    # symlink-before-path precedence the Gitleaks path already documents.
+    # Reading Attributes straight through (fs.symlink, path, SymlinkFile,
+    # File) inverted that under the schema drift the Attributes-first
+    # ordering exists to survive. A version emitting Attributes.path while
+    # exposing the symlink only through the deprecated mirror would resolve
+    # the real file, and a real file outside the target root is then dropped
+    # by the traversal guard, so the redaction goes missing in silence.
+    #
+    # The candidates are taken one at a time rather than through an `or`
+    # chain. `or` skips over a falsy non-string (`0`, `False`, `[]`, `{}`)
+    # in any position but the last, so a corrupt value there reached the
+    # pathless branch and was charged to unsupported_source instead of
+    # invalid_record. An absent key and an empty string both mean "not set"
+    # (Betterleaks writes '' for the mirrors it does not populate) and fall
+    # through to the next candidate. Anything else is taken and type-checked
+    # below.
+    raw_file: Any = ''
+    for source, key in (
+        (attrs, 'fs.symlink'),
+        (obj, 'SymlinkFile'),
+        (attrs, 'path'),
+        (obj, 'File'),
+    ):
+        if key not in source or source[key] == '':
+            continue
+        raw_file = source[key]
+        break
+    if not isinstance(raw_file, str):
+        # A path that is present but not a string is a malformed record,
+        # not an unsupported source. This matches the Gitleaks parser,
+        # which counts a non-string File the same way, JSON `null`
+        # included. Keeping the two apart matters: the unsupported-source
+        # summary would otherwise tell the operator a source type could not
+        # be ingested when the report is simply corrupt.
+        logger.info('Skipping Betterleaks finding with a non-string file path.')
+        stats['invalid_record'] += 1
+        return None
+    if not raw_file:
+        # No path at all: a non-filesystem source (stdin, GitHub, GitLab,
+        # Hugging Face, S3). Structurally un-redactable rather than
+        # malformed, so it is counted as an unsupported source, NOT an
+        # invalid record. Gate on path presence, not on the `resource`
+        # label: a `stdin` finding carries resource='fs.content' with an
+        # empty path, so a resource allowlist would wrongly accept it.
+        label = attrs.get('resource')
+        logger.info(
+            'Skipping Betterleaks finding from unsupported source %r (no file path).',
+            label,
+        )
+        stats['unsupported_source'] += 1
+        labels = {str(label) if isinstance(label, str) and label else 'unknown'}
+        _note_unsupported_types(stats, labels)
+        # ...and again into a parser-local view. The CLI shares one stats
+        # dict across all three parsers and runs Betterleaks last, so
+        # rendering the summary from the shared set would report another
+        # scanner's source types (and its truncation flag) as Betterleaks'.
+        _note_unsupported_types(own_unsupported, labels)
+        return None
+
+    resolved = _resolve_external_finding_path(
+        raw_file,
+        target_resolved,
+        filepath_resolved,
+        scanner_name='Betterleaks',
+        stats=stats,
+    )
+    if resolved is None:
+        return None
+
+    # --- Line number ---
+    line = obj.get('StartLine', 1)
+    if not isinstance(line, int) or line < 1:
+        line = 1
+
+    # --- raw context line ---
+    # Prefer the on-disk line: Finding['raw'] is contracted as a single
+    # source line and Betterleaks' Match can span lines for some rules.
+    raw = _synthesise_raw(resolved, line)
+    if not raw:
+        match_ctx = obj.get('Match', '')
+        if isinstance(match_ctx, str) and match_ctx and '\n' not in match_ctx:
+            raw = match_ctx
+        else:
+            raw = secret
+
+    # --- Type ---
+    rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
+    ftype = f'external:betterleaks:{rule_id}'
+
+    # --- Severity ---
+    tags = obj.get('Tags') or []
+    status = obj.get('ValidationStatus', '')
+    severity = _betterleaks_severity(
+        rule_id,
+        status if isinstance(status, str) else '',
+        tags if isinstance(tags, list) else [],
+    )
+
+    finding: Finding = {
+        'file': resolved,
+        'line': line,
+        'type': ftype,
+        'severity': severity,
+        'full_value': secret,
+        'value_preview': preview(secret),
+        'raw': raw,
+    }
+
+    # --- Commit (omit key when empty) ---
+    # Type-check before slicing: a non-string value would raise TypeError
+    # or produce an unhashable dedup key later.
+    commit = _report_commit(attrs.get('git.sha') or obj.get('Commit', ''), secret, stats)
+    if commit:
+        finding['commit'] = commit
+
+    _mark_git_path(finding, raw_file, target_resolved, stats)
+    _mark_implausible(finding, stats)
+
+    return finding
 
 
 def ingest_betterleaks(
@@ -807,145 +1040,21 @@ def ingest_betterleaks(
         'unsupported_types_truncated': False,
     }
 
-    for obj in data:
+    for index, obj in enumerate(data, start=1):
         if not isinstance(obj, dict):
             logger.info('Skipping non-object entry in Betterleaks report.')
             stats['invalid_record'] += 1
             continue
-
-        # --- Secret ---
-        secret = obj.get('Secret', '')
-        if not isinstance(secret, str) or not secret:
-            logger.info('Skipping Betterleaks finding with empty Secret.')
-            stats['invalid_record'] += 1
-            continue
-        _reject_redacted_report(secret, scanner_name='Betterleaks', flag='--redact')
-
-        # --- Source metadata ---
-        # Attributes is the forward-looking source; File/SymlinkFile/Commit are
-        # deprecated mirrors that Betterleaks still populates. Read Attributes
-        # ahead of its mirror within each role so the parser survives their
-        # eventual removal.
-        raw_attrs = obj.get('Attributes')
-        attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
-        # The candidates are ordered by role, not by field generation: both
-        # symlink fields rank above both real-path fields, which is the
-        # symlink-before-path precedence the Gitleaks path already documents.
-        # Reading Attributes straight through (fs.symlink, path, SymlinkFile,
-        # File) inverted that under the schema drift the Attributes-first
-        # ordering exists to survive. A version emitting Attributes.path while
-        # exposing the symlink only through the deprecated mirror would resolve
-        # the real file, and a real file outside the target root is then dropped
-        # by the traversal guard, so the redaction goes missing in silence.
-        #
-        # The candidates are taken one at a time rather than through an `or`
-        # chain. `or` skips over a falsy non-string (`0`, `False`, `[]`, `{}`)
-        # in any position but the last, so a corrupt value there reached the
-        # pathless branch and was charged to unsupported_source instead of
-        # invalid_record. An absent key and an empty string both mean "not set"
-        # (Betterleaks writes '' for the mirrors it does not populate) and fall
-        # through to the next candidate. Anything else is taken and type-checked
-        # below.
-        raw_file: Any = ''
-        for source, key in (
-            (attrs, 'fs.symlink'),
-            (obj, 'SymlinkFile'),
-            (attrs, 'path'),
-            (obj, 'File'),
-        ):
-            if key not in source or source[key] == '':
-                continue
-            raw_file = source[key]
-            break
-        if not isinstance(raw_file, str):
-            # A path that is present but not a string is a malformed record,
-            # not an unsupported source. This matches the Gitleaks parser,
-            # which counts a non-string File the same way, JSON `null`
-            # included. Keeping the two apart matters: the unsupported-source
-            # summary would otherwise tell the operator a source type could not
-            # be ingested when the report is simply corrupt.
-            logger.info('Skipping Betterleaks finding with a non-string file path.')
-            stats['invalid_record'] += 1
-            continue
-        if not raw_file:
-            # No path at all: a non-filesystem source (stdin, GitHub, GitLab,
-            # Hugging Face, S3). Structurally un-redactable rather than
-            # malformed, so it is counted as an unsupported source — NOT an
-            # invalid record. Gate on path presence, not on the `resource`
-            # label: a `stdin` finding carries resource='fs.content' with an
-            # empty path, so a resource allowlist would wrongly accept it.
-            label = attrs.get('resource')
-            logger.info(
-                'Skipping Betterleaks finding from unsupported source %r (no file path).',
-                label,
-            )
-            stats['unsupported_source'] += 1
-            labels = {str(label) if isinstance(label, str) and label else 'unknown'}
-            _note_unsupported_types(stats, labels)
-            # ...and again into a parser-local view. The CLI shares one stats
-            # dict across all three parsers and runs Betterleaks last, so
-            # rendering the summary from the shared set would report another
-            # scanner's source types (and its truncation flag) as Betterleaks'.
-            _note_unsupported_types(own_unsupported, labels)
-            continue
-
-        resolved = _resolve_external_finding_path(
-            raw_file,
-            target_resolved,
-            filepath_resolved,
-            scanner_name='Betterleaks',
-            stats=stats,
+        finding = _parse_or_salvage(
+            lambda rec: _parse_betterleaks_record(
+                rec, target_resolved, filepath_resolved, stats, own_unsupported
+            ),
+            obj,
+            stats,
+            f'Betterleaks record {index}',
         )
-        if resolved is None:
+        if finding is None:
             continue
-
-        # --- Line number ---
-        line = obj.get('StartLine', 1)
-        if not isinstance(line, int) or line < 1:
-            line = 1
-
-        # --- raw context line ---
-        # Prefer the on-disk line: Finding['raw'] is contracted as a single
-        # source line and Betterleaks' Match can span lines for some rules.
-        raw = _synthesise_raw(resolved, line)
-        if not raw:
-            match_ctx = obj.get('Match', '')
-            if isinstance(match_ctx, str) and match_ctx and '\n' not in match_ctx:
-                raw = match_ctx
-            else:
-                raw = secret
-
-        # --- Type ---
-        rule_id = _report_label(obj.get('RuleID', 'unknown'), stats)
-        ftype = f'external:betterleaks:{rule_id}'
-
-        # --- Severity ---
-        tags = obj.get('Tags') or []
-        status = obj.get('ValidationStatus', '')
-        severity = _betterleaks_severity(
-            rule_id,
-            status if isinstance(status, str) else '',
-            tags if isinstance(tags, list) else [],
-        )
-
-        finding: Finding = {
-            'file': resolved,
-            'line': line,
-            'type': ftype,
-            'severity': severity,
-            'full_value': secret,
-            'value_preview': preview(secret),
-            'raw': raw,
-        }
-
-        # --- Commit (omit key when empty) ---
-        # Type-check before slicing: a non-string value would raise TypeError
-        # or produce an unhashable dedup key later.
-        commit = _report_commit(attrs.get('git.sha') or obj.get('Commit', ''), secret, stats)
-        if commit:
-            finding['commit'] = commit
-
-        # --- Multi-part rules ---
         # A ComponentSet carries the other half of a multi-part credential
         # (an access-key id plus its secret key, say) with its own line and
         # value. Only the top-level Secret is ingested, so those component
@@ -955,9 +1064,6 @@ def ingest_betterleaks(
         comps = obj.get('ComponentSets')
         if isinstance(comps, list) and comps:
             component_sets += 1
-        _mark_git_path(finding, raw_file, target_resolved, stats)
-        _mark_implausible(finding, stats)
-
         findings.append(finding)
 
     _betterleaks_summaries(stats, own_unsupported, invalid_start, unsupported_start, component_sets)
@@ -1025,9 +1131,9 @@ def _parse_trufflehog_record(
     """
     # --- Raw secret ---
     raw_secret = obj.get('Raw', '')
-    if not isinstance(raw_secret, str) or not raw_secret:
+    if not _usable_secret(raw_secret):
         logger.info(
-            'TruffleHog line %d: skipping finding with empty Raw.',
+            'TruffleHog line %d: skipping finding with an empty or unusable Raw.',
             lineno_file,
         )
         if stats is not None:
@@ -1259,14 +1365,15 @@ def ingest_trufflehog(
                 )
                 break
 
-            finding = _parse_trufflehog_record(
-                obj,
-                lineno_file,
-                target_resolved,
-                filepath_resolved,
+            parse = functools.partial(
+                _parse_trufflehog_record,
+                lineno_file=lineno_file,
+                target_resolved=target_resolved,
+                filepath_resolved=filepath_resolved,
                 stats=stats,
                 own_unsupported=own_unsupported,
             )
+            finding = _parse_or_salvage(parse, obj, stats, f'TruffleHog line {lineno_file}')
             if finding is None:
                 continue
 

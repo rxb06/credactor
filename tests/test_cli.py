@@ -700,6 +700,47 @@ class TestIngestedKeyHeaders:
         assert after == before
 
 
+class TestMalformedReportFieldsCLI:
+    """SR-19: a malformed report field neither crashes the run nor hides the
+    finding."""
+
+    def _run(self, tmp_path, capsys, **fields):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / 'app.py').write_text('k = "Hx7Kq2Lm9Pz4Wr5"\n', encoding='utf-8')
+        record = {
+            'File': 'app.py',
+            'StartLine': 1,
+            'Secret': 'Hx7Kq2Lm9Pz4Wr5',
+            'Match': 'k = "Hx7Kq2Lm9Pz4Wr5"',
+            'RuleID': 'generic-api-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+            **fields,
+        }
+        report = tmp_path / 'gl.json'
+        report.write_text(json.dumps([record]), encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)])
+        out, err = capsys.readouterr()
+        assert 'Traceback' not in err
+        return exc_info.value.code, out, err
+
+    @pytest.mark.parametrize('rule_id', [[1], {'a': 1}, 7, None])
+    def test_bad_rule_id_keeps_the_finding(self, tmp_path, capsys, rule_id):
+        code, out, _ = self._run(tmp_path, capsys, RuleID=rule_id, Tags={'x': 1})
+        assert code == 1
+        types = {f['type'] for f in json.loads(out)['findings']}
+        assert 'external:gitleaks:unknown' in types
+
+    def test_secret_with_a_lone_surrogate_is_invalid(self, tmp_path, capsys):
+        code, _, err = self._run(tmp_path, capsys, Secret='Hx7Kq2Lm9Pz4Wr5' + chr(0xD800))
+        # No finding is left, so the run exits 0, and the warning says why.
+        assert code == 0
+        assert '1 Gitleaks record(s) skipped as invalid' in err
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

@@ -786,7 +786,15 @@ Verified behaviour and **requirements**:
     record(s) skipped as invalid` summary (either scanner; for TruffleHog
     this covers parsed records with unusable fields — an unparseable NDJSON
     *line* follows the parse contract above), so an all-invalid report is
-    never byte-indistinguishable from a clean run. A finding whose
+    never byte-indistinguishable from a clean run. Only an unusable path or
+    secret makes a record invalid (a secret holding a lone surrogate, which
+    no scanner writes, counts as unusable). A label field of the wrong type is
+    replaced instead and the finding is kept: a rule id becomes `unknown`, bad
+    `Tags` entries and a non-string `ValidationStatus` are ignored, and a bad
+    commit id is dropped. If a record still cannot be read, it is read again
+    from its path, line and secret alone and kept with the rule `unknown`, or
+    counted invalid when that fails too, with a warning naming the record;
+    it never crashes the run. A finding whose
     path resolves **to the report file itself** is skipped to avoid
     self-corruption, with only a `-v` INFO note — **keep reports outside the
     target tree**: `.json` files are not scanned natively without
