@@ -159,7 +159,17 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
     """
     for q in ('"', "'"):
         token = f'{q}{full_value}{q}'
-        if token in original:
+        pos = original.find(token)
+        if pos >= 0:
+            # SR-25: only a plain literal takes the bare expression. A quote
+            # that is part of a longer run ("""...""") would leave spare quotes,
+            # and a letter or digit before the opening quote is a string prefix
+            # (b, r, f, u) that would glue onto the expression (bos.environ).
+            before = original[pos - 1] if pos else ''
+            end = pos + len(token)
+            after = original[end] if end < len(original) else ''
+            if q in (before, after) or before.isalnum() or before == '_':
+                break
             other = '"' if q == "'" else "'"
             # If the bare expression carries `other`-quotes and the matched
             # token is itself nested inside an enclosing `other`-quoted literal
@@ -169,7 +179,7 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
             # Fall back to the sentinel, which is always valid.
             if other in replacement and other in original.replace(token, '', 1):
                 break
-            return original.replace(token, replacement, 1)
+            return original[:pos] + replacement + original[end:]
     return original[:at] + DEFAULT_REPLACEMENT + original[at + len(full_value) :]
 
 

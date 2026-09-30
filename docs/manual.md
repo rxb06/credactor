@@ -265,9 +265,11 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   not the import it needs — add the matching import (e.g. `import os`) if the file
   doesn't already have one, or it will raise `NameError` at runtime.
 - **Env mode falls back to the sentinel** when a finding is not a standalone
-  quoted assignment — a bare token on its own line, or a secret embedded in a
-  larger string (a `Bearer` header, a connection URL): inserting a code
-  expression there would break syntax, so the value becomes
+  quoted assignment: a bare token on its own line, a secret embedded in a
+  larger string such as a `Bearer` header or a connection URL, a
+  triple-quoted literal, or a literal with a string prefix such as `b"…"`,
+  `r"…"` or `f"…"`. Inserting a code expression there would break the code,
+  so the value becomes
   `REDACTED_BY_CREDACTOR` instead. This sentinel fallback applies to the
   **language file types** (`.py`, `.js`, `.rb`), whose env reference is a code
   expression (`os.environ[…]`, `process.env[…]`, `ENV[…]`). In

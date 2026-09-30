@@ -748,7 +748,8 @@ CASES: list[Case] = [
             )
         },
         argv=('--fix-all', '--yes', '--no-backup', '--replace-with', 'env', '.'),
-        note='records the broken output for triple quotes and prefixed strings; SR-25 changes it',
+        note='SR-25: the triple-quoted and prefixed literals get the sentinel; the plain '
+        'literal on the last line still gets os.environ',
     ),
     Case(
         id='fix-custom-replacement',

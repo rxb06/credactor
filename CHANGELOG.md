@@ -14,6 +14,12 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **`--replace-with env` no longer writes broken code for triple-quoted or
+  prefixed strings.** It consumed the quotes of a matched `"value"`, so a
+  triple-quoted literal kept its spare quotes (a syntax error), and a prefixed
+  one such as `b"…"` or `f"…"` became `bos.environ[…]`, which parses and then
+  fails at run time. Such a literal now gets the sentinel, as a value inside a
+  larger string already did.
 - **The copy sweep leaves suppressed lines alone.** A suppressed value never
   becomes a finding, so its line was not among the ones the sweep keeps, and
   `--fix-all` rewrote a line marked `credactor:ignore` or named by a

@@ -1924,6 +1924,47 @@ class TestSweepSparesHashFields:
         assert lines == ['# REDACTED_BY_CREDACTOR', f'revision = "{self._HEX}"']
 
 
+class TestEnvModeLiteralShapes:
+    """SR-25: env mode inlines os.environ[...] only for a plain quoted
+    literal. A triple-quoted or prefixed literal (b, r, f, u, rb) falls back
+    to the sentinel, so the result parses and names nothing new but os."""
+
+    @staticmethod
+    def _names(source):
+        import ast
+
+        return {n.id for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)}
+
+    @pytest.mark.parametrize(
+        'template',
+        [
+            'api_key = """{v}"""\n',
+            "api_key = '''{v}'''\n",
+            'api_key = b"{v}"\n',
+            'api_key = r"{v}"\n',
+            'api_key = f"{v}"\n',
+            'api_key = rb"{v}"\n',
+            'api_key = u"{v}"\n',
+            "api_key = Rb'{v}'\n",
+        ],
+    )
+    def test_literal_shape_falls_back_to_the_sentinel(self, make_file, template):
+        source = template.format(v=_AWS_KEY)
+        path = make_file('app.py', source)
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY not in after
+        assert 'REDACTED_BY_CREDACTOR' in after
+        assert self._names(after) <= self._names(source) | {'os'}
+
+    def test_plain_literal_is_still_inlined(self, make_file):
+        path = make_file('app.py', f'api_key = "{_AWS_KEY}"\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8') == 'api_key = os.environ["API_KEY"]\n'
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
