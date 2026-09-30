@@ -788,7 +788,7 @@ _NO_LINE = object()
 
 
 class TestInvalidLineNumbersCLI:
-    """PA-05 (DA-4): a finding whose report gives no valid line number is
+    """PA-05: a finding whose report gives no valid line number is
     reported and unresolved under --ci and --fix-all, and the file is never
     written."""
 
@@ -844,7 +844,7 @@ class TestInvalidLineNumbersCLI:
 
 
 class TestIngestedSymlinkCLI:
-    """SR-18 (decision D4-A): --fix-all on a report that names a symlink
+    """SR-18: --fix-all on a report that names a symlink
     rewrites the file it points to, leaves the link, and says which file."""
 
     def test_target_redacted_link_kept_and_named(self, tmp_path, capsys):

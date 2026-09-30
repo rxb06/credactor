@@ -258,7 +258,7 @@ def _warn_git_paths(stats: dict[str, Any], start: int, scanner_name: str) -> Non
         )
 
 
-# PA-05 (decision DA-4): a line number the report does not give cannot choose
+# PA-05: a line number the report does not give cannot choose
 # the line to rewrite. The finding is kept at line 0 (unknown), reported and
 # unresolved, but never written. It used to become line 1.
 _BAD_LINE_REASON = (

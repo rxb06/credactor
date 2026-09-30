@@ -1981,7 +1981,7 @@ class TestBetterleaksFieldMapping:
         assert results[0]['line'] == 1
 
     def test_bad_start_line_kept_at_zero_and_refused(self, tmp_path):
-        """PA-05 (DA-4): a StartLine that is not an int >= 1 does not become
+        """PA-05: a StartLine that is not an int >= 1 does not become
         line 1, which the report never named. The finding is kept at line 0
         and refused, so it cannot choose a line to rewrite."""
         target, _ = _make_bl_target(tmp_path)
@@ -4049,7 +4049,7 @@ def test_backstop_leaves_the_redacted_report_fatal(tmp_path, parser):
 
 
 # ---------------------------------------------------------------------------
-# PA-05 (DA-4): a line number the report does not give never authorises a write
+# PA-05: a line number the report does not give never authorises a write
 # ---------------------------------------------------------------------------
 
 _MISSING = object()
@@ -4085,7 +4085,7 @@ def _with_line(parser: str, value) -> dict:
 
 @pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
 class TestInvalidLineNumbers:
-    """PA-05 (DA-4): an invalid or missing line number keeps the finding at
+    """PA-05: an invalid or missing line number keeps the finding at
     line 0, reported and unresolved, and refuses the write. It was line 1."""
 
     @pytest.mark.parametrize('value', _BAD_LINES)
@@ -4108,7 +4108,7 @@ class TestInvalidLineNumbers:
 
 
 # ---------------------------------------------------------------------------
-# SR-18 (D4-A): an ingested symlink path is followed, and the run says so
+# SR-18: an ingested symlink path is followed, and the run says so
 # ---------------------------------------------------------------------------
 
 
@@ -4133,7 +4133,7 @@ def _with_path(parser: str, path: str) -> dict:
 
 @pytest.mark.parametrize('parser', sorted(_LINE_FIELDS))
 class TestIngestedSymlinkPaths:
-    """SR-18 (decision D4-A): a report path through a symlink is taken as the
+    """SR-18: a report path through a symlink is taken as the
     file it points to, as before, with a warning naming both."""
 
     def _ingest(self, tmp_path, parser, path, caplog):

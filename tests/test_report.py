@@ -961,7 +961,7 @@ class TestPrintGitignoreSkipped:
 
 
 class TestUnknownLine:
-    """PA-05 (DA-4): a finding at line 0 (the report gave no valid line) has no
+    """PA-05: a finding at line 0 (the report gave no valid line) has no
     SARIF region, since SARIF lines start at 1."""
 
     def _finding(self, tmp_path):

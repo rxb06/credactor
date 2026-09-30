@@ -18,15 +18,17 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   `.git/config` or a hook, which the native scan never visits, and `--fix-all`
   rewrote it. Such a finding is now reported as before, counts as unresolved
   (so the run exits 1), and is not written, with a warning that says to fix it
-  by hand and rotate the credential. The check ignores case and follows
-  symlinks, and the redactor applies it again to any path it is given. A report
-  named in the config file's `[ingest]` table is named on stderr before a run
-  that can write.
+  by hand and rotate the credential. The check ignores case, follows
+  symlinks, and covers a scan target that is `.git` itself or lies inside it;
+  the redactor applies it again to any path it is given. A report named in the
+  config file's `[ingest]` table is named on stderr before a run that can
+  write.
 - **An ingested path through a symlink is named.** Such a finding is still
   taken as the file the link points to, and a rewrite still changes that file
   and not the link, but the run now warns with the path the report gave and
   the file it resolves to, so it never rewrites a file the report did not name
-  without saying so.
+  without saying so. It warns once per path, and only for a link inside the
+  scan target, not for one above it such as macOS's `/tmp`.
 - **A line number the report does not give no longer picks the line to
   rewrite.** An ingested finding whose line was missing, not a positive whole
   number (`"x"`, `"3"`, `0`, `-1`, `1.5`), or a boolean became line 1, so
@@ -39,14 +41,22 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   record summary. Such a secret now makes the record invalid. As a backstop,
   a record whose fields raise a type error while being read is read again
   from its path, line and secret alone, and is kept with the rule `unknown`,
-  or counted invalid if that fails too, with a warning naming the record.
+  or counted invalid if that fails too, with a warning naming the record. A
+  report path that cannot be resolved (a symlink loop, which Python 3.11 and
+  3.12 raise as an error) skips the finding as invalid instead of ending the
+  run, and a number the JSON decoder refuses (over 4300 digits) skips a
+  TruffleHog line like any other bad line, or names the report in the fatal
+  error for Gitleaks and Betterleaks.
 - **A private key's marker line is never rewritten, whatever the finding is
   called.** The refusal to redact a key block keyed on the native finding
   type, so an ingested finding whose secret was a key's BEGIN line was
   redacted like any other line: the header was replaced, the key stayed, and
   the next scan reported the file clean. A finding whose value holds a BEGIN
   or END private key marker is now refused (warned, counted unresolved, exit
-  1), and no replacement or copy sweep changes a line that holds one.
+  1), and no replacement or copy sweep changes a line that holds one. The one
+  exception is a value that holds the whole key, BEGIN to END on one line, as
+  a service-account JSON file keeps it: replacing it removes the key and both
+  markers, so it is still redacted, as long as no marker is left on the line.
 - **A reported secret is replaced only where it stands as a whole token.** An
   ingested secret is matched as text on the reported line, and its first
   occurrence was replaced even inside a longer word, so a report giving `pass`
@@ -56,9 +66,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   one with fewer than 4 letters, digits or underscores, one with whitespace at
   either end or a line break in it, or one that reads as a credential name
   (such as `password` or `db_password`, with no digit). Any other one is replaced
-  where it stands as a whole token; if it appears on the line only inside a
-  longer word, the line is left alone and the finding is counted as not
-  fixed.
+  where it stands as a whole token (no ASCII letter, digit or underscore on
+  either side, the word boundary the scanners use, so a token next to CJK
+  text still counts). If it appears on the line only inside a longer word,
+  the line is left alone, the finding is counted as not fixed, and the value
+  is not swept from the rest of the file.
 - **`--replace-with env` no longer names the variable after the secret.** The
   env var name comes from the variable name, XML key or report rule id, and
   one that spelled the secret left an uppercased copy of it in the redacted
