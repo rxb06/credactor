@@ -1,0 +1,82 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "."
+ ],
+ "case": "fix-sweep-and-hash-context",
+ "exit": 0,
+ "findings": {
+  "dupes.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "first = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "lock.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "6721246223140285",
+    "raw": "token = \"<v:6721246223140285>\"",
+    "severity": "high",
+    "type": "variable:token",
+    "value": "6721246223140285"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "6721246223140285",
+    "raw": "api_key_rev = \"<v:6721246223140285>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "6721246223140285"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/dupes.py:2 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/dupes.py:3 suppressed by allowlist (file:line)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/lock.py:2 suppressed by hash context",
+   1
+  ],
+  [
+   "WARNING",
+   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line; re-check them after large edits.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/dupes.py: also cleared 2 additional copies of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/lock.py: also cleared 2 additional copies of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
+   1
+  ]
+ ],
+ "note": "records current sweep behaviour; SR-21 and SR-22 change it",
+ "reported": true,
+ "tree_after": {
+  ".credactorignore": "319e4db3788b944b",
+  "dupes.py": "00872779da3a691a",
+  "lock.py": "848db100d324ffc3"
+ }
+}

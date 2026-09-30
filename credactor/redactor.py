@@ -17,11 +17,12 @@ from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
 from .types import Finding
 from .utils import (
+    OutputMasker,
     detect_encoding,
     group_by_file,
     mask_secret,
     relativize,
-    sanitize_for_terminal,
+    sanitize_for_display,
 )
 
 
@@ -88,7 +89,36 @@ def _derive_env_var_name(finding: Finding) -> str:
     # xml-attr keys (e.g. "password]);evil()//").  Env var names must be
     # alphanumeric + underscore only.
     sanitized = re.sub(r'[^A-Za-z0-9_]', '', raw)
-    return sanitized if sanitized else 'CREDENTIAL'
+    # T15b: the name is text the scanned file or a report supplied, so it can
+    # spell the secret itself, and written into the file it would leave a copy
+    # behind. Letters and digits are compared, ignoring case and separators,
+    # so a provider prefix such as sk_live_ is not taken for the secret.
+    name = re.sub(r'[^A-Z0-9]', '', sanitized.upper())
+    value = re.sub(r'[^A-Z0-9]', '', _credential_part(finding.get('full_value', '')).upper())
+    shares = any(
+        name[i : i + _ENV_NAME_SHARED] in value for i in range(len(name) - _ENV_NAME_SHARED + 1)
+    )
+    return sanitized if sanitized and not shares else 'CREDENTIAL'
+
+
+# A derived env var name that shares this many letters and digits in a row
+# with the secret is not used.
+_ENV_NAME_SHARED = 8
+_PEM_ARMOR_RE = re.compile(r'-----(?:BEGIN|END)[^-]*-----')
+_URL_USERINFO_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*)@')
+
+
+def _credential_part(value: str) -> str:
+    """The part of *value* that is secret, for the env var name check: a URL
+    keeps only its password (its user when there is none), and a PEM block
+    drops its armor lines. The scheme, host and armor name what the value
+    is, which is also what the variable name says."""
+    value = _PEM_ARMOR_RE.sub('', value)
+    url = _URL_USERINFO_RE.match(value)
+    if url:
+        user, _, rest = url.group(1).partition(':')
+        value = rest or user
+    return value
 
 
 def _env_ref_for_language(var_name: str, ext: str) -> str:
@@ -501,8 +531,11 @@ def batch_replace_in_file(
             # os.replace() which cannot overwrite an open file on Windows.
             lock_fh.close()
             lock_fh = None
-        except OSError:
-            pass  # Lock contention — proceed without lock
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
     except OSError:
         pass
 
@@ -697,14 +730,18 @@ def interactive_review(
     print(f"  Answer y to replace each value with '{replacement_desc}', n (or Enter) to skip.")
     print(f'{"=" * 70}\n')
 
+    # PA-04, SR-07: the type (an ingested one holds a report's label) and the
+    # path can hold a secret.
+    masker = OutputMasker(f['full_value'] for f in findings)
+
     for i, finding in enumerate(findings, 1):
         rel = relativize(finding['file'], root_path)
 
         masked = mask_secret(finding['full_value'])
 
-        safe_rel = sanitize_for_terminal(rel)
-        safe_type = sanitize_for_terminal(finding['type'])
-        safe_masked = sanitize_for_terminal(masked)
+        safe_rel = masker.show_name(rel)
+        safe_type = masker.show_name(finding['type'])
+        safe_masked = sanitize_for_display(masked)
 
         print(f'  [{i}/{total}]  {safe_rel}  --  line {finding["line"]}')
         print(f'  Type     : {safe_type}')

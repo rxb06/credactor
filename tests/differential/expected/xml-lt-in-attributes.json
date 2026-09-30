@@ -1,0 +1,54 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "xml-lt-in-attributes",
+ "exit": 1,
+ "findings": {
+  "web.config": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "5f4b8f793c79706d",
+    "raw": "  <add title=\"a<b\" key=\"Password\" value=\"<v:5f4b8f793c79706d>\" />",
+    "severity": "high",
+    "type": "xml-attr:Password",
+    "value": "5f4b8f793c79706d"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "92b98d8c44b135d9",
+    "raw": "  <add key=\"Password\" note=\"x<y\" value=\"<v:92b98d8c44b135d9>\" />",
+    "severity": "high",
+    "type": "xml-attr:Password",
+    "value": "92b98d8c44b135d9"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "b679d7eb315c8d37",
+    "raw": "  <add value=\"<v:b679d7eb315c8d37>\" hint=\"1<2\" name=\"ApiKey\" />",
+    "severity": "high",
+    "type": "xml-attr:ApiKey",
+    "value": "b679d7eb315c8d37"
+   },
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "fbb4461f0ac8f2d6",
+    "raw": "  <add key=\"ApiKey\" value=\"<v:fbb4461f0ac8f2d6>\" />",
+    "severity": "high",
+    "type": "xml-attr:ApiKey",
+    "value": "fbb4461f0ac8f2d6"
+   }
+  ]
+ },
+ "log": [],
+ "note": "PA-10 must keep every finding when it bounds the XML regexes",
+ "reported": true,
+ "tree_after": {
+  "web.config": "4c46b5b8ccf5f659"
+ }
+}

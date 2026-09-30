@@ -1,0 +1,69 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "multiline-strings",
+ "exit": 1,
+ "findings": {
+  "doc.py": [
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "d631f4d08459385d",
+    "raw": "  token: <v:8c5a659e7f42eb95>",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "8c5a659e7f42eb95"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "d631f4d08459385d",
+    "raw": "\\nsection:\\n  token: <v:8c5a659e7f42eb95>\\n",
+    "severity": "high",
+    "type": "multiline:JWT token",
+    "value": "8c5a659e7f42eb95"
+   }
+  ],
+  "single.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "BLOB = '''<v:1a5d44a2dca19669>'''",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "tpl.js": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "  key: <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "\\n  key: <v:b8498412b57d7cac>\\n",
+    "severity": "critical",
+    "type": "multiline:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "doc.py": "765216ac2e3aadb4",
+  "single.py": "0191e3c5c2607304",
+  "tpl.js": "fe846c5c95d975cd"
+ }
+}

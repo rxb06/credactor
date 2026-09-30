@@ -6,9 +6,12 @@ Addresses: #16 (encoding detection), #28 (optimized entropy)
 
 from __future__ import annotations
 
+import bisect
+import io
 import math
 import os
 import re
+import stat
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,6 +19,8 @@ from typing import TYPE_CHECKING
 from ._log import logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .types import Finding
 
 # Optional encoding-detection libraries, resolved ONCE at import. The previous
@@ -123,7 +128,7 @@ def detect_encoding(filepath: str) -> str:
         'could not confirm encoding of %s; reading as latin-1 — if it is UTF-16 '
         'or another multibyte encoding, secrets may be missed. For reliable '
         'detection install the encoding extra: pip install "credactor[encoding]"',
-        sanitize_for_terminal(filepath),
+        filepath,
     )
     return 'latin-1'
 
@@ -150,6 +155,54 @@ def is_within_root(path_str: str, root_str: str) -> bool:
     return norm_path == norm_root or norm_path.startswith(norm_root + os.sep)
 
 
+# SR-13: .gitignore and .credactorignore are read before any per-file guard,
+# so they get the same checks as a scanned file and a size cap. A cut is made
+# at a line end, so it only drops whole patterns and more is scanned, never
+# less.
+_AUX_MAX_BYTES = 1024 * 1024
+
+
+def read_aux_file(path: str, root: str | Path, max_bytes: int = _AUX_MAX_BYTES) -> str | None:
+    """Return the text of an ignore file the walk relies on, or None if there
+    is none (a dangling symlink counts as none).
+
+    Raises OSError if *path* is a symlink that resolves outside *root*, or is
+    not a regular file: a FIFO would block ``open()`` forever, and a device
+    such as /dev/zero would read without end. Reads at most *max_bytes*, cut
+    back to the last line end, and warns when the file is larger. Split the
+    text with ``ignore_file_lines``.
+    """
+    try:
+        if stat.S_ISLNK(os.lstat(path).st_mode) and not is_within_root(
+            os.path.realpath(path), str(Path(root).resolve())
+        ):
+            raise OSError(f'symlink points outside the scan root: {path}')
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):  # the parent may be a file
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(f'not a regular file (FIFO or special file): {path}')
+    with open(path, 'rb') as fh:
+        data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        logger.warning(
+            '%s is larger than %d KiB; reading only the first %d KiB.',
+            path,
+            max_bytes // 1024,
+            max_bytes // 1024,
+        )
+        # A partial last line could be a broader pattern ('*.log' cut to '*').
+        data = data[: data.rfind(b'\n', 0, max_bytes) + 1]
+    return data.decode('utf-8', errors='replace')
+
+
+def ignore_file_lines(text: str) -> list[str]:
+    """Split an ignore file as git does, at line ends only (\\n, \\r\\n, \\r).
+    ``str.splitlines`` also splits at form feeds, U+2028 and other separators,
+    which would turn the rest of a comment line into a live pattern."""
+    return io.StringIO(text, newline=None).readlines()
+
+
 def mask_secret(value: str, *, visible: int = 4) -> str:
     """Mask a secret value, showing only the first `visible` characters."""
     if len(value) <= visible:
@@ -157,23 +210,393 @@ def mask_secret(value: str, *, visible: int = 4) -> str:
     return value[:visible] + '[REDACTED]'
 
 
-_CONTROL_CHAR_TABLE = str.maketrans(
-    {c: '?' for c in range(32) if c not in (9, 10, 13)}  # keep tab, LF, CR
+# Shorter known values are not masked inside other text: they would match
+# ordinary words, and mask_secret shows nothing of them anyway.
+KNOWN_MIN_LEN = 4
+
+
+# Known-prefix links _match_at follows before it searches again.
+_LINK_STEPS = 8
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    """Length of the common prefix of *a* and *b*, by binary search over
+    slice comparisons rather than a character loop."""
+    lo, hi = 0, min(len(a), len(b))
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if a[:mid] == b[:mid]:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+class KnownSecrets:
+    """Every known secret value, indexed once so it can be masked in any
+    number of texts (SR-05).
+
+    A regex alternation of the values costs O(len(text) x len(values)) per
+    text. Here the values are grouped by their first ``KNOWN_MIN_LEN``
+    characters and kept sorted, each with a link to its longest known
+    prefix, so finding the longest value at a position is a dict lookup and
+    a few binary searches.
+    """
+
+    def __init__(self, values: Iterable[str]) -> None:
+        by_prefix: dict[str, set[str]] = {}
+        for v in values:
+            if len(v) >= KNOWN_MIN_LEN:
+                by_prefix.setdefault(v[:KNOWN_MIN_LEN], set()).add(v)
+        self._index = {prefix: sorted(vs) for prefix, vs in by_prefix.items()}
+        self._longest = {prefix: max(map(len, vs)) for prefix, vs in by_prefix.items()}
+        # The longest known value that is a proper prefix of each value. In
+        # sorted order every such prefix comes before the value, so a stack
+        # holding the current chain of prefixes finds it.
+        self._parent: dict[str, str | None] = {}
+        for ordered in self._index.values():
+            chain: list[str] = []
+            for v in ordered:
+                while chain and not v.startswith(chain[-1]):
+                    chain.pop()
+                self._parent[v] = chain[-1] if chain else None
+                chain.append(v)
+
+    def _match_at(self, text: str, i: int) -> int:
+        """Length of the longest known value that starts at ``text[i]``, or 0."""
+        prefix = text[i : i + KNOWN_MIN_LEN]
+        values = self._index.get(prefix)
+        if values is None:
+            return 0
+        s = text[i : i + self._longest[prefix]]
+        while True:
+            # The largest value <= s is the longest one s starts with, if s
+            # starts with it. If not, the answer is the longest known prefix
+            # of that value no longer than their common prefix: its parent,
+            # if short enough, or else the answer for the common prefix.
+            k = bisect.bisect_right(values, s)
+            if k == 0:
+                return 0
+            v = values[k - 1]
+            if s.startswith(v):
+                return len(v)
+            common = _common_prefix_len(s, v)
+            # Walk a few links first (pairs of values one character apart
+            # would cost a search each), then search again for the common
+            # prefix (a long chain of prefixes would cost a link each).
+            link = self._parent[v]
+            for _ in range(_LINK_STEPS):
+                if link is None:
+                    return 0
+                if len(link) <= common:
+                    return len(link)
+                link = self._parent[link]
+            s = s[:common]
+
+    def redact(self, text: str, *, limit: int | None = None, mask_tail: bool = False) -> str:
+        """Return *text* with every occurrence of every known value masked.
+
+        Matches are leftmost-longest, and a value that starts inside a match
+        and ends past it extends the match, so no value's tail is left
+        showing; the masked span shows only its first characters. A mask is
+        never masked again. With *limit*, the result is the first *limit*
+        characters of the fully masked text, and only as much of *text* is
+        read as those need; truncating after masking means a value cut at the
+        edge never shows in part. With *mask_tail*, text that ends with the
+        start of a known value (``KNOWN_MIN_LEN`` characters or more) has that
+        tail masked too, for text that was cut before it got here.
+        """
+        out: list[str] = []
+        size = 0
+        i = 0
+        n = len(text)
+        while i < n and (limit is None or size < limit):
+            end = self._span_end(text, i)
+            if not end and mask_tail and self._starts_a_value(text, i):
+                end = n
+            if not end:
+                out.append(text[i])
+                size += 1
+                i += 1
+                continue
+            masked = mask_secret(text[i:end])
+            out.append(masked)
+            size += len(masked)
+            i = end
+        result = ''.join(out)
+        return result if limit is None else result[:limit]
+
+    def _starts_a_value(self, text: str, i: int) -> bool:
+        """Whether ``text[i:]`` (at least KNOWN_MIN_LEN characters) is a proper
+        start of a known value."""
+        prefix = text[i : i + KNOWN_MIN_LEN]
+        values = self._index.get(prefix)
+        if values is None or len(text) - i >= self._longest[prefix]:
+            return False
+        rest = text[i:]
+        k = bisect.bisect_left(values, rest)
+        return k < len(values) and values[k].startswith(rest)
+
+    def tail_start(self, text: str) -> int | None:
+        """Where the longest tail of *text* that is a proper start of a known
+        value (``KNOWN_MIN_LEN`` characters or more) begins, or None."""
+        n = len(text)
+        longest = max(self._longest.values(), default=0)
+        for p in range(max(0, n - longest + 1), n - KNOWN_MIN_LEN + 1):
+            if self._starts_a_value(text, p):
+                return p
+        return None
+
+    def spans(self, text: str) -> list[tuple[int, int]]:
+        """The ``(start, end)`` spans ``redact`` would mask in *text*, in order."""
+        found: list[tuple[int, int]] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            end = self._span_end(text, i)
+            if end:
+                found.append((i, end))
+                i = end
+            else:
+                i += 1
+        return found
+
+    def _span_end(self, text: str, i: int) -> int:
+        """End of the masked span that starts at ``text[i]``, or 0: the longest
+        known value there, extended over any value that starts inside it and
+        ends past it."""
+        length = self._match_at(text, i)
+        if not length:
+            return 0
+        end = i + length
+        p = i + 1
+        while p < end:
+            end = max(end, p + self._match_at(text, p))
+            p += 1
+        return end
+
+
+# SR-06. Escape sequences are removed whole: CSI, and OSC ended by BEL or ST.
+# A lone or unknown ESC is left to the table below.
+_ESCAPE_SEQ_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+# Every C0 control (LF and CR included), DEL, every C1 control (NEL and the
+# one-byte CSI included), the Unicode line and paragraph separators, and the
+# bidirectional embedding, override and isolate controls, which can make a
+# name display in a different order than its bytes. Lone surrogates too:
+# undecodable bytes arrive as them (surrogateescape, os.fsdecode), and a
+# stream that writes them back out would emit those raw bytes, while a
+# strict one would raise. TAB becomes a space: it cannot break a line, and
+# source lines are often indented with it.
+_DISPLAY_TABLE = str.maketrans(
+    dict.fromkeys(
+        [
+            *range(0x09),
+            *range(0x0A, 0x20),
+            0x7F,
+            *range(0x80, 0xA0),
+            0x2028,
+            0x2029,
+            *range(0x202A, 0x202F),
+            *range(0x2066, 0x206A),
+            *range(0xD800, 0xE000),
+        ],
+        '?',
+    )
+    | {0x09: ' '}
 )
-_ANSI_ESC_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+# CI workflow command markers. The GitHub runner reads '::' at the start of a
+# line after trimming leading whitespace, and '##[' anywhere in a line; Azure
+# Pipelines reads '##vso[' anywhere.
+_CI_MARKER_RE = re.compile(r'##(?=\[|vso\[)', re.IGNORECASE)
+_LINE_COMMAND_RE = re.compile(r'^([^\S\r\n]*):(?=:)', re.MULTILINE)
 
 
-def sanitize_for_terminal(s: str) -> str:
-    """Strip ANSI escape sequences and control characters to prevent terminal
-    injection via crafted filenames or values."""
-    s = _ANSI_ESC_RE.sub('', s)
-    return s.translate(_CONTROL_CHAR_TABLE)
+def display_chars(s: str) -> str:
+    """Remove terminal escape sequences from *s*, replace every control,
+    line-break, bidi and lone surrogate character with '?', and TAB with a
+    space.
+
+    Apart from whole escape sequences, each character maps on its own, so a
+    secret and a line that holds it stay consistent: mask the output of this
+    (``KnownSecrets``), then pass the result through ``defuse_ci_commands``.
+    """
+    return _ESCAPE_SEQ_RE.sub('', s).translate(_DISPLAY_TABLE)
+
+
+def defuse_ci_commands(s: str) -> str:
+    """Break CI workflow command markers in *s*, so that no line of it can be
+    read as a command: '##[' and '##vso[' anywhere, and '::' at the start of a
+    line after whitespace."""
+    s = _CI_MARKER_RE.sub('#?', s)
+    return _LINE_COMMAND_RE.sub(r'\1?', s)
+
+
+def defuse_json_ci_commands(text: str) -> str:
+    """Write the '##' of every '##[' and '##vso[' in JSON *text* as
+    ``#\\u0023``, so no line of it can be read as a CI command while the data
+    it decodes to is unchanged. Only for JSON text: a '#' can only occur
+    inside a string there, and a line cannot start with '::'."""
+    return _CI_MARKER_RE.sub(lambda _: '#\\u0023', text)
+
+
+def sanitize_for_display(s: str) -> str:
+    """Make an untrusted string safe to print to a terminal or a CI log (SR-06):
+    ``display_chars`` then ``defuse_ci_commands``."""
+    return defuse_ci_commands(display_chars(s))
+
+
+# A known value masks a path or a type only if it looks like a secret rather
+# than a word or a number: a found password such as 'production' must not
+# mask an unrelated directory (breaking its SARIF link) or change a rule id
+# between runs.
+_NAME_VALUE_MIN = 8
+
+
+def _distinctive(value: str) -> bool:
+    """At least ``_NAME_VALUE_MIN`` characters, and neither a plain number
+    nor a plain word (letters only, in one case or capitalised)."""
+    if len(value) < _NAME_VALUE_MIN or value.isdigit():
+        return False
+    return not (value.isalpha() and (value.islower() or value.isupper() or value.istitle()))
+
+
+def name_secrets(values: Iterable[str]) -> KnownSecrets:
+    """The known values that may mask a path or a type (see ``OutputMasker``)."""
+    return KnownSecrets(v for v in values if _distinctive(v))
+
+
+# An escape sequence left unfinished at the very end of a text, as a cut can
+# leave one.
+_PARTIAL_ESC_TAIL_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?\Z')
+
+
+def _joined(text: str) -> tuple[str, list[int], list[int]]:
+    """``display_chars(text)``, with a map back to *text*: the k-th run of
+    *text* kept between escape sequences starts at ``raw_starts[k]`` in
+    *text* and at ``joined_starts[k]`` in the result."""
+    parts: list[str] = []
+    raw_starts: list[int] = []
+    joined_starts: list[int] = []
+    pos = size = 0
+    for m in _ESCAPE_SEQ_RE.finditer(text):
+        if m.start() > pos:
+            raw_starts.append(pos)
+            joined_starts.append(size)
+            parts.append(text[pos : m.start()])
+            size += m.start() - pos
+        pos = m.end()
+    if pos < len(text):
+        raw_starts.append(pos)
+        joined_starts.append(size)
+        parts.append(text[pos:])
+    return ''.join(parts).translate(_DISPLAY_TABLE), raw_starts, joined_starts
+
+
+def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort *spans* and merge the ones that overlap (touching ones stay apart,
+    as in ``KnownSecrets.redact``)."""
+    out: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if out and start < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+class _Displayed:
+    """Masks one set of known values in text for display."""
+
+    def __init__(self, values: set[str], *, mask_tail: bool = False) -> None:
+        self._tail = mask_tail
+        self._raw = KnownSecrets(values)
+        self._shown = KnownSecrets(display_chars(v) for v in values)
+        self._done: dict[tuple[str, int | None], str] = {}
+
+    def show(self, text: str, limit: int | None) -> str:
+        key = (text, limit)
+        if key not in self._done:
+            self._done[key] = defuse_ci_commands(self._mask(text, limit))
+        return self._done[key]
+
+    def _mask(self, text: str, limit: int | None) -> str:
+        if self._tail:
+            text = _PARTIAL_ESC_TAIL_RE.sub('', text)
+        if '\x1b' not in text:
+            # Every sequence display_chars removes starts with ESC. Without
+            # one it maps each character on its own, so the displayed forms
+            # of the values find every occurrence.
+            shown = text.translate(_DISPLAY_TABLE)
+            return self._shown.redact(shown, limit=limit, mask_tail=self._tail)
+        # Mask each span where a value stands in the raw text (an escape
+        # sequence next to it cannot take a character from it) and each span
+        # where a value's displayed form shows once escapes are removed (one
+        # may have split it), merged; render everything else for display.
+        joined, raw_starts, joined_starts = _joined(text)
+
+        def to_raw(j: int) -> int:
+            k = bisect.bisect_right(joined_starts, j) - 1
+            return raw_starts[k] + j - joined_starts[k]
+
+        spans = self._raw.spans(text)
+        spans += [(to_raw(a), to_raw(b - 1) + 1) for a, b in self._shown.spans(joined)]
+        if self._tail:
+            start = self._shown.tail_start(joined)
+            if start is not None:
+                spans.append((to_raw(start), len(text)))
+        out: list[str] = []
+        size = 0
+        pos = 0
+        for start, end in _merged(spans):
+            if limit is not None and size >= limit:
+                break
+            before = display_chars(text[pos:start])
+            masked = mask_secret(display_chars(text[start:end]))
+            out += [before, masked]
+            size += len(before) + len(masked)
+            pos = end
+        else:
+            out.append(display_chars(text[pos:]))
+        result = ''.join(out)
+        return result if limit is None else result[:limit]
+
+
+class OutputMasker:
+    """Masks a run's known secret values wherever a report shows text
+    (SR-05, PA-04, SR-07).
+
+    Source lines are masked with every known value; paths and types only
+    with distinctive ones. For display, the known values are found in the
+    raw text first, and an escape sequence that overlaps one is kept rather
+    than removed, so removal cannot take a character from a value. The text
+    is then made displayable and masked once, with each value in both of
+    the forms it can show in, which also catches a value that an escape
+    sequence split and its removal joined. CI command markers are broken
+    last. Results are kept per text, since many findings share one line.
+    """
+
+    def __init__(self, values: Iterable[str]) -> None:
+        every = set(values)
+        # A source line may have been cut before it got here (the scanner
+        # keeps 4,096 characters), so a value cut off at its end is masked.
+        self._lines = _Displayed(every, mask_tail=True)
+        self._names = _Displayed({v for v in every if _distinctive(v)})
+
+    def show_line(self, text: str, *, limit: int | None = None) -> str:
+        """*text* (a source line) masked and made safe to display."""
+        return self._lines.show(text, limit)
+
+    def show_name(self, text: str) -> str:
+        """*text* (a path or a type) masked and made safe to display."""
+        return self._names.show(text, None)
 
 
 def preview(val: str, n: int = 60) -> str:
-    """Truncated, safe-for-display version of *val* (adds an ellipsis when longer
-    than *n*). Shared by the native scanner and external ingest so every
-    ``value_preview`` is formatted identically, with one truncation length."""
+    """*val* cut to *n* characters, with an ellipsis when longer. Truncated,
+    NOT masked: for most secrets the result is the whole secret, so never
+    display or log it; use ``mask_secret``. Shared by the native scanner and
+    external ingest so every ``value_preview`` is formatted identically, with
+    one truncation length."""
     return val[:n] + ('...' if len(val) > n else '')
 
 

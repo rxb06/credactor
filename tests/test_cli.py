@@ -2,8 +2,11 @@
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -122,6 +125,43 @@ class TestMainExitCodes:
         with pytest.raises(SystemExit) as exc_info:
             main(['--ci', target])
         assert exc_info.value.code == 1
+
+    def test_suppressed_pem_header_does_not_hide_a_key_after_it(self, make_file):
+        # SR-08: an ignored header used to hide every following line.
+        # credactor:ignore
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        path = make_file(
+            'k.py', f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{key}"\n'
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', os.path.dirname(path)])
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize(
+        'error',
+        [
+            RuntimeError('boom\n::error::x'),
+            OSError('boom\n::error::x'),
+            ValueError('boom\n::error::x'),
+            UnicodeDecodeError('utf-8', b'boom\n::error::x', 0, 1, 'boom'),
+        ],
+        ids=['runtime', 'os', 'value', 'decode'],
+    )
+    def test_unexpected_exception_exits_2_not_1(self, monkeypatch, capsys, error):
+        # T15a: exit 1 means "findings found", so a crash must not use it.
+        from credactor import cli
+
+        def boom(argv):
+            raise error
+
+        monkeypatch.setattr(cli, '_main_inner', boom)
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--ci', '.'])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert 'Traceback' in err
+        assert f'{type(error).__name__}: ' in err
+        assert not [ln for ln in err.split('\n') if ln.lstrip().startswith('::')]
 
     def test_dry_run_with_findings_exits_1(self, make_file):
         # credactor:ignore
@@ -732,6 +772,114 @@ class TestPhase1Fixes:
         out = capsys.readouterr().out
         assert 'Safe for commits' not in out
         assert 'entropy floor' in out
+
+
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedReadFailures:
+    """SR-14: the pre-commit gate cannot call a commit clean when it could
+    not read it."""
+
+    def _repo(self, tmp_path):
+        run = dict(cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(['git', 'init', '-q'], **run)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **run)
+        subprocess.run(['git', 'config', 'user.name', 't'], **run)
+        (tmp_path / 'app.py').write_text('x = 1\n', encoding='utf-8')
+        subprocess.run(['git', 'add', 'app.py'], **run)
+        return tmp_path
+
+    def test_corrupt_index_exits_2(self, tmp_path):
+        repo = self._repo(tmp_path)
+        subprocess.run(['git', 'commit', '-qm', 'x'], cwd=repo, check=True, capture_output=True)
+        index = repo / '.git' / 'index'
+        index.write_bytes(b'DIRC\0\0\0\2\0\0\0\5garbage')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert index.read_bytes() == b'DIRC\0\0\0\2\0\0\0\5garbage'  # left alone
+
+    def test_unreadable_staged_blob_exits_2_without_fail_on_error(self, tmp_path, capsys):
+        repo = self._repo(tmp_path)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show']:
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main(['--staged', '--ci', str(repo)])
+        assert exc_info.value.code == 2
+        assert 'staged file(s) could not be read' in capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
+class TestStagedEntries:
+    """What --staged reads from the index."""
+
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    def _repo(self, path):
+        path.mkdir(parents=True, exist_ok=True)
+        self._git(path, 'init', '-q')
+        (path / 'x.py').write_text('x = 1\n', encoding='utf-8')
+        self._git(path, 'add', 'x.py')
+        self._git(path, 'commit', '-qm', 'x')
+        return path
+
+    def _staged(self, repo):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--staged', '--ci', str(repo)])
+        return exc_info.value.code
+
+    def test_submodule_with_a_scanned_name_is_skipped(self, tmp_path):
+        # A gitlink is a commit id with no blob in the superproject, so
+        # showing it can fail ('bad object'); it must not be read at all, or
+        # the hook would fail every commit that adds or bumps the submodule.
+        sub = self._repo(tmp_path / 'sub')
+        repo = self._repo(tmp_path / 'main')
+        self._git(
+            repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', str(sub), 'lib/three.js'
+        )
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'show'] and args[2].endswith('lib/three.js'):
+                return subprocess.CompletedProcess(args, 128, b'', b'fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with mock.patch('credactor.walker.subprocess.run', side_effect=run):
+            assert self._staged(repo) == 0
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='file names with a colon')
+    def test_path_that_looks_like_a_stage_number(self, tmp_path):
+        # 'git show :0:x.py' would be stage 0 of x.py, not the file '0:x.py'.
+        repo = self._repo(tmp_path / 'main')
+        (repo / '0:x.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', '0:x.py')
+        assert self._staged(repo) == 1
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
+    def test_symlink_replaced_by_a_file_is_scanned(self, tmp_path):
+        repo = self._repo(tmp_path / 'main')
+        (repo / 'cfg.py').symlink_to('x.py')
+        self._git(repo, 'add', 'cfg.py')
+        self._git(repo, 'commit', '-qm', 'link')
+        (repo / 'cfg.py').unlink()
+        (repo / 'cfg.py').write_text(f'k = "{self._KEY}"\n', encoding='utf-8')
+        self._git(repo, 'add', 'cfg.py')
+        assert self._staged(repo) == 1
 
 
 class TestStagedReadOnly:

@@ -38,6 +38,13 @@ _PASSWORD_VAR_KEYWORDS = ('password', 'passwd', 'passphrase', 'private_key', 'se
 # (increased from 100 to 500 to accommodate large RSA/EC keys without
 # false-resetting mid-block)
 _MAX_PEM_BLOCK_LINES = 500
+_PEM_END_RE = re.compile(r'-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+# One line of a key body, bare as in a .pem file or quoted in code: optional
+# concatenation or opening punctuation, a quote, up to 76 base64 characters,
+# an escaped newline, a quote, and trailing '+', ',', ')', ';' or '\'.
+_PEM_BODY_LINE_RE = re.compile(
+    r"""^\s*[+(]?\s*["'`]?[A-Za-z0-9+/=]{1,76}(?:\\n)?["'`]?\s*[+,);\\]*\s*$"""
+)
 
 # Max file size to scan (bytes) — skip silently above this
 _MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -679,13 +686,19 @@ def scan_lines(
 
     # PEM private key block detection (multi-line)
     in_pem_block = False
+    # SR-08: after a suppressed header, only lines shaped like a key body are
+    # skipped, so a secret on any other line before END is still found.
+    body_only = False
     pem_block_lines = 0
     for lineno, line in enumerate(lines, start=1):
-        if _PEM_KEY_RE.search(line):
-            in_pem_block = True
-            pem_block_lines = 0
-            # Check suppression — still skip body lines even if header suppressed
+        header = _PEM_KEY_RE.search(line)
+        if header:
+            # A header with its END on the same line (a one-line fixture)
+            # opens no block, so the lines after it are scanned.
+            opens = _PEM_END_RE.search(line, header.end()) is None
             if has_inline_suppression(line):
+                logger.debug('%s:%d suppressed by inline credactor:ignore', filepath, lineno)
+                in_pem_block, body_only, pem_block_lines = opens, True, 0
                 continue
             # L11: the PEM-block suppression was previously absent from the
             # --verbose audit trail — log which allowlist rule fired.
@@ -694,7 +707,9 @@ def scan_lines(
             )
             if reason:
                 logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
+                in_pem_block, body_only, pem_block_lines = opens, True, 0
                 continue
+            in_pem_block, body_only, pem_block_lines = opens, False, 0
             findings.append(
                 _make_finding(
                     filepath,
@@ -719,6 +734,10 @@ def scan_lines(
                     lineno,
                     _MAX_PEM_BLOCK_LINES,
                 )
+                findings.extend(
+                    scan_line(lineno, line, filepath, config=config, allowlist=allowlist)
+                )
+            elif body_only and not _PEM_BODY_LINE_RE.match(line):
                 findings.extend(
                     scan_line(lineno, line, filepath, config=config, allowlist=allowlist)
                 )
@@ -797,7 +816,10 @@ def _scan_multiline_strings(
                             type=f'multiline:{label}',
                             severity=severity,
                             value=val,
-                            raw=block.replace('\n', '\\n')[:120],
+                            # The whole block (already capped at
+                            # _MAX_BLOCK_SIZE): the report cuts it for
+                            # display only after masking (SR-05).
+                            raw=block.replace('\n', '\\n'),
                         )
                     )
                     break  # one finding per block is enough

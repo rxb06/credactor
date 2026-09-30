@@ -10,6 +10,116 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
+## [Unreleased]
+
+### Security
+
+- **`--replace-with env` no longer names the variable after the secret.** The
+  env var name comes from the variable name, XML key or report rule id, and
+  one that spelled the secret left an uppercased copy of it in the redacted
+  file. A name that shares 8 letters and digits in a row with the secret now
+  falls back to `CREDENTIAL`.
+- **An unexpected error exits 2, not 1.** An exception that escaped the CLI
+  ended the run with Python's exit 1, the code for "findings found", so a gate
+  read a crash as a result. The traceback is now printed to stderr, sanitized
+  like the rest of the output, and the run exits 2.
+- **A git failure in `--staged` or `--scan-history` is an error, not a clean
+  scan.** Once `git rev-parse` had found the repository, a failing
+  `git diff --cached` or `git log` was reported as nothing to scan, exit 0; a
+  damaged index let a pre-commit hook pass. Both now exit 2, and so does a
+  broken ref, or a HEAD with no commits while other branches have some. A
+  repository with no commits on any branch still has nothing to scan for
+  `--scan-history`, exit 0. History now also scans type changes. Under
+  `--staged`, a staged file that cannot be read also exits 2, with or without
+  `--fail-on-error`.
+- **`--staged` reads exactly the staged files.** A type change (a symlink
+  replaced by a file) is now scanned, a path such as `1:x.py` is no longer read
+  as stage 1 of `x.py`, and a submodule, which has no content in the
+  superproject, is no longer read at all.
+- **`.gitignore` and `.credactorignore` are read with the same guards as a
+  scanned file.** `.gitignore` was opened before any check, so a FIFO could
+  block the scan and a device file could be read without end, and
+  `.credactorignore` followed a symlink out of the scan root and had no size
+  cap. Each is now read only if it is a regular file, through a symlink only if
+  the target stays inside the scan root, and at most 1 MiB of it, cut at a line
+  end, with a warning when it is larger. Lines are split at line ends only, as
+  git does. One that is refused is reported with the files that could not be
+  scanned, so `--fail-on-error` stops on it; the scan goes on without its
+  patterns.
+- **A suppressed private key header no longer hides the lines after it.** A
+  `-----BEGIN ... PRIVATE KEY-----` line that was ignored inline or allowlisted
+  still started a key block, so the lines after it, up to the END line or 500
+  lines, were not scanned. After a suppressed header, only lines shaped like a
+  key body are now skipped, quoted or bare, so a test key fixture still yields
+  no findings while any other line is scanned. A header with its END on the
+  same line opens no block. An inline-ignored header is logged under
+  `--verbose` like any other suppression.
+- **The text report masks every known secret on a displayed line.** Masking
+  used to cover only the finding's own value, once. Every value found in the
+  run is now masked wherever it appears in the report, including a second
+  credential on the same line or a repeat of the same one, and a line is cut to
+  length only after masking. A multi-line finding now keeps its whole block,
+  so a value past the first 120 characters is masked before the cut too, and a
+  known value cut off at the end of a long line (the scanner keeps 4,096
+  characters of a line) is masked as well.
+- **Text output is safe to print into a terminal or a CI log.** Paths, source
+  lines, types and the values in warnings now have terminal escape sequences
+  removed, and control, line-break and bidirectional characters, and bytes
+  that could not be decoded, shown as `?` (a tab as a space). An undecodable
+  byte on a finding's line no longer stops the text report with an encoding
+  error. CI workflow command markers in them are broken, so a
+  file name or a line of scanned source can no longer be read as a command by
+  the GitHub Actions or Azure Pipelines runner. JSON and SARIF, which escape
+  control characters already, write those markers with a JSON escape
+  (`#\u0023[`), so the data they decode to is unchanged.
+- **A secret in a file or directory name is masked.** If a value found in the
+  run also appears in a path, the path is shown masked in the text, JSON and
+  SARIF reports, the list of files skipped by `.gitignore` and the interactive
+  prompt. The text and SARIF reports add
+  a note to rename the file or directory. A masked SARIF path no longer links
+  to the file. Paths and types are masked only with values of at least 8
+  characters that are not a plain number or a plain word, so a password that
+  is also a word does not mask unrelated paths or rule ids.
+- **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
+  ingested report becomes part of the finding type and, in SARIF, the rule id.
+  A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
+  is now reported as `unknown`, with a warning that counts them; the finding is
+  kept. Secret values are masked in the type in every output format and in the
+  interactive prompt. A non-string `RuleID` no longer stops the run with a
+  traceback. A report's commit id, which JSON prints as is, is kept only if it
+  is 7 to 64 hex characters (SHA-1 or SHA-256) and shares no run of 6
+  characters with the secret; otherwise the finding is ingested without it,
+  with a warning.
+
+### Changed
+
+- **SARIF results for multi-line findings have no columns.** The columns were
+  offsets into the escaped block, not positions on the source line.
+- **The text report follows `sys.stdout` when it is redirected.**
+  `print_report` and `print_gitignore_skipped` looked up `sys.stdout` once, at
+  import, so `contextlib.redirect_stdout` (or pytest's `capsys`) did not capture
+  them. They now look it up on each call.
+- **`--verbose` now says when the advisory file lock could not be taken.** The
+  lock is still best effort, so the rewrite proceeds unlocked as before, but the
+  run now logs the reason instead of continuing silently.
+
+### Notes
+
+- **Tests now pin the write-path guards.** Several guards could previously be
+  removed or weakened with the whole suite still green: the advisory lock and
+  how long it is held, atomic creation of `.bak` backups (beside the file and in
+  `--secure-backup-dir`), the abort when a backup cannot be written, the
+  interactive retry of a failed backup, mode restoration (special bits
+  included) after a rewrite and after the interactive final sweep, atomic
+  publication of every rewrite (including a failed rename or temp file), and
+  masking and escape stripping in the interactive prompt. Each now has a test
+  that fails when it is broken.
+- **Behaviour snapshots.** A differential test runs the real CLI over a fixed
+  corpus of small cases and compares every finding field in order, the exit code,
+  the log messages and the bytes of every file afterwards against committed
+  snapshots, so an unintended change to what Credactor reports or writes fails
+  the suite. Snapshots hold hashes, never secret values.
+
 ## [2.7.4] - 2026-09-18
 
 Released as 2.7.4. The `v2.7.3` tag was consumed by a release published before
@@ -564,6 +674,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
+[Unreleased]: https://github.com/rxb06/credactor/compare/v2.7.4...HEAD
 [2.7.4]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.4
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0
