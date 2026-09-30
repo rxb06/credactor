@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -1351,6 +1352,141 @@ class TestPrivateKeyRefusalByValueAndLine:
         content = Path(path).read_text()
         assert _AWS_KEY not in content
         assert '-----BEGIN PRIVATE KEY-----' in content
+
+
+_GH_TOKEN = 'ghp_' + 'Zq8Lm2Xv7Rt4Ky9Wn3Hp6Jd1Fs5Gb0Ac2UeQ'
+_JSON_KEY = (
+    '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7'
+    '\\n-----END PRIVATE KEY-----\\n'
+)
+
+
+def _external(path, value, line=1, rule='generic-api-key'):
+    return _mk_finding(path, value, ftype=f'external:gitleaks:{rule}', line=line)
+
+
+class TestSinkTokenMatching:
+    """SR-15: an ingested value is found in linear time, with the ASCII word
+    boundary the reporting scanners use, and a value refused on its own line
+    drives no sweep."""
+
+    def test_token_next_to_cjk_text_is_replaced(self, make_file):
+        path = make_file('README.ja.md', f'トークンは{_GH_TOKEN}です。\n')
+        assert batch_replace_in_file(
+            path, [_external(path, _GH_TOKEN)], Config(no_backup=True)
+        ) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8') == 'トークンはREDACTED_BY_CREDACTORです。\n'
+
+    def test_sweep_clears_a_copy_next_to_cjk_text(self, make_file):
+        path = make_file('notes.md', f'token {_GH_TOKEN}\nトークンは{_GH_TOKEN}です。\n')
+        assert batch_replace_in_file(
+            path, [_external(path, _GH_TOKEN)], Config(no_backup=True)
+        ) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_position_is_linear_on_a_long_line(self):
+        from credactor.redactor import _value_position
+
+        line = '0,' * 1_000_000
+        value = '0,' * 5000 + '1'
+        stale = _external('x', _GH_TOKEN)
+        start = time.perf_counter()
+        for _ in range(200):
+            assert _value_position(line, _external('x', value)) is None
+            assert _value_position(line, stale) is None
+        assert time.perf_counter() - start < 2.0
+
+    def test_value_refused_on_its_line_drives_no_sweep(self, make_file):
+        path = make_file(
+            'app.py',
+            f'aws_key = "{_AWS_KEY}"\npassword = load()\nif x:\n    pass\nelse:\n    pass\n',
+        )
+        findings = [_mk_finding(path, _AWS_KEY), _external(path, 'pass', line=2)]
+        assert batch_replace_in_file(path, findings, Config(no_backup=True)) == (1, 1)
+        content = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY not in content
+        assert content.count('    pass\n') == 2
+        assert 'password = load()' in content
+
+    def test_value_replaced_elsewhere_is_still_swept(self, make_file):
+        path = make_file('app.py', f'k = "{_GH_TOKEN}"\nx{_GH_TOKEN} = 1\n# copy: {_GH_TOKEN}\n')
+        findings = [_external(path, _GH_TOKEN, line=1), _external(path, _GH_TOKEN, line=2)]
+        assert batch_replace_in_file(path, findings, Config(no_backup=True)) == (1, 1)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines[1] == f'x{_GH_TOKEN} = 1'
+        assert lines[2] == '# copy: REDACTED_BY_CREDACTOR'
+
+
+class TestWholeKeyOnOneLine:
+    """SR-17: a value holding a whole private key (BEGIN to END on one line,
+    as a service-account JSON file keeps it) is replaced, since that removes
+    the key and both markers. Any value that would leave a marker is not."""
+
+    def test_service_account_key_is_replaced(self, make_file):
+        path = make_file(
+            'sa.json', f'{{"type": "service_account", "private_key": "{_JSON_KEY}"}}\n'
+        )
+        finding = _external(path, _JSON_KEY, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        content = Path(path).read_text(encoding='utf-8')
+        assert 'PRIVATE KEY' not in content
+        assert '"private_key": "REDACTED_BY_CREDACTOR"' in content
+
+    def test_pretty_printed_service_account_key_is_replaced(self, make_file):
+        path = make_file(
+            'sa.json', f'{{\n  "type": "service_account",\n  "private_key": "{_JSON_KEY}"\n}}\n'
+        )
+        finding = _external(path, _JSON_KEY, line=3, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert 'PRIVATE KEY' not in Path(path).read_text(encoding='utf-8')
+
+    def test_second_key_on_the_line_keeps_it_refused(self, make_file):
+        path = make_file('keys.json', f'["{_JSON_KEY}", "{_JSON_KEY.replace("7", "8")}"]\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = _external(path, _JSON_KEY, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_header_only_value_still_refused(self, make_file):
+        path = make_file('sa.json', f'{{"private_key": "{_JSON_KEY}"}}\n')
+        finding = _external(path, '-----BEGIN PRIVATE KEY-----', rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+
+    def test_native_block_finding_still_refused(self, make_file):
+        path = make_file('key.py', f'KEY = "{_JSON_KEY}"\n')
+        finding = _mk_finding(path, f'KEY = "{_JSON_KEY}"', ftype='pattern:private key block')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+
+
+class TestDeliberateRefusalsAreNotStale:
+    """SR-15, SR-17: a refusal made on purpose at the sink does not count
+    toward the stale-report hint; a value missing from its line does."""
+
+    def _stale_hint(self, caplog):
+        return [r for r in caplog.records if 'the report is stale' in r.getMessage()]
+
+    def test_marker_line_refusal_is_not_stale(self, make_file, credactor_caplog):
+        path = make_file('app.env', f'PRIVATE_KEY="{_JSON_KEY}"\n')
+        body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7'
+        assert fix_all([_external(path, body)], os.path.dirname(path), Config(no_backup=True)) == 1
+        assert self._stale_hint(credactor_caplog) == []
+
+    def test_inside_a_word_refusal_is_not_stale(self, make_file, credactor_caplog):
+        path = make_file('app.py', 'password = load()\n')
+        assert (
+            fix_all([_external(path, 'pass')], os.path.dirname(path), Config(no_backup=True)) == 1
+        )
+        assert self._stale_hint(credactor_caplog) == []
+
+    def test_missing_value_is_stale(self, make_file, credactor_caplog):
+        path = make_file('app.py', 'x = 1\n')
+        assert (
+            fix_all([_external(path, _GH_TOKEN)], os.path.dirname(path), Config(no_backup=True))
+            == 1
+        )
+        assert len(self._stale_hint(credactor_caplog)) == 1
 
 
 class TestLineBreakValueAtTheSink:
