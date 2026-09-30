@@ -675,9 +675,9 @@ CASES: list[Case] = [
             ),
         },
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
-        note='SR-15: short.py\'s secret "api" is reported but not written; SR-17, SR-24 '
-        'and PA-05 are still current behaviour; app.py and dsn.py are positive controls '
-        'that must keep redacting',
+        note='SR-15: short.py\'s secret "api" is reported but not written; SR-17: the '
+        'README.md key header is refused; SR-24 and PA-05 are still current behaviour; '
+        'app.py and dsn.py are positive controls that must keep redacting',
     ),
     Case(
         id='ingest-fix-env',

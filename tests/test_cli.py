@@ -651,6 +651,55 @@ class TestIngestedValuesAtTheSink:
         assert 'postgres://app:' in after and '@db.example.com/app' in after
 
 
+class TestIngestedKeyHeaders:
+    """SR-17: a report whose secret is a private key's BEGIN line is refused,
+    whatever the rule is called, so the key is never left headerless."""
+
+    _KEY = (
+        '-----BEGIN ENCRYPTED PRIVATE KEY-----\n'
+        'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qFCzXY1CVHwPGVJP2XBpX3XY1p\n'
+        '-----END ENCRYPTED PRIVATE KEY-----\n'
+    )
+
+    def _run(self, tmp_path, flag, report_text):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        target = repo / 'README.md'
+        target.write_text(self._KEY, encoding='utf-8')
+        report = tmp_path / 'report.json'
+        report.write_text(report_text, encoding='utf-8')
+        before = target.read_bytes()
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', flag, str(report), str(repo)])
+        return exc_info.value.code, before, target.read_bytes()
+
+    def test_gitleaks_header_only_secret_refused(self, tmp_path):
+        record = {
+            'File': 'README.md',
+            'StartLine': 1,
+            'Secret': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'Match': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'RuleID': 'private-key',
+            'Tags': [],
+            'Commit': '',
+            'SymlinkFile': '',
+        }
+        code, before, after = self._run(tmp_path, '--from-gitleaks', json.dumps([record]))
+        assert code == 1
+        assert after == before
+
+    def test_trufflehog_header_only_secret_refused(self, tmp_path):
+        record = {
+            'Raw': '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            'SourceMetadata': {'Data': {'Filesystem': {'file': 'README.md', 'line': 1}}},
+            'DetectorName': 'PrivateKey',
+            'Verified': False,
+        }
+        code, before, after = self._run(tmp_path, '--from-trufflehog', json.dumps(record) + '\n')
+        assert code == 1
+        assert after == before
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

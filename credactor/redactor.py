@@ -184,6 +184,40 @@ def _value_position(line: str, finding: Finding) -> int | None:
     return match.start() if match else None
 
 
+def _holds_key_marker(text: str) -> bool:
+    """Whether *text* holds a BEGIN or END private key marker (SR-17).
+
+    Checked on each finding's value and on every line a replacement would
+    change, never on the finding's type alone: a report can call a key's BEGIN
+    line anything. Rewriting part of a marker line leaves the key material in
+    the file with its header gone, so the next scan reports the file clean.
+    """
+    upper = text.upper()
+    return 'PRIVATE KEY' in upper and ('-----BEGIN' in upper or '-----END' in upper)
+
+
+def _refused_line(filepath: str, lineno: int, line: str, finding: Finding, at: int | None) -> bool:
+    """Warn and return True when *finding* must not be replaced on *line*."""
+    if _holds_key_marker(line):
+        logger.warning(
+            '%s:%d: not rewritten: the line holds a private key marker, and changing '
+            'it would leave the key in the file while the next scan reports it clean. '
+            'Rotate the key and remove the block manually.',
+            filepath,
+            lineno,
+        )
+        return True
+    if at is None and finding['full_value'] in line:
+        logger.warning(
+            'Reported value on line %d in %s appears only inside a longer word, '
+            'so it is not replaced there. Check the report.',
+            lineno,
+            filepath,
+        )
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Backup (#1)
 # ---------------------------------------------------------------------------
@@ -439,11 +473,25 @@ def _sweep_stray_copies(
         + r')(?!\w)'
     )
     stray_count = 0
+    kept = 0
     for idx in range(len(lines)):
         if idx + 1 in preserved:
             continue
-        lines[idx], n = pat.subn(lambda _m: stray, lines[idx])
+        swept, n = pat.subn(lambda _m: stray, lines[idx])
+        if n and _holds_key_marker(lines[idx]):
+            # SR-17: a marker line is never changed, not even by the sweep.
+            kept += n
+            continue
+        lines[idx] = swept
         stray_count += n
+    if kept:
+        logger.warning(
+            '%s: left %d cop%s of redacted value(s) on lines that hold a private key '
+            'marker; remove them by hand.',
+            filepath,
+            kept,
+            'y' if kept == 1 else 'ies',
+        )
     if stray_count:
         # Default-visible (stderr): the file was modified beyond the
         # adjudicated findings — the summary alone would under-report it.
@@ -473,11 +521,13 @@ def _writable_findings(
         if f.get('refuse_reason'):
             # Marked at ingest: reported, never written.
             logger.warning('%s:%d: not rewritten: %s.', filepath, f['line'], f['refuse_reason'])
-        elif f['type'].endswith('private key block'):
+        elif f['type'].endswith('private key block') or _holds_key_marker(f['full_value']):
             # The finding carries only its BEGIN header line as the match
             # value: a line-based replacement would rewrite the header, leave
             # the key material and END marker in the file, and, with the
-            # header gone, the next scan would report the file clean.
+            # header gone, the next scan would report the file clean. SR-17:
+            # the value decides, so an ingested header typed by a report's
+            # rule id is refused too; the type is only an extra trigger.
             logger.warning(
                 '%s:%d: refusing to redact a multi-line private key block: '
                 'replacing its header line would leave the key material in the '
@@ -626,13 +676,7 @@ def batch_replace_in_file(
 
             original = lines[idx]
             at = _value_position(original, finding)
-            if at is None and full_value in original:
-                logger.warning(
-                    'Reported value on line %d in %s appears only inside a longer word, '
-                    'so it is not replaced there. Check the report.',
-                    lineno,
-                    filepath,
-                )
+            if _refused_line(filepath, lineno, original, finding, at):
                 failed += 1
                 failed_lines.add(lineno)
                 continue
@@ -879,9 +923,14 @@ def fix_all(
         total_replaced += replaced
         total_failed += failed
         if failed and any(f['type'].startswith('external:') for f in file_findings):
-            # A finding refused on purpose (SR-16) is not a sign of a stale
-            # report, so it does not count toward the hint below.
-            refused = sum(1 for f in file_findings if f.get('refuse_reason'))
+            # A finding refused on purpose (a refuse_reason, or a private key
+            # marker as the value) is not a sign of a stale report, so it does
+            # not count toward the hint below.
+            refused = sum(
+                1
+                for f in file_findings
+                if f.get('refuse_reason') or _holds_key_marker(f['full_value'])
+            )
             failed_in_ingested_files += max(failed - refused, 0)
 
     _print_summary(total_replaced, total_failed, len(findings), config, label='failed')

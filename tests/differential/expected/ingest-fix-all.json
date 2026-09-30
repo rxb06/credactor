@@ -118,6 +118,11 @@
   ],
   [
    "WARNING",
+   "<root>/README.md:1: refusing to redact a multi-line private key block: replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
+   1
+  ],
+  [
+   "WARNING",
    "<root>/short.py:1: not rewritten: the reported secret is too short or a credential name to be replaced safely; check the report and fix the value by hand.",
    1
   ],
@@ -142,11 +147,10 @@
    1
   ]
  ],
- "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17, SR-24 and PA-05 are still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
+ "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; SR-24 and PA-05 are still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
  "reported": true,
  "tree_after": {
-  "README.md": "3f9b732624bc20f8",
-  "README.md.bak": "a6ff0fdb8882fe94",
+  "README.md": "a6ff0fdb8882fe94",
   "app.py": "284f4c29bf3be045",
   "app.py.bak": "aef561de5aaa378b",
   "dsn.py": "d7a6b8474ea077b9",

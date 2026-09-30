@@ -925,6 +925,14 @@ a line-based replacement would rewrite the header, leave the entire key
 material in the file, and make the next scan report it clean. Rotate the key
 and remove the block manually — redaction never half-eats a key block.
 
+The refusal does not depend on the finding's type. Any finding whose value
+holds a `-----BEGIN` or `-----END` marker with `PRIVATE KEY` (in any case) is
+refused, so an ingested finding whose secret is only a key's header line is
+refused as well, whatever the report's rule is called. No replacement, and no
+sweep for copies of a redacted value, changes a line that holds such a marker:
+a finding on that line is counted failed, and a copy left on it is named in a
+warning.
+
 Betterleaks findings follow the external rule above. Betterleaks' `Match`
 field can span lines for some rules, so the `raw` context line of an ingested
 Betterleaks finding is read from the file on disk, falling back to `Match`

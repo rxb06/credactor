@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -1249,6 +1250,107 @@ class TestPrivateKeyBlockRefusal:
             [self._pem_finding(path)], os.path.dirname(path), Config(no_backup=True)
         )
         assert unresolved == 1
+
+
+class TestPrivateKeyRefusalByValueAndLine:
+    """SR-17: the key refusal keys on the value and the line, not on the type
+    label. An ingested finding typed by a report's rule id, whose value is the
+    BEGIN line, must be refused like the native block finding."""
+
+    _BODY = 'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qFCzXY1CVHwPGVJP2XBpX3XY1p\n'
+
+    def _block(self, kind='RSA '):
+        return f'-----BEGIN {kind}PRIVATE KEY-----\n{self._BODY}-----END {kind}PRIVATE KEY-----\n'
+
+    def _finding(self, path, value, line=1, ftype='external:gitleaks:private-key'):
+        return {
+            'file': path,
+            'line': line,
+            'type': ftype,
+            'severity': 'critical',
+            'full_value': value,
+            'value_preview': '',
+            'raw': value,
+        }
+
+    @pytest.mark.parametrize(
+        'header',
+        [
+            '-----BEGIN RSA PRIVATE KEY-----',
+            '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            '-----BEGIN PGP PRIVATE KEY BLOCK-----',
+            '-----begin private key-----',
+        ],
+    )
+    def test_header_value_refused_whatever_the_type(self, make_file, credactor_caplog, header):
+        end = header.replace('BEGIN', 'END').replace('begin', 'end')
+        path = make_file('README.md', f'{header}\n{self._BODY}{end}\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        result = batch_replace_in_file(path, [self._finding(path, header)], Config(no_backup=True))
+        assert result == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+        assert any('private key' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_end_marker_value_refused(self, make_file):
+        path = make_file('README.md', self._block(''))
+        finding = self._finding(path, '-----END PRIVATE KEY-----', line=3)
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        assert 'END PRIVATE KEY' in Path(path).read_text()
+
+    def test_value_on_a_marker_line_refused(self, make_file):
+        # The value holds no marker, but replacing it would break the header.
+        path = make_file(
+            'README.md',
+            self._block(),
+        )
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = self._finding(path, 'RSA PRIVATE', ftype='external:gitleaks:generic-api-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_sweep_leaves_marker_lines_alone(self, make_file, credactor_caplog):
+        path = make_file(
+            'notes.txt',
+            'level = PRIVATE\n' + self._block(),
+        )
+        finding = self._finding(path, 'PRIVATE', ftype='external:gitleaks:generic-api-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text().splitlines()
+        assert lines[0] == 'level = REDACTED_BY_CREDACTOR'
+        assert lines[1] == '-----BEGIN RSA PRIVATE KEY-----'
+        assert lines[3] == '-----END RSA PRIVATE KEY-----'
+        assert any('private key marker' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_final_sweep_leaves_marker_lines_alone(self, make_file):
+        from credactor.redactor import _final_file_sweep
+
+        path = make_file(
+            'notes.txt',
+            self._block(),
+        )
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = self._finding(path, 'PRIVATE', line=9, ftype='external:gitleaks:generic-api-key')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_other_lines_still_redact(self, make_file):
+        path = make_file(
+            'mixed.py',
+            f'api_key = "{_AWS_KEY}"\n' + self._block(''),
+        )
+        header = self._finding(path, '-----BEGIN PRIVATE KEY-----', line=2)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY), header], Config(no_backup=True)
+        ) == (1, 1)
+        content = Path(path).read_text()
+        assert _AWS_KEY not in content
+        assert '-----BEGIN PRIVATE KEY-----' in content
 
 
 class TestGuardPins:

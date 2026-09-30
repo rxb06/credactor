@@ -22,6 +22,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   symlinks, and the redactor applies it again to any path it is given. A report
   named in the config file's `[ingest]` table is named on stderr before a run
   that can write.
+- **A private key's marker line is never rewritten, whatever the finding is
+  called.** The refusal to redact a key block keyed on the native finding
+  type, so an ingested finding whose secret was a key's BEGIN line was
+  redacted like any other line: the header was replaced, the key stayed, and
+  the next scan reported the file clean. A finding whose value holds a BEGIN
+  or END private key marker is now refused (warned, counted unresolved, exit
+  1), and no replacement or copy sweep changes a line that holds one.
 - **A reported secret is replaced only where it stands as a whole token.** An
   ingested secret is matched as text on the reported line, and its first
   occurrence was replaced even inside a longer word, so a report giving `pass`
