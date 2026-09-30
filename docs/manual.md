@@ -315,11 +315,19 @@ it. Verified behaviour:
 - `.bak` files contain the secret in **plaintext** — general scanners will flag
   them. Use `--secure-delete` or `--secure-backup-dir` (outside the repo) for a
   clean tree.
-- **A `.bak` is created even when every replacement fails.** The backup is
-  written before the replacement pass, so a `--fix-all` run in which no value
-  matches (typically a stale ingested report) still leaves a byte-identical
-  plaintext `.bak` beside each touched file. Backups also inherit the original
-  file's full mode, including a setuid bit. Delete strays before committing.
+- **A file with nothing to replace is left alone.** Every edit is planned in
+  memory first, so when no value in a file can be replaced (typically a stale
+  ingested report) the file is neither backed up nor rewritten, and keeps its
+  inode, hard links and extended attributes. A backup holds exactly the bytes
+  Credactor read and edited, and is created with mode `0600` whatever the
+  original's mode (no setuid bit is carried over). A new `--secure-backup-dir`
+  is created `0700`, and an existing one that other users can read gets a
+  warning. Delete strays before committing.
+- **No other process should edit the files during a write run.** Just before a
+  file is rewritten it is checked against what was read. If its size,
+  modification time or inode changed meanwhile (an editor saved it, another
+  run touched it), it is left as it now is, with a warning, and its findings
+  stay unresolved (exit 1). Re-run once nothing else is editing the tree.
 
 ```bash
 credactor --fix-all --secure-delete .                 # redact, wipe backups
@@ -332,8 +340,11 @@ The `.bak` is your undo (verified):
 
 ```bash
 diff src/config.py.bak src/config.py   # see exactly what changed
-mv   src/config.py.bak src/config.py   # restore the original
+cp   src/config.py.bak src/config.py   # restore the original, keeping its mode
 ```
+
+`cp` keeps the file's own mode. `mv` restores the content too, but with the
+backup's mode, `0600`, so re-apply the original mode after it.
 
 With `--secure-backup-dir DIR`, the backup lives in `DIR` rather than beside the
 file, and its name carries a short hash of the original path

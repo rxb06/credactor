@@ -677,7 +677,8 @@ CASES: list[Case] = [
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
         note='SR-15: short.py\'s secret "api" is reported but not written; SR-17: the '
         'README.md key header is refused; PA-05: lines.py\'s line "x" is kept at line 0 '
-        'and not written; SR-24 is still current behaviour; app.py and dsn.py are '
+        'and not written; SR-24: stale.py, with nothing to replace, is neither backed up '
+        'nor rewritten; app.py and dsn.py are '
         'positive controls that must keep redacting',
     ),
     Case(

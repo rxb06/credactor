@@ -82,6 +82,9 @@ class Config:
     from_trufflehog: str | None = None
     from_betterleaks: str | None = None
     backup_warn_shown: bool = False
+    # Run state like the field above: the open --secure-backup-dir warning is
+    # printed once per run (both move to a run tally in PA-13/PA-14).
+    backup_dir_warn_shown: bool = False
 
     def __post_init__(self) -> None:
         lo_e, hi_e = ENTROPY_BOUNDS

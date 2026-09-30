@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import os
 import re
-import shutil
+import stat
 import string
 import sys
 import tempfile
@@ -332,15 +333,21 @@ def _backup_dir_via_unsafe_symlink(path_str: str) -> bool:
     return os.path.realpath(path_str) != expected
 
 
-def _create_backup(filepath: str, config: Config) -> str | None:
-    """Create a .bak copy of the file. Returns backup path or None on failure.
+def _create_backup(filepath: str, config: Config, data: bytes) -> str | None:
+    """Write *data*, the bytes the rewrite read, as the file's .bak. Returns
+    the backup path or None on failure.
+
+    SR-23: the backup goes into a fresh mkstemp file, created 0600, and nothing
+    copies the source's mode over it, so a readable or setuid source never
+    gives a readable or setuid backup. Writing the bytes that were read, not
+    copying the file again, also means the backup is exactly what was edited.
 
     With ``config.secure_backup_dir`` the backup is written DIRECTLY into that
     directory (never beside the original, not even momentarily) via
     ``_create_backup_in_secure_dir``. Otherwise it is placed beside the file.
     """
     if config.secure_backup_dir:
-        return _create_backup_in_secure_dir(filepath, config)
+        return _create_backup_in_secure_dir(filepath, config, data)
 
     bak = filepath + '.bak'
 
@@ -350,8 +357,8 @@ def _create_backup(filepath: str, config: Config) -> str | None:
     tmp_bak: str | None = None
     try:
         fd, tmp_bak = tempfile.mkstemp(dir=dir_name, suffix='.credactor.bak')
-        os.close(fd)
-        shutil.copy2(filepath, tmp_bak)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         os.replace(tmp_bak, bak)
         tmp_bak = None  # rename succeeded
     except OSError as exc:
@@ -371,7 +378,7 @@ def _create_backup(filepath: str, config: Config) -> str | None:
     return bak
 
 
-def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
+def _create_backup_in_secure_dir(filepath: str, config: Config, data: bytes) -> str | None:
     """Create the .bak DIRECTLY inside ``config.secure_backup_dir``.
 
     A plaintext copy never lands beside the original at any instant — this
@@ -404,10 +411,10 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
     dest = str(dest_dir / f'{Path(filepath).name}.{digest}.bak')
     tmp: str | None = None
     try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        _prepare_backup_dir(dest_dir, config)
         fd, tmp = tempfile.mkstemp(dir=str(dest_dir), suffix='.credactor.bak')
-        os.close(fd)
-        shutil.copy2(filepath, tmp)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         os.replace(tmp, dest)
         tmp = None  # rename succeeded
         return dest
@@ -423,6 +430,29 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         return None
+
+
+def _prepare_backup_dir(dest_dir: Path, config: Config) -> None:
+    """Create a missing --secure-backup-dir as 0700 (SR-23), or warn once when
+    an existing one can be read by other users. mkdir applies the umask, so
+    the mode is set again after it."""
+    if not dest_dir.exists():
+        dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(dest_dir, 0o700)
+        return
+    # Windows has no such bits: chmod there only toggles read-only.
+    if os.name != 'posix' or config.backup_dir_warn_shown:
+        return
+    mode = stat.S_IMODE(dest_dir.stat().st_mode)
+    if mode & 0o077:
+        logger.warning(
+            '--secure-backup-dir %s can be read by other users (mode %o), and the '
+            'backups in it hold the secrets in plaintext. Restrict it with chmod 700.',
+            dest_dir,
+            mode,
+        )
+        config.backup_dir_warn_shown = True
 
 
 def _secure_delete(filepath: str) -> None:
@@ -469,18 +499,22 @@ def _rewrite_file(
     *,
     verb: str,
     backup: bool,
-    write_unchanged: bool = False,
 ) -> str:
     """The one write path (PA-14). Every rewrite goes through here: a batch
     replacement, an interactive approval, and the end-of-review sweep.
 
-    It refuses a symlink (S1), takes the advisory lock (SEC-15), reads the file
-    keeping each line's terminator, makes the backup when *backup* is set and
-    backups are on (a failed backup aborts the file), lets *edit* change the
-    lines in place, publishes atomically (PA-02), restores the original mode
-    with its special bits, and wipes the backup under --secure-delete once the
-    file changed. *edit* returns whether it changed anything; an unchanged
-    file is only written when *write_unchanged* is set.
+    It refuses a symlink (S1), takes the advisory lock (SEC-15), and reads the
+    file once, as bytes, keeping each line's terminator (SR-24). *edit* then
+    changes the lines in memory and returns whether it changed anything. A
+    file with nothing to change is left alone: no backup, no write, so its
+    inode, hard links and extended attributes are kept. Otherwise the backup
+    is written from the bytes that were read (SR-23) when *backup* is set and
+    backups are on, a failed backup aborting the file. Just before publishing,
+    the file is checked against what was read: write modes assume no other
+    writer (DA-2), and a file changed on disk meanwhile is left as it now is.
+    The new content is published atomically (PA-02), the original mode is
+    restored with its special bits, and under --secure-delete the backup is
+    then wiped.
 
     Returns 'written', 'unchanged', or 'failed' when the file was refused or
     could not be read, backed up or written (each logged).
@@ -532,27 +566,37 @@ def _rewrite_file(
 
     try:
         try:
-            # newline='' preserves each line's original terminator (CRLF/LF) so
+            with open(filepath, 'rb') as fh:
+                data = fh.read()
+                seen = _identity(os.fstat(fh.fileno()))
+            # newline='' keeps each line's original terminator (CRLF/LF) so
             # redaction never normalizes line endings on untouched lines.
-            with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
-                lines = fh.readlines()
+            text = data.decode(encoding, errors='surrogateescape')
         except (OSError, UnicodeDecodeError) as exc:
             # UnicodeDecodeError: a detected multibyte encoding (e.g.
             # truncated UTF-16) failing mid-stream must fail THIS file only.
             logger.error('Cannot read %s: %s', filepath, exc)
             return 'failed'
+        lines = io.StringIO(text, newline='').readlines()
 
-        # #1: back up before modifying (immediately after the read).
+        if not edit(lines):
+            return 'unchanged'
+
+        # #1: back up before writing, from the bytes that were read.
         bak: str | None = None
         if backup and not config.no_backup:
-            bak = _create_backup(filepath, config)
+            bak = _create_backup(filepath, config, data)
             if bak is None:
                 logger.error('Backup failed for %s; skipping replacements.', filepath)
                 return 'failed'
 
-        changed = edit(lines)
-        if not changed and not write_unchanged:
-            return 'unchanged'
+        if _changed_on_disk(filepath, seen):
+            logger.warning(
+                '%s changed on disk while it was being redacted, so it is not '
+                'rewritten. Re-run once nothing else is editing it.',
+                filepath,
+            )
+            return 'failed'
 
         if not _write_atomic(filepath, lines, encoding):
             return 'failed'
@@ -562,13 +606,26 @@ def _rewrite_file(
             with contextlib.suppress(OSError):
                 os.chmod(filepath, orig_mode)
 
-        if bak and config.secure_delete and changed:
+        if bak and config.secure_delete:
             _secure_delete(bak)
 
         return 'written'
     finally:
         if lock_fh is not None:
             lock_fh.close()
+
+
+def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _changed_on_disk(filepath: str, seen: tuple[int, int, int, int]) -> bool:
+    """Whether *filepath* is no longer the file that was read (SR-24): its
+    size, mtime or inode moved, or it is gone."""
+    try:
+        return _identity(os.stat(filepath)) != seen
+    except OSError:
+        return True
 
 
 def _final_file_sweep(
@@ -777,9 +834,7 @@ def batch_replace_in_file(
     # it with the already-redacted file and lose the earlier secret's
     # original). The first approval's .bak already holds every line's true
     # original.
-    outcome = _rewrite_file(
-        filepath, config, edit, verb='redact', backup=not skip_backup, write_unchanged=True
-    )
+    outcome = _rewrite_file(filepath, config, edit, verb='redact', backup=not skip_backup)
     if outcome == 'failed':
         # Refused, or unreadable, not backed up, or not written: every finding
         # stays unresolved.

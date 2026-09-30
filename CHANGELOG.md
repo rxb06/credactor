@@ -14,6 +14,19 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **Backups are private, and hold exactly what was edited.** A `.bak` was
+  made with `copy2`, which copied the source file's mode onto it, so a
+  readable source gave a readable backup (a setuid one a setuid backup), and a
+  new `--secure-backup-dir` was created with the umask default. It also read
+  the file a second time, so the backup could differ from what was edited.
+  A backup is now written from the bytes that were read, into a new file with
+  mode `0600`, and a new secure backup directory is created `0700`; an
+  existing one that other users can read gets a warning.
+- **A file changed during a write run is not overwritten.** Write modes
+  assume no other process edits the files meanwhile. Just before a file is
+  rewritten it is compared with what was read; if its size, modification time
+  or inode changed, or it is gone, it is left as it is, with a warning, and
+  its findings stay unresolved (exit 1).
 - **Ingestion never rewrites anything under `.git`.** A report could name
   `.git/config` or a hook, which the native scan never visits, and `--fix-all`
   rewrote it. Such a finding is now reported as before, counts as unresolved
@@ -150,6 +163,11 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **A file with nothing to replace is no longer rewritten or backed up.**
+  `--fix-all` wrote a `.bak` and rewrote every file it was given, even one in
+  which no value could be replaced (a stale report), which gave the file a new
+  inode, split its hard links and dropped extended attributes. Every edit is
+  now planned in memory first, and such a file is left alone.
 - **Every rewrite goes through one write path.** The end-of-review sweep in
   interactive mode kept its own copy of the symlink refusal, the atomic write
   and the mode restore. It now shares the path that `--fix-all` and each

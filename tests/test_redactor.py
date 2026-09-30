@@ -1110,9 +1110,15 @@ class TestWritePathSafety:
 
     def test_write_atomic_failure_leaves_original_intact(self, make_file, monkeypatch):
         # S14: a mid-write OSError must leave the original byte-identical, the
-        # .bak intact, and no .credactor.tmp orphaned.
-        def boom(*a, **k):
-            raise OSError('disk full')
+        # .bak intact, and no .credactor.tmp orphaned. Only the publish writes
+        # text through os.fdopen; the backup writes the bytes that were read.
+        real_fdopen = os.fdopen
+
+        def boom(fd, mode='r', *a, **k):
+            if 'b' not in mode:
+                os.close(fd)
+                raise OSError('disk full')
+            return real_fdopen(fd, mode, *a, **k)
 
         path = make_file('w.py', f'api_key = "{_AWS_KEY}"\n')
         with open(path) as f:
@@ -1557,6 +1563,166 @@ class TestOneWritePath:
         assert calls == []
 
 
+class TestReadOncePlanFirst:
+    """SR-24: the file is read once, every edit is planned in memory, and a
+    file with nothing to change is neither backed up nor rewritten. The
+    backup holds the bytes read, and a file changed on disk during the run is
+    left as the other writer left it."""
+
+    def test_nothing_to_change_writes_nothing(self, make_file):
+        path = make_file('a.py', 'x = 1\n')
+        before = os.stat(path)
+        link = path + '.link'
+        try:
+            os.link(path, link)
+        except (OSError, NotImplementedError):
+            link = None
+        stale = _mk_finding(path, _AWS_KEY, ftype='external:gitleaks:aws')
+        assert batch_replace_in_file(path, [stale], Config()) == (0, 1)
+        assert not os.path.exists(path + '.bak')
+        assert os.stat(path).st_ino == before.st_ino
+        if link:
+            assert os.path.samefile(path, link)
+
+    def test_mixed_file_is_backed_up_once_and_redacted(self, make_file):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        findings = [_mk_finding(path, _AWS_KEY), _mk_finding(path, _PASSWORD, line=1)]
+        assert batch_replace_in_file(path, findings, Config()) == (1, 1)
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == original
+        assert _AWS_KEY not in Path(path).read_text(encoding='utf-8')
+
+    def test_file_changed_during_the_run_is_left_alone(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        # Another writer changes the file after the read: the backup still
+        # holds the bytes that were read, and the file is not rewritten.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        real_apply = redactor._apply_findings
+
+        def apply_then_edit(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('edited by someone else = True\n')
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_edit)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (0, 1)
+        assert Path(path).read_text(encoding='utf-8') == 'edited by someone else = True\n'
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == original
+        assert any('changed on disk' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_file_changed_after_the_backup_is_left_alone(self, make_file, monkeypatch):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_backup = redactor._create_backup
+
+        def backup_then_edit(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_edit)
+        unresolved = fix_all([_mk_finding(path, _AWS_KEY)], os.path.dirname(path), Config())
+        assert unresolved == 1
+        content = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY in content and content.endswith('# appended\n')
+
+    def test_file_deleted_during_the_run_stays_deleted(self, make_file, monkeypatch):
+        # Publishing by rename would bring the file back; a vanished file is a
+        # change on disk like any other.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_delete(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            os.unlink(path)
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_delete)
+        config = Config(no_backup=True)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (0, 1)
+        assert not os.path.exists(path)
+
+    def test_final_sweep_leaves_a_changed_file_alone(self, make_file, monkeypatch):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'# {_AWS_KEY}\n')
+        real_sweep = redactor._sweep_stray_copies
+
+        def sweep_then_edit(*args, **kwargs):
+            real_sweep(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+
+        monkeypatch.setattr(redactor, '_sweep_stray_copies', sweep_then_edit)
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX permission bits')
+class TestBackupModes:
+    """SR-23: a backup is written from the bytes read into a 0600 temp file,
+    never copied with the source's mode, and a new secure backup directory is
+    private."""
+
+    @pytest.mark.parametrize('mode', [0o644, 0o4755])
+    def test_backup_is_0600_and_the_file_keeps_its_mode(self, make_file, mode):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        os.chmod(path, mode)
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            pytest.skip('this filesystem does not keep the mode')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
+        assert stat.S_IMODE(os.stat(path + '.bak').st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode
+
+    def test_secure_backup_is_0600_in_a_new_private_directory(self, make_file, tmp_path):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        os.chmod(path, 0o644)
+        backups = tmp_path / 'backups'
+        config = Config(secure_backup_dir=str(backups))
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
+        (bak,) = list(backups.iterdir())
+        assert stat.S_IMODE(os.stat(bak).st_mode) == 0o600
+
+    def test_new_secure_directory_is_usable_under_a_strict_umask(self, make_file, tmp_path):
+        # mkdir applies the umask, so the mode is set again after it.
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        backups = tmp_path / 'backups'
+        old = os.umask(0o277)
+        try:
+            result = batch_replace_in_file(
+                path, [_mk_finding(path, _AWS_KEY)], Config(secure_backup_dir=str(backups))
+            )
+        finally:
+            os.umask(old)
+        assert result == (1, 0)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
+
+    def test_open_secure_directory_is_warned_once(self, make_file, tmp_path, credactor_caplog):
+        backups = tmp_path / 'backups'
+        backups.mkdir()
+        os.chmod(backups, 0o755)
+        config = Config(secure_backup_dir=str(backups))
+        for name in ('a.py', 'b.py'):
+            path = make_file(name, f'k = "{_AWS_KEY}"\n')
+            assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        warned = [r for r in credactor_caplog.records if 'other users' in r.getMessage()]
+        assert len(warned) == 1
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
@@ -1582,8 +1748,9 @@ class TestGuardPins:
         # SEC-15: the rewrite takes a non-blocking exclusive flock on the very
         # file it rewrites, and still holds it while reading and while writing.
         # A probe on a second descriptor must find the file locked at both
-        # points. This spies on the read by its newline='' open, so a change to
-        # how the file is read must update the spy, not drop the check.
+        # points. This spies on the read by its binary open in the redactor
+        # (SR-24 reads the file once, as bytes), so a change to how the file
+        # is read must update the spy, not drop the check.
         import fcntl
 
         import credactor.redactor as redactor
@@ -1610,7 +1777,7 @@ class TestGuardPins:
                 return False
 
         def spy_open(file, *args, **kwargs):
-            if file == path and kwargs.get('newline') == '' and 'encoding' in kwargs:
+            if file == path and (args[:1] == ('rb',) or kwargs.get('mode') == 'rb'):
                 held['read'] = locked_elsewhere()
             return real_open(file, *args, **kwargs)
 
