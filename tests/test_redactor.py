@@ -1989,6 +1989,47 @@ class TestEnvModeLiteralShapes:
         assert 'REDACTED_BY_CREDACTOR' in after
         assert self._names(after) <= self._names(source) | {'os'}
 
+    @pytest.mark.parametrize(
+        'template',
+        [
+            'api_key = "{v}""x"\n',
+            'api_key = "{v}" "x"\n',
+            'api_key = \'{{"token": "{v}"}}\'\n',
+        ],
+    )
+    def test_token_that_is_part_of_a_larger_literal(self, make_file, template):
+        # Implicit concatenation, and a JSON document held in a single-quoted
+        # string: an inlined expression would parse and then be wrong.
+        source = template.format(v=_AWS_KEY)
+        path = make_file('app.py', source)
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert 'REDACTED_BY_CREDACTOR' in after
+        assert 'os.environ' not in after
+        self._names(after)  # still parses
+
+    def test_json_in_a_single_quoted_js_string(self, make_file):
+        path = make_file('app.js', f'const body = \'{{"token": "{_AWS_KEY}"}}\';\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == 'const body = \'{"token": "REDACTED_BY_CREDACTOR"}\';\n'
+
+    def test_literal_after_a_closed_string_is_still_inlined(self, make_file):
+        path = make_file('app.py', f"d = {{'a': 'x', 'api_key': \"{_AWS_KEY}\"}}\n")
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == "d = {'a': 'x', 'api_key': os.environ[\"API_KEY\"]}\n"
+
+    def test_escaped_quote_earlier_on_the_line(self, make_file):
+        path = make_file('app.py', f'x = "a\\"b"; api_key = "{_AWS_KEY}"\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == 'x = "a\\"b"; api_key = os.environ["API_KEY"]\n'
+
     def test_plain_literal_is_still_inlined(self, make_file):
         path = make_file('app.py', f'api_key = "{_AWS_KEY}"\n')
         config = Config(no_backup=True, replace_mode='env')

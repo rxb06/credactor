@@ -19,7 +19,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   triple-quoted literal kept its spare quotes (a syntax error), and a prefixed
   one such as `b"…"` or `f"…"` became `bos.environ[…]`, which parses and then
   fails at run time. Such a literal now gets the sentinel, as a value inside a
-  larger string already did.
+  larger string already did, and so does a literal followed by another one
+  (implicit concatenation) or one held inside a larger string, such as a JSON
+  document in a single-quoted string, which used to end up with code text in
+  that string.
 - **The copy sweep leaves suppressed lines alone.** A suppressed value never
   becomes a finding, so its line was not among the ones the sweep keeps, and
   `--fix-all` rewrote a line marked `credactor:ignore` or named by a

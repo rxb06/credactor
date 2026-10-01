@@ -162,14 +162,18 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
         token = f'{q}{full_value}{q}'
         pos = original.find(token)
         if pos >= 0:
-            # SR-25: only a plain literal takes the bare expression. A quote
-            # that is part of a longer run ("""...""") would leave spare quotes,
-            # and a letter or digit before the opening quote is a string prefix
-            # (b, r, f, u) that would glue onto the expression (bos.environ).
+            # SR-25: only a plain literal takes the bare expression. A letter
+            # before the opening quote is a string prefix (b, r, f, u) that
+            # would glue onto the expression (bos.environ). A quote right after
+            # the closing one, spaces allowed, is a longer quote run ("""...""")
+            # or implicit concatenation, either of which would leave a stray
+            # literal next to the expression. A token inside a literal opened
+            # earlier on the line (a JSON document held in a single-quoted
+            # string) would turn into code text inside that string.
             before = original[pos - 1] if pos else ''
             end = pos + len(token)
-            after = original[end] if end < len(original) else ''
-            if q in (before, after) or before.isalnum() or before == '_':
+            following = original[end:].lstrip(' \t')[:1]
+            if before.isalpha() or following in ('"', "'") or _inside_literal(original, pos):
                 break
             other = '"' if q == "'" else "'"
             # If the bare expression carries `other`-quotes and the matched
@@ -187,6 +191,25 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
 # The scanners that write the reports are Go programs, whose word boundary is
 # ASCII, so a token right next to CJK text is still a whole token.
 _WORD_CHARS = frozenset(string.ascii_letters + string.digits + '_')
+
+
+def _inside_literal(line: str, pos: int) -> bool:
+    """Whether *pos* on *line* falls inside a string literal opened earlier on
+    the line. A backslash escapes the next character inside a literal."""
+    open_quote = ''
+    i = 0
+    while i < pos:
+        ch = line[i]
+        if open_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == open_quote:
+                open_quote = ''
+        elif ch in '"\'`':
+            open_quote = ch
+        i += 1
+    return bool(open_quote)
 
 
 def _value_position(line: str, finding: Finding) -> int | None:

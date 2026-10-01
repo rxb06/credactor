@@ -266,9 +266,11 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   doesn't already have one, or it will raise `NameError` at runtime.
 - **Env mode falls back to the sentinel** when a finding is not a standalone
   quoted assignment: a bare token on its own line, a secret embedded in a
-  larger string such as a `Bearer` header or a connection URL, a
-  triple-quoted literal, or a literal with a string prefix such as `b"…"`,
-  `r"…"` or `f"…"`. Inserting a code expression there would break the code,
+  larger string such as a `Bearer` header, a connection URL or a JSON
+  document held in a single-quoted string, a triple-quoted literal, a literal
+  followed by another one (implicit concatenation), or a literal with a string
+  prefix such as `b"…"`, `r"…"` or `f"…"`. Inserting a code expression there
+  would break the code,
   so the value becomes
   `REDACTED_BY_CREDACTOR` instead. This sentinel fallback applies to the
   **language file types** (`.py`, `.js`, `.rb`), whose env reference is a code
