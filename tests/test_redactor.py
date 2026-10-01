@@ -1640,6 +1640,74 @@ class TestReadOncePlanFirst:
         with open(path + '.bak', 'rb') as fh:
             assert fh.read() == original
 
+    def test_same_size_edit_in_place_is_seen(self, make_file, monkeypatch):
+        # One byte changed in place: size and inode stay, only mtime moves.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# note\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_touch(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            with open(path, 'r+b') as fh:
+                fh.seek(-2, os.SEEK_END)
+                fh.write(b'N')
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_touch)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert Path(path).read_text(encoding='utf-8').endswith('# notN\n')
+
+    def test_same_size_replacement_with_the_old_mtime_is_seen(self, make_file, monkeypatch):
+        # The path now names another file of the same size and mtime (cp -p,
+        # rsync -a): only the inode tells.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_replace(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            other = path + '.other'
+            with open(other, 'wb') as fh:
+                fh.write(b'x' * st.st_size)
+            os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+            os.replace(other, path)
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_replace)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert Path(path).read_bytes() == b'x' * len(f'k = "{_AWS_KEY}"\n')
+
+    def test_change_after_the_temp_file_is_written_is_seen(self, make_file, monkeypatch):
+        # The publish check runs once the temp file is complete, just before
+        # the rename, not only before the temp file is made.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_mkstemp = redactor.tempfile.mkstemp
+
+        def mkstemp_then_edit(*args, **kwargs):
+            result = real_mkstemp(*args, **kwargs)
+            if kwargs.get('suffix') == '.credactor.tmp':
+                with open(path, 'a', encoding='utf-8') as fh:
+                    fh.write('# appended\n')
+            return result
+
+        monkeypatch.setattr(redactor.tempfile, 'mkstemp', mkstemp_then_edit)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+        assert not [p for p in os.listdir(os.path.dirname(path)) if p.endswith('.credactor.tmp')]
+
     def test_file_changed_after_the_backup_is_left_alone(self, make_file, monkeypatch):
         import credactor.redactor as redactor
 
@@ -1732,16 +1800,40 @@ class TestBackupModes:
         assert result == (1, 0)
         assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
 
-    def test_open_secure_directory_is_warned_once(self, make_file, tmp_path, credactor_caplog):
+    @pytest.mark.parametrize('mode', [0o755, 0o750, 0o705])
+    def test_open_secure_directory_is_warned_once(
+        self, make_file, tmp_path, credactor_caplog, mode
+    ):
         backups = tmp_path / 'backups'
         backups.mkdir()
-        os.chmod(backups, 0o755)
+        os.chmod(backups, mode)
         config = Config(secure_backup_dir=str(backups))
         for name in ('a.py', 'b.py'):
             path = make_file(name, f'k = "{_AWS_KEY}"\n')
             assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
         warned = [r for r in credactor_caplog.records if 'other users' in r.getMessage()]
         assert len(warned) == 1
+
+    def test_new_secure_directory_is_made_private_by_mkdir(self, make_file, tmp_path, monkeypatch):
+        # Under umask 0 the mkdir mode alone decides, so a wider mode there
+        # shows even with the chmod after it disabled.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        backups = tmp_path / 'backups'
+        real_chmod = os.chmod
+        monkeypatch.setattr(
+            redactor.os,
+            'chmod',
+            lambda p, m, *a, **k: None if str(p) == str(backups) else real_chmod(p, m, *a, **k),
+        )
+        old = os.umask(0)
+        try:
+            config = Config(secure_backup_dir=str(backups))
+            assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
 
 
 def _link_dir_or_skip(link, target):

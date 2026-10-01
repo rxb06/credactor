@@ -471,7 +471,7 @@ def _create_backup_in_secure_dir(filepath: str, config: Config, data: bytes) -> 
 
 def _prepare_backup_dir(dest_dir: Path, config: Config) -> None:
     """Create a missing --secure-backup-dir as 0700 (SR-23), or warn once when
-    an existing one can be read by other users. mkdir applies the umask, so
+    an existing one is open to other users. mkdir applies the umask, so
     the mode is set again after it."""
     if not dest_dir.exists():
         dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -484,7 +484,7 @@ def _prepare_backup_dir(dest_dir: Path, config: Config) -> None:
     mode = stat.S_IMODE(dest_dir.stat().st_mode)
     if mode & 0o077:
         logger.warning(
-            '--secure-backup-dir %s can be read by other users (mode %o), and the '
+            '--secure-backup-dir %s is open to other users (mode %o), and the '
             'backups in it hold the secrets in plaintext. Restrict it with chmod 700.',
             dest_dir,
             mode,

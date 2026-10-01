@@ -340,7 +340,7 @@ it. Verified behaviour:
   Credactor read and edited, is removed again if the file is then not
   rewritten after all, and is created with mode `0600` whatever the
   original's mode (no setuid bit is carried over). A new `--secure-backup-dir`
-  is created `0700`, and an existing one that other users can read gets a
+  is created `0700`, and an existing one that is open to other users gets a
   warning. Delete strays before committing.
 - **No other process should edit the files during a write run.** Just before a
   file is rewritten it is checked against what was read. If its size,

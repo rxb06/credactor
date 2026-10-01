@@ -932,6 +932,26 @@ class TestSweepRespectsSuppressions:
         assert self.KEY not in lines[0] + lines[3]
 
 
+class TestFixAllThroughAnAliasedRoot:
+    """SR-20: the walker resolves file paths, while the scan root reaches the
+    write path as typed. A target reached through a link above it (macOS
+    /tmp) must still be redacted."""
+
+    def test_target_through_a_link_above_it(self, tmp_path):
+        real = tmp_path / 'real'
+        (real / 'proj').mkdir(parents=True)
+        try:
+            os.symlink(real, tmp_path / 'alias', target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        (real / 'proj' / 'a.py').write_text(f'aws_key = "{key}"\n', encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', str(tmp_path / 'alias' / 'proj')])
+        assert exc_info.value.code == 0
+        assert key not in (real / 'proj' / 'a.py').read_text(encoding='utf-8')
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

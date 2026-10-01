@@ -52,7 +52,7 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   the file a second time, so the backup could differ from what was edited.
   A backup is now written from the bytes that were read, into a new file with
   mode `0600`, and a new secure backup directory is created `0700`; an
-  existing one that other users can read gets a warning.
+  existing one that is open to other users gets a warning.
 - **A file changed during a write run is not overwritten.** Write modes
   assume no other process edits the files meanwhile. Just before a file is
   rewritten it is compared with what was read; if its size, modification time
