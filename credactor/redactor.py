@@ -558,7 +558,7 @@ def _rewrite_file(
     is written from the bytes that were read (SR-23) when *backup* is set and
     backups are on, a failed backup aborting the file. Just before publishing,
     the file is checked against what was read: write modes assume no other
-    writer (DA-2), and a file changed on disk meanwhile is left as it now is.
+    writer, and a file changed on disk meanwhile is left as it now is.
     The new content is published atomically (PA-02), the original mode is
     restored with its special bits, and under --secure-delete the backup is
     then wiped.
