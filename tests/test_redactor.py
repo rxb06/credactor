@@ -402,6 +402,16 @@ class TestDeriveEnvVarName:
     def test_name_that_holds_the_secret_falls_back(self, ftype, value):
         assert _derive_env_var_name({'type': ftype, 'full_value': value}) == 'CREDENTIAL'
 
+    @pytest.mark.parametrize(
+        ('ftype', 'value'),
+        [('external:gitleaks:Zq7wPx', 'Zq7wPx'), ('external:gitleaks:key-Zq7w', 'Zq7w')],
+        ids=['short-equal', 'short-inside'],
+    )
+    def test_name_that_holds_a_short_secret_falls_back(self, ftype, value):
+        # A reported secret can be as short as 4 characters, fewer than the
+        # 8 the shared-run check needs.
+        assert _derive_env_var_name({'type': ftype, 'full_value': value}) == 'CREDENTIAL'
+
     def test_name_sharing_seven_characters_is_kept(self):
         finding = {
             'type': 'external:gitleaks:aws-access-token',
