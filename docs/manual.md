@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects Credactor 2.7.4 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
+Reflects Credactor 2.7.5 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -395,7 +395,7 @@ that at `.gitignore:39,42`), or use `--secure-delete` /
 ### What `--secure-delete` does
 
 On a successful redaction the `.bak` is overwritten with `os.urandom()` bytes,
-`fsync`'d, then unlinked (`redactor.py:276`). Verified: no `.bak` remains
+`fsync`'d, then unlinked (`redactor.py:495`). Verified: no `.bak` remains
 afterwards. It is wiped only when at least one replacement actually landed, and a
 single-pass overwrite is **not** a forensic guarantee on copy-on-write / SSD /
 journaling filesystems.
@@ -404,7 +404,7 @@ journaling filesystems.
 
 - **Atomic writes** — both the backup and the rewrite go through a temp file then
   `os.replace`, cleaned up in a `finally`; a mid-write crash leaves the original
-  intact (`redactor.py:292`, backup at `:197`).
+  intact (`redactor.py:511`, backup at `:373`).
 - **Permissions preserved** — a `chmod 600` file stays `600` after redaction.
 - **Multiple secrets per file** — replaced bottom-to-top so line numbers stay
   valid.

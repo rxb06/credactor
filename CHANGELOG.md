@@ -10,7 +10,13 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [Unreleased]
+## [2.7.5] - 2026-10-05
+
+A hardening release for the GitHub Action, report output, the CI gate,
+ingested reports, the write path and the release build. A security advisory
+with details follows the release. Upgrading is recommended for everyone, and
+especially for anyone running the GitHub Action or ingesting reports from
+other scanners.
 
 ### Security
 
@@ -842,7 +848,7 @@ superseded. Resolvers will only select **2.3.3** (the last release supporting
 Python 3.10 — see the versioning note above) or **2.4.0+**; yanked versions
 remain installable solely via exact `==` pins.
 
-[Unreleased]: https://github.com/rxb06/credactor/compare/v2.7.4...HEAD
+[2.7.5]: https://github.com/rxb06/credactor/compare/v2.7.4...v2.7.5
 [2.7.4]: https://github.com/rxb06/credactor/compare/v2.7.2...v2.7.4
 [2.7.2]: https://github.com/rxb06/credactor/compare/v2.6.0...v2.7.2
 [2.6.0]: https://github.com/rxb06/credactor/compare/v2.5.0...v2.6.0

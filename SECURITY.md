@@ -45,7 +45,9 @@ The following are **in scope** for security reports:
 - File system safety issues (path traversal, symlink attacks, TOCTOU races).
 - Denial of service (ReDoS, OOM, infinite loops).
 - Configuration injection (malicious `.credactor.toml` or `.credactorignore` causing unsafe behaviour).
-- Untrusted external-scanner reports ingested via `--from-gitleaks` / `--from-trufflehog` (path traversal, symlink escape, OOM/size-bomb, or self-corruption through crafted finding paths).
+- Untrusted external-scanner reports ingested via `--from-gitleaks` / `--from-trufflehog` / `--from-betterleaks` (path traversal, symlink escape, OOM/size-bomb, or self-corruption through crafted finding paths).
+- The GitHub Action (`action.yml`): anything that lets a scanned checkout run code in the action, or redirect or alter its report or outputs.
+- The release artifact audit (`scripts/audit_wheel.py`): a built wheel or sdist that differs from the committed source and still passes.
 
 The following are **out of scope**:
 
@@ -87,7 +89,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-04 | Resolve path before passing to subprocess (`git diff`, `git log`) | `walker.py:231,292` |
 | SEC-05 | File-descriptor exhaustion impossible by construction: files are scanned sequentially, one handle at a time (the former thread pool and its EMFILE fallback were removed) | `walker.py:138` |
 | SEC-06 | Cap line length (4096) to bound regex backtracking on adversarial input | `scanner.py:83,215` |
-| SEC-07 | Finally-block temp-file cleanup prevents plaintext credential residue on crash | `redactor.py:281,295` |
+| SEC-07 | Finally-block temp-file cleanup prevents plaintext credential residue when a write fails or raises (a process killed outright runs no cleanup) | `redactor.py:281,295` |
 | SEC-09 | Atomic backup via `mkstemp` (`O_CREAT\|O_EXCL`) closes the symlink-race TOCTOU gap | `redactor.py:117` |
 | SEC-10 | Validate replacement strings for code-injection metacharacters | `cli.py:278`, `redactor.py:18` |
 | SEC-11 | Strong UI warning for `--fix-all --no-backup` (no recovery path) | `cli.py:363` |
