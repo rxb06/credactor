@@ -1863,15 +1863,28 @@ class TestParentSwap:
         os.rename(root / 'sub', root / 'sub_moved')
         _link_dir_or_skip(root / 'sub', outside)
 
-    def test_swap_before_the_rewrite(self, tmp_path):
+    def test_swap_before_the_rewrite(self, tmp_path, monkeypatch):
+        import credactor.redactor as redactor
+
         root, inside, outside = self._tree(tmp_path)
         before = (outside / 'a.py').read_bytes()
         finding = _mk_finding(str(inside), _AWS_KEY)
         self._swap(root, outside)
+        # The check runs before the backup, so none is ever written outside
+        # the root, not even one removed again after the publish is refused.
+        backups = []
+        real_backup = redactor._create_backup
+
+        def recording_backup(*args, **kwargs):
+            backups.append(args[0])
+            return real_backup(*args, **kwargs)
+
+        monkeypatch.setattr(redactor, '_create_backup', recording_backup)
         result = batch_replace_in_file(str(inside), [finding], Config(), root=str(root))
         assert result == (0, 1)
         assert (outside / 'a.py').read_bytes() == before
         assert not (outside / 'a.py.bak').exists()
+        assert backups == []
 
     def test_directory_moved_out_after_the_backup(self, tmp_path, monkeypatch):
         # The file keeps its inode, size and mtime, so only the root check
