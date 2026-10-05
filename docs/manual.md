@@ -251,8 +251,9 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   finding (a `ghp_…` token) → `os.environ["GITHUB_TOKEN"]`. Verified for Python
   (`os.environ[...]`), JS (`process.env[...]`), Ruby (`ENV[...]`); Java/Go/PHP
   forms are covered by the test suite. A name that would share 8 letters or
-  digits in a row with the secret itself (case and separators ignored; only
-  the secret part of a URL or PEM value is compared) becomes `CREDENTIAL`, so
+  digits in a row with the secret itself, or hold the whole of a shorter one
+  (case and separators ignored; only the secret part of a URL or PEM value is
+  compared), becomes `CREDENTIAL`, so
   the rewritten line cannot hold a copy of the secret.
 - **Replacement is validated** (allowlist `[A-Za-z0-9_-]+`): a dangerous value
   (`bad;rm -rf`, markup, newlines, control chars) is **rejected with exit 2**
@@ -679,6 +680,11 @@ locations. Verified — each of the following yields 0 findings:
   covered by .gitignore]` block; **`-f json` / `-f sarif` emit no signal for
   these** — a gitignored `.env` full of secrets scans clean in machine
   formats, so audit with text output (or scan the file directly).
+  Credactor's `.gitignore` matching is simpler than git's: a negation line
+  (`!keep.py`) is ignored, so a file it brings back stays skipped, and a `*`
+  in a pattern also matches across `/` (`docs/*.py` skips `docs/deep/a.py`,
+  which git does not ignore). Both can leave a file git would commit
+  unscanned.
 - Files over the **50 MB per-file cap** (warned; the cap also applies to
   staged blobs). The skip does not trip `--fail-on-error`.
 
