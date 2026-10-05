@@ -21,6 +21,9 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   directory), and exactly the dependencies and extras `pyproject.toml`
   declares, compared as normalised requirements. The sdist's `setup.cfg`
   passes only as the bytes setuptools generates.
+- **Workflows keep their tokens to what each job needs.** Every checkout sets
+  `persist-credentials: false`, and CI grants `contents: read` by default,
+  with `security-events: write` on the self-scan job only.
 - **`--replace-with env` no longer writes broken code for triple-quoted or
   prefixed strings.** It consumed the quotes of a matched `"value"`, so a
   triple-quoted literal kept its spare quotes (a syntax error), and a prefixed

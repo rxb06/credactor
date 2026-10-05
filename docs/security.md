@@ -210,6 +210,7 @@ This hardening shipped in **2.5.0**.
 - **Version-tag gate:** the publish workflow blocks an upload unless `credactor.__version__` matches the release tag (PEP 440 normalised), so a mis-versioned release cannot reach PyPI.
 - **SHA-pinned GitHub Actions:** All `uses:` references pin to commit SHAs, including `pypa/gh-action-pypi-publish`.
 - **Hash-pinned CI dependencies:** Installed with `pip install --require-hashes`. This covers the build backend too: release artifacts are built with `python -m build --no-isolation` against the hash-pinned setuptools, not a backend downloaded fresh at publish time.
+- **Least-privilege workflow tokens:** every checkout sets `persist-credentials: false`, so the job token is not left in `.git/config` for later steps; CI grants `contents: read` by default, and only the self-scan job, which uploads SARIF, gets `security-events: write`.
 - **OIDC trusted publishing:** Short-lived tokens tied to this specific repo and workflow.
 - **Sigstore attestations:** Published wheels include cryptographic provenance.
 - **Dedicated publish environment:** Releases run only from a dedicated `pypi` GitHub environment, which scopes the OIDC trusted-publishing credentials to that environment.
