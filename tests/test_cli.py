@@ -471,7 +471,11 @@ class TestIngestIntoGit:
             main(list(argv))
         return exc_info.value.code
 
-    @pytest.mark.parametrize('rel', ['.git/config', '.git/hooks/pre-commit', 'sub/.git/config'])
+    # '.git.' names .git itself on Windows, which drops a trailing dot;
+    # elsewhere it is another directory, refused all the same.
+    GIT_PATHS = ('.git/config', '.git/hooks/pre-commit', 'sub/.git/config', '.git./config')
+
+    @pytest.mark.parametrize('rel', GIT_PATHS)
     def test_fix_all_leaves_git_untouched_and_exits_1(self, tmp_path, rel, capsys):
         repo, target = self._project(tmp_path, rel)
         before = target.read_bytes()
@@ -483,9 +487,10 @@ class TestIngestIntoGit:
         err = capsys.readouterr().err
         assert '.git' in err and 'not rewritten' in err
 
-    def test_ci_still_reports_it(self, tmp_path, capsys):
-        repo, _ = self._project(tmp_path)
-        report = self._report(tmp_path, '.git/config')
+    @pytest.mark.parametrize('rel', GIT_PATHS)
+    def test_ci_still_reports_it(self, tmp_path, capsys, rel):
+        repo, _ = self._project(tmp_path, rel)
+        report = self._report(tmp_path, rel)
         assert self._run('--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)) == 1
         data = json.loads(capsys.readouterr().out)
         assert data['count'] == 1

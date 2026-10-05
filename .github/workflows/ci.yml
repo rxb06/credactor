@@ -214,6 +214,28 @@ jobs:
           with open(os.environ['RO_FILE'], encoding='utf-8') as fh:
               assert json.load(fh)['count'] == 1
 
+      - id: sarif-run
+        name: Scan a tree with a finding, SARIF report
+        uses: ./
+        with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
+          working-directory: findings-fixture
+          format: sarif
+          fail-on-findings: 'false'
+
+      - name: Assert the SARIF report parses and holds the finding
+        shell: python
+        env:
+          S_COUNT: ${{ steps.sarif-run.outputs.findings-count }}
+          S_FILE: ${{ steps.sarif-run.outputs.report-file }}
+        run: |
+          import json, os
+          assert os.environ['S_COUNT'] == '1', os.environ['S_COUNT']
+          with open(os.environ['S_FILE'], encoding='utf-8') as fh:
+              sarif = json.load(fh)
+          assert sarif['version'] == '2.1.0'
+          assert len(sarif['runs'][0]['results']) == 1
+
       - name: Plant report-path symlinks
         if: runner.os != 'Windows'
         shell: bash
@@ -299,6 +321,16 @@ jobs:
           format: json
           output-file: "report.json\nexit-code=0"
 
+      - id: newline-path
+        name: Expected failure, path contains a line break
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.SELFTEST_CREDACTOR_VERSION }}
+          working-directory: action-fixture
+          format: json
+          path: "app.py\nexit-code=0"
+
       - name: Plant a working directory whose name has a line break
         if: runner.os == 'Linux'
         shell: bash
@@ -322,11 +354,14 @@ jobs:
         env:
           OUT_OUTCOME: ${{ steps.newline-output.outcome }}
           OUT_CODE: ${{ steps.newline-output.outputs.exit-code }}
+          PATH_OUTCOME: ${{ steps.newline-path.outcome }}
+          PATH_CODE: ${{ steps.newline-path.outputs.exit-code }}
           DIR_OUTCOME: ${{ steps.newline-dir.outcome }}
           DIR_CODE: ${{ steps.newline-dir.outputs.exit-code }}
           IS_LINUX: ${{ runner.os == 'Linux' }}
         run: |
           [ "$OUT_OUTCOME" = "failure" ] && [ -z "$OUT_CODE" ] || { echo "::error::a line break in output-file was not refused ($OUT_OUTCOME, exit-code '$OUT_CODE')"; exit 1; }
+          [ "$PATH_OUTCOME" = "failure" ] && [ -z "$PATH_CODE" ] || { echo "::error::a line break in path was not refused ($PATH_OUTCOME, exit-code '$PATH_CODE')"; exit 1; }
           if [ "$IS_LINUX" = "true" ]; then
             [ "$DIR_OUTCOME" = "failure" ] && [ -z "$DIR_CODE" ] || { echo "::error::a working directory with a line break was not refused ($DIR_OUTCOME, exit-code '$DIR_CODE')"; exit 1; }
           fi
