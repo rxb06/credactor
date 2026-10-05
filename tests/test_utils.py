@@ -2,7 +2,27 @@
 
 from pathlib import Path
 
-from credactor.utils import group_by_file, preview, relativize
+import pytest
+
+from credactor.utils import group_by_file, in_git_dir, preview, relativize
+
+
+class TestInGitDir:
+    """SR-16: a .git component is found whatever its case, and with the
+    trailing dots and spaces Windows drops when it opens the path."""
+
+    @pytest.mark.parametrize(
+        'path',
+        ['.git/config', '.GIT/config', '.git./config', '.git /config', '.git. ./x', 'a/.Git/b'],
+    )
+    def test_git_component(self, tmp_path, path):
+        assert in_git_dir(str(tmp_path / path), str(tmp_path))
+
+    @pytest.mark.parametrize(
+        'path', ['.gitignore', '.github/workflows/ci.yml', 'git/config', 'a.git/b']
+    )
+    def test_not_git(self, tmp_path, path):
+        assert not in_git_dir(str(tmp_path / path), str(tmp_path))
 
 
 class TestPreview:

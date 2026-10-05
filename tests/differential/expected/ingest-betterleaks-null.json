@@ -1,0 +1,18 @@
+{
+ "argv": [
+  "--ci",
+  "--from-betterleaks",
+  "report/bl.json",
+  "."
+ ],
+ "case": "ingest-betterleaks-null",
+ "exit": 0,
+ "findings": {},
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "app.py": "9e26bf369911c45c",
+  "report/bl.json": "38e0b9de817f645c"
+ }
+}

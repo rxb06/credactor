@@ -82,6 +82,11 @@ class Config:
     from_trufflehog: str | None = None
     from_betterleaks: str | None = None
     backup_warn_shown: bool = False
+    # Run state like the field above, kept here until it moves to a per-run
+    # tally: the open --secure-backup-dir warning is printed once per run, and
+    # a copy the sweep keeps is reported once however many sweeps see it.
+    backup_dir_warn_shown: bool = False
+    sweep_kept_reported: set[tuple[str, str, int]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         lo_e, hi_e = ENTROPY_BOUNDS

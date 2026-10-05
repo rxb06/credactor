@@ -65,3 +65,13 @@ def make_file(tmp_dir):
         return path
 
     return _make
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        '--update-differential',
+        action='store_true',
+        default=False,
+        help='rewrite tests/differential/expected/*.json from the current code '
+        '(PA-01); review the resulting diff before committing',
+    )

@@ -15,6 +15,7 @@ from pathlib import Path
 from ._log import logger
 from .config import ENTROPY_DEFAULT, MIN_LEN_DEFAULT, Config
 from .patterns import (
+    _HEURISTIC_VALUE_LABELS,
     _PEM_KEY_RE,
     ASSIGNMENT_RE,
     CRED_VAR_PATTERNS,
@@ -23,6 +24,7 @@ from .patterns import (
     SAFE_VALUES,
     SCAN_EXTENSIONS,
     VALUE_PATTERNS,
+    _is_hash_context_at,
     xml_attr_finditer,
 )
 from .suppressions import AllowList, has_inline_suppression
@@ -38,6 +40,13 @@ _PASSWORD_VAR_KEYWORDS = ('password', 'passwd', 'passphrase', 'private_key', 'se
 # (increased from 100 to 500 to accommodate large RSA/EC keys without
 # false-resetting mid-block)
 _MAX_PEM_BLOCK_LINES = 500
+_PEM_END_RE = re.compile(r'-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+# One line of a key body, bare as in a .pem file or quoted in code: optional
+# concatenation or opening punctuation, a quote, up to 76 base64 characters,
+# an escaped newline, a quote, and trailing '+', ',', ')', ';' or '\'.
+_PEM_BODY_LINE_RE = re.compile(
+    r"""^\s*[+(]?\s*["'`]?[A-Za-z0-9+/=]{1,76}(?:\\n)?["'`]?\s*[+,);\\]*\s*$"""
+)
 
 # Max file size to scan (bytes) — skip silently above this
 _MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -118,59 +127,10 @@ _MAX_LINE_LENGTH = 4096
 # Cap multiline block size to prevent ReDoS on huge triple-quoted strings.
 _MAX_BLOCK_SIZE = 8192
 
-# Key-scoped context check: a hex/base64 value whose OWN assignment key looks
-# like a hash/digest/checksum/commit/integrity/revision field is a hash output,
-# not a raw credential, so the quoted hex/Base64 value detectors skip it. S3: the
-# widened name set stops --fix-all auto-rewriting commit SHAs, SRI integrity
-# hashes, and checksums (which would silently corrupt code).
-#
-# SCAN-1: the terms are matched against the key bound to the matched value only
-# (extracted by _HASH_KEY_RE), NOT line-global, so (a) a hash key on one part of
-# a multi-assignment line cannot suppress an unrelated secret elsewhere, and (b)
-# a credential keyword in the key (see _CRED_KEYWORDS) vetoes the suppression so
-# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit
-# still flag — the credential keyword takes precedence (matches the manual).
-_HASH_CONTEXT_RE = re.compile(
-    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|sha|md5'
-    r'|commit|integrity|checksum|digest|rev|revision|sri)$',
-    re.IGNORECASE,
-)
-
-# Capture the assignment key immediately preceding a value's opening quote, i.e.
-# the trailing `KEY :=/=/:` of the text before the value. Anchored at the end so
-# it isolates the single key bound to THIS value on a multi-assignment line.
-_HASH_KEY_RE = re.compile(
-    r'["\']?(?P<key>[\w.\-]{1,128})["\']?\s*(?::=|[:=])\s*$',
-)
-
-# SCAN-1: credential keywords whose presence ANYWHERE in the key vetoes the
-# hash-context suppression (the credential keyword takes precedence per the
-# manual). These are plain substrings — unlike CRED_VAR_PATTERNS' \b-anchored
-# alternatives — so a credential-keyed name with a hash-ish suffix such as
-# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit /
-# token_integrity is correctly NOT treated as a hash and flags again (as on
-# origin/main). None of the genuine hash keys (commit/checksum/digest/integrity/
-# md5/sha256/*_hash/git_rev) contains one of these, so they still suppress.
-_CRED_KEYWORDS = (
-    'api',
-    'key',
-    'token',
-    'secret',
-    'password',
-    'passwd',
-    'passphrase',
-    'pwd',
-    'auth',
-    'cred',
-    'oauth',
-    'private',
-    'bearer',
-)
 
 # The two entropy-based value detectors share the same extra guards (path/slash +
 # quote-prefix, then hash-context suppression). Named once so the guard block and
 # its membership test cannot drift apart.
-_HEURISTIC_VALUE_LABELS = ('hex credential', 'high-entropy string')
 
 # POSIX env var name — used by the bare $VAR safe-value check.
 _ENV_VAR_NAME_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
@@ -283,25 +243,6 @@ def _is_password_family(var_name: str) -> bool:
     a memorable (lower-entropy) value is still a real credential (H7)."""
     low = var_name.lower()
     return any(kw in low for kw in _PASSWORD_VAR_KEYWORDS)
-
-
-def _is_hash_context_at(line: str, value_start: int) -> bool:
-    """True if the heuristic hex/Base64 value at ``value_start`` is keyed like a
-    hash/digest/commit/integrity field (a hash output, not a raw credential).
-
-    SCAN-1: the key is taken from the single assignment immediately preceding the
-    value's opening quote — scoped to THIS value, not line-global — so a hash key
-    elsewhere on a multi-assignment line cannot suppress an unrelated secret. A
-    credential keyword anywhere in the key vetoes the suppression (the credential
-    keyword takes precedence), so api_key_rev / token_rev / private_key_rev /
-    oauth_token_sri / api_key_commit still flag as on origin/main."""
-    key_match = _HASH_KEY_RE.search(line[:value_start])
-    if key_match is None:
-        return False
-    key = key_match.group('key').lower()
-    if any(kw in key for kw in _CRED_KEYWORDS):
-        return False
-    return bool(_HASH_CONTEXT_RE.search(key))
 
 
 def _severity_for_variable(var_name: str) -> str:
@@ -679,13 +620,19 @@ def scan_lines(
 
     # PEM private key block detection (multi-line)
     in_pem_block = False
+    # SR-08: after a suppressed header, only lines shaped like a key body are
+    # skipped, so a secret on any other line before END is still found.
+    body_only = False
     pem_block_lines = 0
     for lineno, line in enumerate(lines, start=1):
-        if _PEM_KEY_RE.search(line):
-            in_pem_block = True
-            pem_block_lines = 0
-            # Check suppression — still skip body lines even if header suppressed
+        header = _PEM_KEY_RE.search(line)
+        if header:
+            # A header with its END on the same line (a one-line fixture)
+            # opens no block, so the lines after it are scanned.
+            opens = _PEM_END_RE.search(line, header.end()) is None
             if has_inline_suppression(line):
+                logger.debug('%s:%d suppressed by inline credactor:ignore', filepath, lineno)
+                in_pem_block, body_only, pem_block_lines = opens, True, 0
                 continue
             # L11: the PEM-block suppression was previously absent from the
             # --verbose audit trail — log which allowlist rule fired.
@@ -694,7 +641,9 @@ def scan_lines(
             )
             if reason:
                 logger.debug('%s:%d suppressed by allowlist (%s)', filepath, lineno, reason)
+                in_pem_block, body_only, pem_block_lines = opens, True, 0
                 continue
+            in_pem_block, body_only, pem_block_lines = opens, False, 0
             findings.append(
                 _make_finding(
                     filepath,
@@ -719,6 +668,10 @@ def scan_lines(
                     lineno,
                     _MAX_PEM_BLOCK_LINES,
                 )
+                findings.extend(
+                    scan_line(lineno, line, filepath, config=config, allowlist=allowlist)
+                )
+            elif body_only and not _PEM_BODY_LINE_RE.match(line):
                 findings.extend(
                     scan_line(lineno, line, filepath, config=config, allowlist=allowlist)
                 )
@@ -797,7 +750,10 @@ def _scan_multiline_strings(
                             type=f'multiline:{label}',
                             severity=severity,
                             value=val,
-                            raw=block.replace('\n', '\\n')[:120],
+                            # The whole block (already capped at
+                            # _MAX_BLOCK_SIZE): the report cuts it for
+                            # display only after masking (SR-05).
+                            raw=block.replace('\n', '\\n'),
                         )
                     )
                     break  # one finding per block is enough

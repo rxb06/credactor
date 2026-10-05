@@ -1,0 +1,94 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "pem-edge-cases",
+ "exit": 1,
+ "findings": {
+  "allow.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "body.py": [
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "unclosed_long.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   },
+   {
+    "commit": null,
+    "line": 602,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "unclosed_short.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/allow.py:1 suppressed by allowlist (file:line)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/body.py:1 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "WARNING",
+   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line; re-check them after large edits.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/unclosed_long.py:502: unclosed PEM block (>500 lines) \u2014 resuming scan",
+   1
+  ]
+ ],
+ "note": "allowlisted header and the 500-line unclosed-block cap; since SR-08 the lines after an allowlisted header are scanned (allow.py)",
+ "reported": true,
+ "tree_after": {
+  ".credactorignore": "00b05df451f2bab4",
+  "allow.py": "640d37a69f0bf380",
+  "body.py": "c06b01c9614b69bb",
+  "unclosed_long.py": "b16d6b4f329557f5",
+  "unclosed_short.py": "b01d0100ebc4019c"
+ }
+}

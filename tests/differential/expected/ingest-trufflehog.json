@@ -1,0 +1,46 @@
+{
+ "argv": [
+  "--ci",
+  "--from-trufflehog",
+  "report/th.ndjson",
+  "."
+ ],
+ "case": "ingest-trufflehog",
+ "exit": 1,
+ "findings": {
+  "notes.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "key <v:1a5d44a2dca19669>",
+    "severity": "high",
+    "type": "external:trufflehog:AWS",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "INFO",
+   "TruffleHog file line 3: skipping invalid JSON: Expecting value: line 1 column 1 (char 0)",
+   1
+  ],
+  [
+   "INFO",
+   "TruffleHog line 2: unsupported source type ['Github']; skipping.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 TruffleHog finding(s) skipped: unsupported source type(s) ['Github'] \u2014 only filesystem and git sources can be ingested.",
+   1
+  ]
+ ],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "notes.md": "253730d9c593bcbd",
+  "report/th.ndjson": "a388b757882f3a3b"
+ }
+}
