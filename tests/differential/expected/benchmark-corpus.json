@@ -1,0 +1,340 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "benchmark-corpus",
+ "exit": 1,
+ "findings": {
+  "aws.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "6b92092310f56abb",
+    "raw": "aws_key = \"<v:6b92092310f56abb>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "6b92092310f56abb"
+   }
+  ],
+  "b3.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "599f87875504c6cd",
+    "raw": "BLOB = \"<v:1b2acff7a56d8577>\"",
+    "severity": "low",
+    "type": "pattern:high-entropy string",
+    "value": "1b2acff7a56d8577"
+   }
+  ],
+  "c5.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "842d0ee47731033e",
+    "raw": "password_hash = \"<v:842d0ee47731033e>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "842d0ee47731033e"
+   }
+  ],
+  "conn.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "cb21f2409f45903f",
+    "raw": "url = \"<v:cb21f2409f45903f>\"",
+    "severity": "high",
+    "type": "pattern:connection string",
+    "value": "cb21f2409f45903f"
+   }
+  ],
+  "gcp.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "d7d8589bfd8d3fbd",
+    "raw": "gcp_key = \"<v:d7d8589bfd8d3fbd>\"",
+    "severity": "critical",
+    "type": "pattern:GCP API key",
+    "value": "d7d8589bfd8d3fbd"
+   }
+  ],
+  "github.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "a6282663b2816c84",
+    "raw": "gh = \"<v:a6282663b2816c84>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "a6282663b2816c84"
+   }
+  ],
+  "gitlab.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "4766ccd0a1efed85",
+    "raw": "gl = \"<v:4766ccd0a1efed85>\"",
+    "severity": "critical",
+    "type": "pattern:GitLab token",
+    "value": "4766ccd0a1efed85"
+   }
+  ],
+  "hex.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "842d0ee47731033e",
+    "raw": "h = \"<v:842d0ee47731033e>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "842d0ee47731033e"
+   }
+  ],
+  "id_rsa": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   }
+  ],
+  "jwt.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "34e39473745e19d3",
+    "raw": "tok = \"<v:c6366e207ae7527d>\"",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "c6366e207ae7527d"
+   }
+  ],
+  "jwtc.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "e61e31a7df24ab54",
+    "raw": "tok = \"<v:5511f3de5194d1eb>\"",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "5511f3de5194d1eb"
+   }
+  ],
+  "legacy.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "6b92092310f56abb",
+    "raw": "# old_key = \"<v:6b92092310f56abb>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "6b92092310f56abb"
+   }
+  ],
+  "main.go": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "f898fa1006635b3f",
+    "raw": "apiKey := \"<v:f898fa1006635b3f>\"",
+    "severity": "high",
+    "type": "variable:apiKey",
+    "value": "f898fa1006635b3f"
+   }
+  ],
+  "npm.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "2a06c362d566d618",
+    "raw": "npm = \"<v:2a06c362d566d618>\"",
+    "severity": "critical",
+    "type": "pattern:npm token",
+    "value": "2a06c362d566d618"
+   }
+  ],
+  "pem_inline.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "9f254539832736c9",
+    "raw": "<v:9f254539832736c9>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "9f254539832736c9"
+   }
+  ],
+  "pypi.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "cef06aba42cc7509",
+    "raw": "pypi = \"<v:cef06aba42cc7509>\"",
+    "severity": "critical",
+    "type": "pattern:PyPI token",
+    "value": "cef06aba42cc7509"
+   }
+  ],
+  "server.pem": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   }
+  ],
+  "slack.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "e645df3568733cb8",
+    "raw": "slack = \"<v:e645df3568733cb8>\"",
+    "severity": "critical",
+    "type": "pattern:Slack token",
+    "value": "e645df3568733cb8"
+   }
+  ],
+  "stripe.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "5bb97b6db11047d7",
+    "raw": "stripe = \"<v:5bb97b6db11047d7>\"",
+    "severity": "critical",
+    "type": "pattern:Stripe live key",
+    "value": "5bb97b6db11047d7"
+   }
+  ],
+  "strongpw.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "a1018b48e0e14372",
+    "raw": "db_password = \"<v:a1018b48e0e14372>\"",
+    "severity": "high",
+    "type": "variable:db_password",
+    "value": "a1018b48e0e14372"
+   }
+  ],
+  "weakpw1.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "323725e8eff4df0a",
+    "raw": "password = \"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "323725e8eff4df0a"
+   }
+  ],
+  "web.config": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "13e50806bee8d69c",
+    "raw": "<add key=\"DbPassword\" value=\"<v:13e50806bee8d69c>\" />",
+    "severity": "high",
+    "type": "xml-attr:DbPassword",
+    "value": "13e50806bee8d69c"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/b1.py:1 suppressed by hash context",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/c2.py:1 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/env1.py:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/env2.js:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/env3.py:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/env4.yaml:1 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/ph1.py:1 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/ph2.py:1 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/ph3.py:1 suppressed by safe value heuristic",
+   1
+  ]
+ ],
+ "note": "the labelled detection-benchmark corpus, one file per case",
+ "reported": true,
+ "tree_after": {
+  "aws.py": "0976cd457b0deb36",
+  "b1.py": "621ab428d2a38ecf",
+  "b2.py": "7a1e9edce47ca884",
+  "b3.py": "748b5569c85800e3",
+  "c1.py": "50c00cfeebd2ba47",
+  "c2.py": "c5c8d7c748305dba",
+  "c3.py": "95c607a2b1e80eb3",
+  "c4.py": "6cec7ff1283d00cf",
+  "c5.py": "441d3685aa238a2d",
+  "c6.py": "6e1d88d54f77efc2",
+  "conn.py": "d77220955371e75d",
+  "env1.py": "2fd1baa9140c9296",
+  "env2.js": "d67e3ae855dddacf",
+  "env3.py": "fd49f8d86262fa5d",
+  "env4.yaml": "4edd66391324440a",
+  "gcp.py": "7a301e7aae16a073",
+  "github.py": "d0cfa4c97cf32f20",
+  "gitlab.py": "658cdb197ed12d81",
+  "hex.py": "2febf02bb9554697",
+  "id_rsa": "5d1c66b58a809314",
+  "jwt.py": "ec4a95d41be87d39",
+  "jwtc.py": "ef81a5298d9e4c72",
+  "legacy.py": "5af87c816d252439",
+  "main.go": "dbcf77de1ccef072",
+  "npm.py": "42a92ae3568b72e6",
+  "pem_inline.py": "7dc8e050e97aafb7",
+  "ph1.py": "66dbc292e1686261",
+  "ph2.py": "2c10d3e155e03736",
+  "ph3.py": "26dd0fe1354a5b85",
+  "pypi.py": "2d0172d7cb07e676",
+  "server.pem": "5d1c66b58a809314",
+  "slack.py": "43d324d3360a0bc8",
+  "stripe.py": "34a7d20d43cae7c3",
+  "strongpw.py": "00007ec199b07ad1",
+  "weakpw1.py": "db03a51401c99b59",
+  "weakpw2.py": "ea1c5e4157eb91b9",
+  "web.config": "bc76e07468303ccb"
+ }
+}

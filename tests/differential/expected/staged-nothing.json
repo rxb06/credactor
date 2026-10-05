@@ -1,0 +1,15 @@
+{
+ "argv": [
+  "--staged",
+  "."
+ ],
+ "case": "staged-nothing",
+ "exit": 0,
+ "findings": {},
+ "log": [],
+ "note": "nothing staged must stay a clean exit",
+ "reported": true,
+ "tree_after": {
+  "app.py": "aef561de5aaa378b"
+ }
+}

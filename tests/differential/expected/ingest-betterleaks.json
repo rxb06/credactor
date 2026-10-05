@@ -1,0 +1,30 @@
+{
+ "argv": [
+  "--ci",
+  "--from-betterleaks",
+  "report/bl.json",
+  "."
+ ],
+ "case": "ingest-betterleaks",
+ "exit": 1,
+ "findings": {
+  "notes.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "5f4b8f793c79706d",
+    "raw": "password: <v:5f4b8f793c79706d>",
+    "severity": "medium",
+    "type": "external:betterleaks:generic-password",
+    "value": "5f4b8f793c79706d"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "notes.md": "7ae0bb5a04a46e0b",
+  "report/bl.json": "8c73a6402915f999"
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "."
+ ],
+ "case": "fix-sweep-and-hash-context",
+ "exit": 0,
+ "findings": {
+  "dupes.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "first = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "lock.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "6721246223140285",
+    "raw": "token = \"<v:6721246223140285>\"",
+    "severity": "high",
+    "type": "variable:token",
+    "value": "6721246223140285"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "6721246223140285",
+    "raw": "api_key_rev = \"<v:6721246223140285>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "6721246223140285"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/dupes.py:2 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/dupes.py:3 suppressed by allowlist (file:line)",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/lock.py:2 suppressed by hash context",
+   1
+  ],
+  [
+   "WARNING",
+   ".credactorignore has 1 positional file:line suppression(s); they match by line number only and will not catch a new secret that moves onto a suppressed line; re-check them after large edits.",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/lock.py: also cleared 1 additional copy of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/lock.py: kept 1 copy of redacted value(s) keyed as a hash, commit or revision, which the scanner does not report either.",
+   1
+  ]
+ ],
+ "note": "SR-21: lock.py's revision pin is kept, api_key_rev is still swept; SR-22: dupes.py keeps its inline-ignored line 2 and its allowlisted line 3",
+ "reported": true,
+ "tree_after": {
+  ".credactorignore": "319e4db3788b944b",
+  "dupes.py": "d075cfde255eb278",
+  "lock.py": "436dd16d00820a91"
+ }
+}

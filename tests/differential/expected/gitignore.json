@@ -1,0 +1,34 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "gitignore",
+ "exit": 1,
+ "findings": {
+  "sub/kept.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "production.env records current behaviour; SR-12 changes it",
+ "reported": true,
+ "tree_after": {
+  ".gitignore": "716f4656ddeac8e7",
+  "build_out/gen.py": "aef561de5aaa378b",
+  "local.env": "e956bde9874ac6c3",
+  "pkg/build_out/x.py": "aef561de5aaa378b",
+  "production.env": "e956bde9874ac6c3",
+  "sub/.gitignore": "1f56a26a2acf46de",
+  "sub/kept.py": "aef561de5aaa378b",
+  "sub/secret_one.py": "aef561de5aaa378b"
+ }
+}

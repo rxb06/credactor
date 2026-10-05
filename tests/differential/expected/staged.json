@@ -1,0 +1,29 @@
+{
+ "argv": [
+  "--staged",
+  "."
+ ],
+ "case": "staged",
+ "exit": 1,
+ "findings": {
+  "staged.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "only the index blob of staged.py is scanned",
+ "reported": true,
+ "tree_after": {
+  "clean.py": "9e26bf369911c45c",
+  "staged.py": "cf2c753d75056b9a",
+  "unstaged.py": "30554564a7e545d0"
+ }
+}

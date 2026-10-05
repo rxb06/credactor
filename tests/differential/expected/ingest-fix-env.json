@@ -1,0 +1,76 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "--replace-with",
+  "env",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-fix-env",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "drift.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "x = 1",
+    "severity": "critical",
+    "type": "external:gitleaks:aws-access-token",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "INFO",
+   "Deduplicated 1 finding(s).",
+   1
+  ],
+  [
+   "WARNING",
+   "--replace-with env changes string literals to function calls. Ensure environment variables are set before running the modified code.",
+   1
+  ],
+  [
+   "WARNING",
+   "1 finding(s) in file(s) with ingested findings could not be applied \u2014 if the tree changed since the scan, the report is stale: regenerate it and re-run.",
+   1
+  ],
+  [
+   "WARNING",
+   "Reported value not found on line 1 in <root>/drift.py: stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
+   1
+  ]
+ ],
+ "note": "external env naming and the stale-report warning (drift.py)",
+ "reported": true,
+ "tree_after": {
+  "app.py": "f62d66e03dfee72f",
+  "drift.py": "cd0f674449e821cd",
+  "report/gl.json": "629704692824fcf4"
+ }
+}
