@@ -204,6 +204,36 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   is 7 to 64 hex characters (SHA-1 or SHA-256) and shares no run of 6
   characters with the secret; otherwise the finding is ingested without it,
   with a warning.
+- **The GitHub Action runs Python in isolation.** The install runs from the
+  runner's temp directory, and every Python call in the action uses isolated
+  mode (`python -I`), so only the installed pip and the standard library can
+  be imported.
+- **The GitHub Action writes its report only after the scan, and never to a
+  symlink.** The scan writes to a fresh file in the runner's temp directory.
+  The report is then copied to `output-file` (default name unchanged) only if
+  that path is not a symlink, is a regular file or absent, and resolves inside
+  the workspace or the runner temp directory; otherwise the step fails.
+- **The GitHub Action keeps its inputs and outputs to single lines.** A line
+  break in `format`, the working directory (as given or as resolved on disk),
+  `path`, `output-file`, `config` or the `from-*` inputs fails the step before
+  any output is written, `report-file` is checked the same way, and
+  `exit-code` is the last output the step writes. Line breaks in `extra-args`
+  become spaces, so a YAML block keeps working and every line is passed.
+- **A crash is no longer reported as findings.** With `format: json` or
+  `sarif`, an exit 1 that produced no valid report is treated as an error
+  (exit 2), since the CLI also exits 1 on an uncaught error.
+
+### Fixed
+
+- **The GitHub Action no longer errors out when it finds credentials.** The
+  runner starts each step with `bash -e`, so the scan step stopped on
+  Credactor's exit 1 before recording any output. A run with findings then
+  failed as an error, `fail-on-findings: false` could not report without
+  failing, and the SARIF upload never ran on the runs that had something to
+  upload. The step now keeps the exit code and lets the gate decide.
+- **The Action's `report-file` output is the physical path of the report, as a
+  native path.** On Windows, Git Bash reported `/d/a/...` paths that the SARIF
+  upload and other native tools cannot open.
 
 ### Changed
 
@@ -233,6 +263,10 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
   `print_report` and `print_gitignore_skipped` looked up `sys.stdout` once, at
   import, so `contextlib.redirect_stdout` (or pytest's `capsys`) did not capture
   them. They now look it up on each call.
+- **The GitHub Action's `output-file` must stay inside the workspace or the
+  runner temp directory.** A path elsewhere, previously accepted, now fails
+  the step. To keep the report out of the checkout, write it under
+  `${{ runner.temp }}`.
 - **`--verbose` now says when the advisory file lock could not be taken.** The
   lock is still best effort, so the rewrite proceeds unlocked as before, but the
   run now logs the reason instead of continuing silently.
