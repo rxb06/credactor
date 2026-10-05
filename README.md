@@ -175,7 +175,7 @@ A security tool should be safe to install, not only safe to run. Credactor's bui
 
 - **Zero runtime dependencies.** A default `pip install credactor` pulls in no third-party packages (only the optional `[encoding]` extra), so there is nothing to vet at install time.
 - **Hash-pinned toolchain.** CI and release builds install from a `--require-hashes` lockfile, build backend included (`python -m build --no-isolation` against a pinned setuptools), so a tampered dependency fails the build.
-- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed. The package metadata must declare exactly the version and dependencies in `pyproject.toml`.
+- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed. The package metadata must declare exactly the version in `credactor/__init__.py` and the dependencies in `pyproject.toml`.
 - **SHA-pinned, least-privilege CI.** GitHub Actions pin to commit SHAs, and workflow tokens stay narrow — `contents: read` by default, `id-token: write` only for the publish job.
 
 ## Docs

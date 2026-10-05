@@ -90,11 +90,15 @@ _SDIST_EGGINFO_FILES = frozenset(
 _GENERATED_SETUP_CFG = b'[egg_info]\ntag_build = \ntag_date = 0\n\n'
 
 
+# A requirement in normalised form: name, extras, URL, specifier, marker.
+_Key = tuple[str, tuple[str, ...], str, str, str]
+
+
 class _Expected(NamedTuple):
     """What the metadata must say, derived from HEAD (SR-28)."""
 
     version: str
-    requires: Counter[str]  # normalised requirement keys, see _requirement_key
+    requires: Counter[_Key]
     extras: Counter[str]
 
 
@@ -108,11 +112,37 @@ def _blob_sha256(commit: str, path: str) -> str:
     return hashlib.sha256(_blob(commit, path)).hexdigest()
 
 
-def _requirement_key(req: Requirement) -> str:
-    """Return a normalised form of *req*, so equal requirements compare equal."""
-    extras = ','.join(sorted(canonicalize_name(e) for e in req.extras))
-    marker = str(req.marker) if req.marker is not None else ''
-    return f'{canonicalize_name(req.name)}[{extras}]{req.url or ""}{req.specifier}; {marker}'
+def _requirement_key(req: Requirement) -> _Key:
+    """Return a normalised form of *req*, so equal requirements compare equal.
+    Each part stays a separate field, so no two different requirements share one."""
+    return (
+        canonicalize_name(req.name),
+        tuple(sorted(canonicalize_name(e) for e in req.extras)),
+        req.url or '',
+        str(req.specifier),
+        str(req.marker) if req.marker is not None else '',
+    )
+
+
+def _show(key: _Key) -> str:
+    """Render a normalised requirement for an error message."""
+    name, extras, url, specifier, marker = key
+    text = name + (f'[{",".join(extras)}]' if extras else '')
+    text += f' @ {url}' if url else specifier
+    return text + (f'; {marker}' if marker else '')
+
+
+def _decode(label: str, data: bytes) -> tuple[str, list[str]]:
+    """Decode metadata as pip does, strictly as UTF-8; a failure is an error."""
+    try:
+        return data.decode('utf-8'), []
+    except UnicodeDecodeError as exc:
+        return '', [f'{label}: NOT UTF-8 ({exc.reason} at byte {exc.start})']
+
+
+def _has_line_break(value: str) -> bool:
+    """Whether *value* holds a line break or any other line separator."""
+    return value.splitlines() != ([value] if value else [])
 
 
 def _gated(requirement: str, marker: str, extra: str) -> Requirement:
@@ -122,7 +152,8 @@ def _gated(requirement: str, marker: str, extra: str) -> Requirement:
     if marker:
         clauses.append(f'({marker})' if extra else marker)
     if extra:
-        clauses.append(f'extra == "{canonicalize_name(extra)}"')
+        # packaging canonicalises the name in the marker (PEP 685).
+        clauses.append(f'extra == "{extra}"')
     req = Requirement(requirement)
     if clauses:
         req.marker = Marker(' and '.join(clauses))
@@ -146,7 +177,7 @@ def _head_version(commit: str) -> str:
 def _expected_metadata(commit: str) -> _Expected:
     """Derive the expected version, dependencies and extras from HEAD (SR-28)."""
     project = tomllib.loads(_blob(commit, 'pyproject.toml').decode('utf-8'))['project']
-    requires: Counter[str] = Counter(
+    requires: Counter[_Key] = Counter(
         _requirement_key(Requirement(d)) for d in project.get('dependencies', [])
     )
     extras: Counter[str] = Counter()
@@ -178,42 +209,48 @@ def _head_state() -> tuple[dict[str, str], set[str], str]:
 
 
 def _requirement_errors(
-    label: str, found: list[Requirement | str], want: Counter[str]
+    label: str, found: list[Requirement | str], want: Counter[_Key]
 ) -> list[str]:
     """Compare *found* requirements with the expected multiset *want* (SR-28).
 
-    A string in *found* is a value that did not parse, which is never expected.
+    A string in *found* describes an entry that is never expected.
     """
     errors: list[str] = []
-    seen: Counter[str] = Counter()
-    shown: dict[str, str] = {}
+    seen: Counter[_Key] = Counter()
     for req in found:
         if isinstance(req, str):
-            errors.append(f'{label}: UNEXPECTED DEPENDENCY {req!r} (does not parse)')
-            continue
-        key = _requirement_key(req)
-        seen[key] += 1
-        shown.setdefault(key, str(req))
-    errors.extend(f'{label}: UNEXPECTED DEPENDENCY {shown[k]}' for k in sorted(seen - want))
-    errors.extend(f'{label}: MISSING DEPENDENCY {k}' for k in sorted(want - seen))
+            errors.append(f'{label}: UNEXPECTED DEPENDENCY {req}')
+        else:
+            seen[_requirement_key(req)] += 1
+    errors.extend(f'{label}: UNEXPECTED DEPENDENCY {_show(k)}' for k in sorted(seen - want))
+    errors.extend(f'{label}: MISSING DEPENDENCY {_show(k)}' for k in sorted(want - seen))
     return errors
 
 
-def _metadata_errors(label: str, text: str, expected: _Expected) -> list[str]:
+def _metadata_errors(label: str, data: bytes, expected: _Expected) -> list[str]:
     """Check Core Metadata (wheel METADATA / sdist PKG-INFO) against HEAD.
 
-    SR-28: parsed as headers (case-insensitive names, folded lines joined), with
-    exactly one ``Name`` and one ``Version``, and ``Requires-Dist`` and
-    ``Provides-Extra`` equal to what pyproject.toml declares. Anything more would
-    be installed by pip, anything less means the build is not what was reviewed.
+    SR-28: parsed as headers (case-insensitive names), with exactly one ``Name``
+    and one ``Version``, and ``Requires-Dist`` and ``Provides-Extra`` equal to
+    what pyproject.toml declares. Anything more would be installed by pip,
+    anything less means the build is not what was reviewed.
     """
+    text, errors = _decode(label, data)
+    if errors:
+        return errors
     msg = HeaderParser().parsestr(text)
 
     def values(field: str) -> list[str]:
-        # Unfold a folded header (RFC 5322): drop the line breaks, keep the rest.
-        return [''.join(str(v).splitlines()).strip() for v in msg.get_all(field) or []]
+        out: list[str] = []
+        for value in map(str, msg.get_all(field) or []):
+            # setuptools never folds these fields and pip does not unfold
+            # them, so a value over several lines is rejected, not joined.
+            if _has_line_break(value):
+                errors.append(f'{label}: LINE BREAK IN {field} {value!r}')
+            else:
+                out.append(value.strip())
+        return out
 
-    errors: list[str] = []
     names = values('Name')
     if names != [PACKAGE]:
         errors.append(f'{label}: NAME MISMATCH {names!r} (expected exactly [{PACKAGE!r}])')
@@ -233,18 +270,22 @@ def _metadata_errors(label: str, text: str, expected: _Expected) -> list[str]:
         try:
             found.append(Requirement(value))
         except InvalidRequirement:
-            found.append(value)
+            found.append(f'{value!r} (does not parse)')
     errors.extend(_requirement_errors(label, found, expected.requires))
     return errors
 
 
-def _requires_txt_errors(label: str, text: str, expected: _Expected) -> list[str]:
+def _requires_txt_errors(label: str, data: bytes, expected: _Expected) -> list[str]:
     """Check an egg-info ``requires.txt`` against the declared dependencies (SR-28).
 
     Requirements before the first section are unconditional; a ``[extra]``,
     ``[extra:marker]`` or ``[:marker]`` section gates the ones below it. Each is
     turned back into a ``Requires-Dist`` form and the set must match exactly.
+    setuptools writes a marker only in the section header, never on the line.
     """
+    text, errors = _decode(label, data)
+    if errors:
+        return errors
     section = ''
     found: list[Requirement | str] = []
     for line in text.splitlines():
@@ -256,9 +297,12 @@ def _requires_txt_errors(label: str, text: str, expected: _Expected) -> list[str
             continue
         extra, _, marker = section.partition(':')
         try:
+            if Requirement(stripped).marker is not None:
+                found.append(f'{stripped!r} under [{section}] (a marker on the line)')
+                continue
             found.append(_gated(stripped, marker, extra))
         except InvalidRequirement:
-            found.append(f'[{section}] {stripped}')
+            found.append(f'{stripped!r} under [{section}] (does not parse)')
     return _requirement_errors(label, found, expected.requires)
 
 
@@ -289,8 +333,7 @@ def _audit_wheel_distinfo(
     for member in sorted(members):
         rel = member[len(distinfo) :]
         if rel == 'METADATA':
-            text = z.read(member).decode('utf-8', 'replace')
-            errors.extend(_metadata_errors(f'{name}:{rel}', text, expected))
+            errors.extend(_metadata_errors(f'{name}:{rel}', z.read(member), expected))
         elif rel == 'entry_points.txt':
             if z.read(member).decode('utf-8', 'replace').strip() != EXPECTED_ENTRY_POINTS:
                 errors.append(f'{name}: ENTRY POINTS ALTERED {rel}')
@@ -382,7 +425,7 @@ def _sdist_buildmeta_errors(name: str, rel: str, data: bytes, expected: _Expecte
     """
     base = posixpath.basename(rel)
     if rel == 'PKG-INFO':
-        return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
+        return _metadata_errors(f'{name}:{rel}', data, expected)
     if rel == 'setup.cfg':
         # SR-28: setuptools reads [options] from it, so only the generated bytes pass.
         if data != _GENERATED_SETUP_CFG:
@@ -390,13 +433,13 @@ def _sdist_buildmeta_errors(name: str, rel: str, data: bytes, expected: _Expecte
         return []
     if rel.startswith(f'{PACKAGE}.egg-info/') and base in _SDIST_EGGINFO_FILES:
         if base == 'PKG-INFO':
-            return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
+            return _metadata_errors(f'{name}:{rel}', data, expected)
         if base == 'entry_points.txt':
             if data.decode('utf-8', 'replace').strip() != EXPECTED_ENTRY_POINTS:
                 return [f'{name}: ENTRY POINTS ALTERED {rel}']
             return []
         if base == 'requires.txt':
-            return _requires_txt_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
+            return _requires_txt_errors(f'{name}:{rel}', data, expected)
         # SOURCES.txt, dependency_links.txt, top_level.txt: inert bookkeeping.
         return []
     return [f'{name}: UNEXPECTED {rel}']

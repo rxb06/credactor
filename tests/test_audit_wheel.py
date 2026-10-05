@@ -454,7 +454,7 @@ _BAD_METADATA = {
     'lowercase-name': (METADATA.replace(b'Name: credactor', b'name: evil'), 'NAME'),
     'folded-requires-dist': (
         METADATA + b'Requires-Dist: evil-malware-pkg; extra == "dev"\n or python_version >= "3"\n',
-        'DEPENDENCY',
+        'LINE BREAK',
     ),
     'duplicate-name-evil-first': (
         METADATA.replace(b'Name: credactor', b'Name: evil\nName: credactor'),
@@ -488,6 +488,39 @@ _BAD_METADATA = {
     'duplicate-version': (METADATA + b'Version: 6.6.6\n', 'VERSION'),
     'undeclared-extra': (METADATA + b'Provides-Extra: evil\n', 'EXTRAS'),
     'missing-extra': (METADATA.replace(b'Provides-Extra: dev\n', b''), 'EXTRAS'),
+    'duplicate-extra': (METADATA + b'Provides-Extra: dev\n', 'EXTRAS'),
+    # The cases below change only the marker, extras or URL of a declared
+    # dependency, so the name alone cannot make them fail.
+    'declared-made-unconditional': (
+        METADATA.replace(b'pytest>=8.0; extra == "dev"', b'pytest>=8.0'),
+        'DEPENDENCY',
+    ),
+    'declared-or-marker': (
+        METADATA.replace(
+            b'pytest>=8.0; extra == "dev"', b'pytest>=8.0; extra == "dev" or python_version >= "3"'
+        ),
+        'DEPENDENCY',
+    ),
+    'declared-extras-dropped': (METADATA.replace(b'coverage[toml]', b'coverage'), 'DEPENDENCY'),
+    'declared-as-url': (
+        METADATA.replace(
+            b'charset-normalizer>=3.0;', b'charset-normalizer @ https://example.invalid/c.whl ;'
+        ),
+        'DEPENDENCY',
+    ),
+    'specifier-as-url': (
+        METADATA.replace(b'charset-normalizer>=3.0;', b'charset-normalizer @ >=3.0 ;'),
+        'DEPENDENCY',
+    ),
+    'folded-declared': (
+        METADATA.replace(b'pytest>=8.0; extra == "dev"', b'pytest>=8.0;\n extra == "dev"'),
+        'LINE BREAK',
+    ),
+    'separator-in-marker': (
+        METADATA.replace(b'extra == "encoding"', 'extra == "enc\x85oding"'.encode()),
+        'LINE BREAK',
+    ),
+    'not-utf8': (METADATA + b'Summary: \xff\n', 'NOT UTF-8'),
 }
 
 
@@ -511,6 +544,11 @@ _GOOD_METADATA = {
     ),
     # The description body follows the first blank line; it is not a header.
     'body-mentions-a-header': METADATA + b'\nRequires-Dist: evil-malware-pkg\nName: evil\n',
+    'crlf': METADATA.replace(b'\n', b'\r\n'),
+    # pip compares extra names in canonical form (PEP 685).
+    'extra-name-case': METADATA.replace(
+        b'Provides-Extra: encoding', b'Provides-Extra: Encoding'
+    ).replace(b'extra == "encoding"', b'extra == "Encoding"'),
 }
 
 
@@ -558,6 +596,17 @@ def test_passes_on_generated_requires_txt(repo):
 
 
 _BAD_REQUIRES_TXT = {
+    'declared-under-marker-section': (
+        REQUIRES_TXT.replace(b'[encoding]', b'[encoding:python_version >= "3"]'),
+        'DEPENDENCY',
+    ),
+    'marker-on-the-line': (
+        REQUIRES_TXT.replace(
+            b'charset-normalizer>=3.0', b'charset-normalizer>=3.0; os_name == "nt"'
+        ),
+        'DEPENDENCY',
+    ),
+    'not-utf8': (REQUIRES_TXT + b'# \xff\n', 'NOT UTF-8'),
     'undeclared-in-declared-section': (REQUIRES_TXT + b'evil-malware-pkg\n', 'DEPENDENCY'),
     'weaker-specifier': (REQUIRES_TXT.replace(b'>=3.0', b'>=0.1'), 'DEPENDENCY'),
     'missing-dependency': (REQUIRES_TXT.replace(b'pytest>=8.0\n', b''), 'MISSING DEPENDENCY'),
@@ -592,3 +641,58 @@ def test_fails_on_setup_cfg_with_install_requires(repo, capsys):
     # setuptools honours [options] install_requires from an sdist's setup.cfg.
     _build_with_setup_cfg(repo, SETUP_CFG + b'[options]\ninstall_requires = evil-malware-pkg\n')
     _audit_fails_with(capsys, 'SETUP.CFG')
+
+
+_SHAPES_METADATA = (
+    b'Metadata-Version: 2.4\nName: credactor\nVersion: 1.0.0rc1\n'
+    b'Requires-Dist: tomli>=1.0; python_version < "3.11"\n'
+    b'Provides-Extra: my-extra\n'
+    b'Requires-Dist: Foo_Bar[Baz_Q]<2,>=1.0; extra == "my-extra"\n'
+    b'Requires-Dist: colorama; os_name == "nt" and extra == "my-extra"\n'
+)
+
+
+def _build_shapes(repo: Path, metadata: bytes) -> None:
+    """Commit a pyproject with less common shapes and build artifacts for it:
+    a base dependency with a marker, an extra spelled with capitals and an
+    underscore, a dependency with its own marker inside an extra, and a
+    version that PEP 440 normalises. requires.txt and _SHAPES_METADATA are
+    what setuptools 84 wrote for it."""
+    (repo / 'pyproject.toml').write_bytes(
+        b'[project]\nname = "credactor"\ndynamic = ["version"]\n'
+        b'dependencies = [\'tomli>=1.0; python_version < "3.11"\']\n\n'
+        b'[project.optional-dependencies]\n'
+        b"My_Extra = ['Foo_Bar[Baz_Q]>=1.0,<2', 'colorama; os_name == \"nt\"']\n"
+    )
+    files = {**PKG_FILES, 'credactor/__init__.py': b"__version__ = '1.0.0-rc1'\n"}
+    (repo / 'credactor' / '__init__.py').write_bytes(files['credactor/__init__.py'])
+    _git(repo, 'commit', '-qam', 'shapes')
+    requires = (
+        b'\n[:python_version < "3.11"]\ntomli>=1.0\n\n[My_Extra]\nFoo_Bar[Baz_Q]<2,>=1.0\n'
+        b'\n[My_Extra:os_name == "nt"]\ncolorama\n'
+    )
+    _wheel(repo, files, metadata=metadata, version='1.0.0rc1')
+    _sdist(
+        repo,
+        {**files, 'credactor.egg-info/requires.txt': requires},
+        pyproject=(repo / 'pyproject.toml').read_bytes(),
+        pkg_info=_SHAPES_METADATA,
+        version='1.0.0rc1',
+    )
+
+
+def test_passes_on_other_pyproject_shapes(repo):
+    _build_shapes(repo, _SHAPES_METADATA)
+    audit_wheel.audit('dist')  # no SystemExit means it passed
+
+
+def test_fails_on_a_url_for_a_declared_dependency_without_specifier(repo, capsys):
+    # colorama is declared with no specifier, so only the URL differs.
+    _build_shapes(
+        repo,
+        _SHAPES_METADATA.replace(
+            b'Requires-Dist: colorama;',
+            b'Requires-Dist: colorama @ https://example.invalid/c.whl ;',
+        ),
+    )
+    _audit_fails_with(capsys, 'DEPENDENCY')
