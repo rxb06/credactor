@@ -14,6 +14,13 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **The artifact audit compares package metadata with `pyproject.toml`
+  exactly.** The wheel's `METADATA`, the sdist's `PKG-INFO` and the egg-info
+  `requires.txt` are now parsed as headers and must carry exactly one `Name`
+  and one `Version` (equal to `__version__`, the wheel file name and the sdist
+  directory), and exactly the dependencies and extras `pyproject.toml`
+  declares, compared as normalised requirements. The sdist's `setup.cfg`
+  passes only as the bytes setuptools generates.
 - **`--replace-with env` no longer writes broken code for triple-quoted or
   prefixed strings.** It consumed the quotes of a matched `"value"`, so a
   triple-quoted literal kept its spare quotes (a syntax error), and a prefixed

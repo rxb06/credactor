@@ -21,6 +21,23 @@ PKG_FILES = {
     'credactor/core.py': b'def run():\n    return 42\n',
 }
 EXPECTED_ENTRY_POINTS = b'[console_scripts]\ncredactor = credactor.cli:main\n'
+PYPROJECT = (
+    b'[project]\nname = "credactor"\ndynamic = ["version"]\n\n'
+    b'[project.optional-dependencies]\n'
+    b'encoding = ["charset-normalizer>=3.0"]\n'
+    b'dev = ["pytest>=8.0", "coverage[toml]>=7.0"]\n'
+)
+# What setuptools writes for PYPROJECT, in its order.
+DEPS = (
+    b'Provides-Extra: encoding\n'
+    b'Requires-Dist: charset-normalizer>=3.0; extra == "encoding"\n'
+    b'Provides-Extra: dev\n'
+    b'Requires-Dist: pytest>=8.0; extra == "dev"\n'
+    b'Requires-Dist: coverage[toml]>=7.0; extra == "dev"\n'
+)
+METADATA = b'Metadata-Version: 2.4\nName: credactor\nVersion: 1.0.0\n' + DEPS
+REQUIRES_TXT = b'\n[dev]\npytest>=8.0\ncoverage[toml]>=7.0\n\n[encoding]\ncharset-normalizer>=3.0\n'
+SETUP_CFG = b'[egg_info]\ntag_build = \ntag_date = 0\n\n'
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -33,7 +50,7 @@ def repo(tmp_path, monkeypatch):
     (tmp_path / 'credactor').mkdir()
     for rel, data in PKG_FILES.items():
         (tmp_path / rel).write_bytes(data)
-    (tmp_path / 'pyproject.toml').write_bytes(b'[project]\nname = "credactor"\n')
+    (tmp_path / 'pyproject.toml').write_bytes(PYPROJECT)
     (tmp_path / 'README.md').write_bytes(b'# credactor\n')
     _git(tmp_path, 'init', '-q')
     _git(tmp_path, 'config', 'user.email', 'a@b.c')
@@ -50,22 +67,24 @@ def _wheel(
     files: dict[str, bytes],
     *,
     dist_info: bool = True,
-    metadata: bytes = b'Name: credactor\n',
+    metadata: bytes | None = METADATA,
     entry_points: bytes | None = None,
     top_level: bytes | None = None,
     extra_members: list[tuple[str, bytes]] | None = None,
+    version: str = VERSION,
 ) -> Path:
-    path = repo / 'dist' / f'credactor-{VERSION}-py3-none-any.whl'
+    path = repo / 'dist' / f'credactor-{version}-py3-none-any.whl'
     with zipfile.ZipFile(path, 'w') as z:
         for name, data in files.items():
             z.writestr(name, data)
         if dist_info:
-            z.writestr(f'credactor-{VERSION}.dist-info/METADATA', metadata)
-            z.writestr(f'credactor-{VERSION}.dist-info/RECORD', b'')
+            if metadata is not None:
+                z.writestr(f'credactor-{version}.dist-info/METADATA', metadata)
+            z.writestr(f'credactor-{version}.dist-info/RECORD', b'')
             if entry_points is not None:
-                z.writestr(f'credactor-{VERSION}.dist-info/entry_points.txt', entry_points)
+                z.writestr(f'credactor-{version}.dist-info/entry_points.txt', entry_points)
             if top_level is not None:
-                z.writestr(f'credactor-{VERSION}.dist-info/top_level.txt', top_level)
+                z.writestr(f'credactor-{version}.dist-info/top_level.txt', top_level)
         # Raw extra members (allows duplicate names and arbitrary paths the dict
         # form cannot express, e.g. a smuggled file under .dist-info/).
         for name, data in extra_members or []:
@@ -78,11 +97,12 @@ def _sdist(
     files: dict[str, bytes],
     *,
     metadata: bool = True,
-    pyproject: bytes = b'[project]\nname = "credactor"\n',
-    pkg_info: bytes = b'Name: credactor\n',
+    pyproject: bytes = PYPROJECT,
+    pkg_info: bytes = METADATA,
+    version: str = VERSION,
 ) -> Path:
-    path = repo / 'dist' / f'credactor-{VERSION}.tar.gz'
-    prefix = f'credactor-{VERSION}'
+    path = repo / 'dist' / f'credactor-{version}.tar.gz'
+    prefix = f'credactor-{version}'
     with tarfile.open(path, 'w:gz') as t:
 
         def add(arc: str, data: bytes) -> None:
@@ -267,19 +287,15 @@ def test_fails_on_missing_dist_dir(repo):
 def test_fails_on_injected_dependency_in_wheel_metadata(repo, capsys):
     # G-W1a: an unconditional Requires-Dist in METADATA installs an attacker's
     # package on every `pip install`; it must be rejected (Credactor ships none).
-    _wheel(repo, PKG_FILES, metadata=b'Name: credactor\nRequires-Dist: evil-malware-pkg\n')
+    _wheel(repo, PKG_FILES, metadata=METADATA + b'Requires-Dist: evil-malware-pkg\n')
     _sdist(repo, PKG_FILES)
     _audit_fails_with(capsys, 'UNEXPECTED DEPENDENCY')
 
 
 def test_passes_on_extra_gated_requires_dist_in_wheel(repo):
-    # The dependency check must not over-reach: a genuine extras-gated dependency
-    # (as setuptools emits for [project.optional-dependencies]) still passes.
-    _wheel(
-        repo,
-        PKG_FILES,
-        metadata=b'Name: credactor\nRequires-Dist: charset-normalizer>=3.0; extra == "encoding"\n',
-    )
+    # The dependency check must not over-reach: the extras-gated dependencies
+    # setuptools emits for [project.optional-dependencies] pass.
+    _wheel(repo, PKG_FILES, metadata=METADATA)
     _sdist(repo, PKG_FILES)
     audit_wheel.audit('dist')  # no SystemExit means it passed
 
@@ -372,7 +388,7 @@ def test_fails_on_untracked_binary_fixture_in_sdist(repo, capsys):
 def test_fails_on_injected_dependency_in_sdist_pkginfo(repo, capsys):
     # G-S2/G-S3: an unconditional Requires-Dist injected into the sdist PKG-INFO.
     _wheel(repo, PKG_FILES)
-    _sdist(repo, PKG_FILES, pkg_info=b'Name: credactor\nRequires-Dist: evil-malware-pkg\n')
+    _sdist(repo, PKG_FILES, pkg_info=METADATA + b'Requires-Dist: evil-malware-pkg\n')
     _audit_fails_with(capsys, 'UNEXPECTED DEPENDENCY')
 
 
@@ -389,7 +405,7 @@ def test_fails_on_unconditional_requires_txt_in_sdist(repo, capsys):
     # unconditional install-time dependency, which Credactor does not have.
     _wheel(repo, PKG_FILES)
     extra = dict(PKG_FILES)
-    extra['credactor.egg-info/requires.txt'] = b'evil-malware-pkg\n\n[dev]\npytest\n'
+    extra['credactor.egg-info/requires.txt'] = b'evil-malware-pkg\n' + REQUIRES_TXT
     _sdist(repo, extra)
     _audit_fails_with(capsys, 'UNEXPECTED DEPENDENCY')
 
@@ -411,3 +427,168 @@ def test_fails_on_two_sdists(repo, capsys):
     src = repo / 'dist' / f'credactor-{VERSION}.tar.gz'
     (repo / 'dist' / 'credactor-1.0.1.tar.gz').write_bytes(src.read_bytes())
     _audit_fails_with(capsys, 'exactly one .tar.gz')
+
+
+# --- SR-28: metadata parsed as headers and compared with pyproject exactly ---
+
+_WHERE = ['wheel', 'sdist', 'egg-info']
+
+
+def _build_with_metadata(repo: Path, where: str, metadata: bytes) -> None:
+    """Build a wheel and an sdist whose metadata at *where* is *metadata*."""
+    if where == 'wheel':
+        _wheel(repo, PKG_FILES, metadata=metadata)
+        _sdist(repo, PKG_FILES)
+    elif where == 'sdist':
+        _wheel(repo, PKG_FILES)
+        _sdist(repo, PKG_FILES, pkg_info=metadata)
+    else:
+        _wheel(repo, PKG_FILES)
+        files = dict(PKG_FILES)
+        files['credactor.egg-info/PKG-INFO'] = metadata
+        _sdist(repo, files)
+
+
+_BAD_METADATA = {
+    'lowercase-requires-dist': (METADATA + b'requires-dist: evil-malware-pkg\n', 'DEPENDENCY'),
+    'lowercase-name': (METADATA.replace(b'Name: credactor', b'name: evil'), 'NAME'),
+    'folded-requires-dist': (
+        METADATA + b'Requires-Dist: evil-malware-pkg; extra == "dev"\n or python_version >= "3"\n',
+        'DEPENDENCY',
+    ),
+    'duplicate-name-evil-first': (
+        METADATA.replace(b'Name: credactor', b'Name: evil\nName: credactor'),
+        'NAME',
+    ),
+    'missing-name': (METADATA.replace(b'Name: credactor\n', b''), 'NAME'),
+    'extra-or-true': (
+        METADATA + b'Requires-Dist: evil-malware-pkg; extra == "x" or true\n',
+        'DEPENDENCY',
+    ),
+    'marker-or-extra': (
+        METADATA
+        + b'Requires-Dist: evil-malware-pkg; python_version >= "3.11" or extra == "never"\n',
+        'DEPENDENCY',
+    ),
+    'undeclared-on-declared-extra': (
+        METADATA + b'Requires-Dist: evil-malware-pkg; extra == "encoding"\n',
+        'DEPENDENCY',
+    ),
+    'weaker-specifier': (METADATA.replace(b'>=3.0', b'>=0.1'), 'DEPENDENCY'),
+    'missing-dependency': (
+        METADATA.replace(b'Requires-Dist: pytest>=8.0; extra == "dev"\n', b''),
+        'MISSING DEPENDENCY',
+    ),
+    'duplicate-dependency': (
+        METADATA + b'Requires-Dist: pytest>=8.0; extra == "dev"\n',
+        'DEPENDENCY',
+    ),
+    'version-mismatch': (METADATA.replace(b'Version: 1.0.0', b'Version: 6.6.6'), 'VERSION'),
+    'missing-version': (METADATA.replace(b'Version: 1.0.0\n', b''), 'VERSION'),
+    'duplicate-version': (METADATA + b'Version: 6.6.6\n', 'VERSION'),
+    'undeclared-extra': (METADATA + b'Provides-Extra: evil\n', 'EXTRAS'),
+    'missing-extra': (METADATA.replace(b'Provides-Extra: dev\n', b''), 'EXTRAS'),
+}
+
+
+@pytest.mark.parametrize('where', _WHERE)
+@pytest.mark.parametrize('case', sorted(_BAD_METADATA))
+def test_fails_on_tampered_metadata(repo, capsys, where, case):
+    metadata, category = _BAD_METADATA[case]
+    _build_with_metadata(repo, where, metadata)
+    _audit_fails_with(capsys, category)
+
+
+_GOOD_METADATA = {
+    'as-built': METADATA,
+    'lowercase-headers': METADATA.lower(),
+    'reordered-and-respaced': (
+        b'Metadata-Version: 2.4\nVersion: 1.0.0\nName: credactor\n'
+        b'Provides-Extra: dev\nProvides-Extra: encoding\n'
+        b'Requires-Dist: coverage[toml] >= 7.0 ; extra == "dev"\n'
+        b'Requires-Dist: Pytest>=8.0; extra == "dev"\n'
+        b"Requires-Dist: charset_normalizer>=3.0; extra == 'encoding'\n"
+    ),
+    # The description body follows the first blank line; it is not a header.
+    'body-mentions-a-header': METADATA + b'\nRequires-Dist: evil-malware-pkg\nName: evil\n',
+}
+
+
+@pytest.mark.parametrize('where', _WHERE)
+@pytest.mark.parametrize('case', sorted(_GOOD_METADATA))
+def test_passes_on_equivalent_metadata(repo, where, case):
+    _build_with_metadata(repo, where, _GOOD_METADATA[case])
+    audit_wheel.audit('dist')  # no SystemExit means it passed
+
+
+def test_fails_on_wheel_filename_version_mismatch(repo, capsys):
+    _wheel(repo, PKG_FILES, version='6.6.6')
+    _sdist(repo, PKG_FILES)
+    _audit_fails_with(capsys, 'VERSION')
+
+
+def test_fails_on_sdist_directory_version_mismatch(repo, capsys):
+    _wheel(repo, PKG_FILES)
+    _sdist(repo, PKG_FILES, version='6.6.6')
+    _audit_fails_with(capsys, 'VERSION')
+
+
+def test_fails_on_wheel_without_metadata(repo, capsys):
+    _wheel(repo, PKG_FILES, metadata=None)
+    _sdist(repo, PKG_FILES)
+    _audit_fails_with(capsys, 'MISSING METADATA')
+
+
+def test_fails_on_sdist_without_pkg_info(repo, capsys):
+    _wheel(repo, PKG_FILES)
+    _sdist(repo, PKG_FILES, metadata=False)
+    _audit_fails_with(capsys, 'MISSING METADATA')
+
+
+def _build_with_egg_info(repo: Path, name: str, data: bytes) -> None:
+    _wheel(repo, PKG_FILES)
+    files = dict(PKG_FILES)
+    files[f'credactor.egg-info/{name}'] = data
+    _sdist(repo, files)
+
+
+def test_passes_on_generated_requires_txt(repo):
+    _build_with_egg_info(repo, 'requires.txt', REQUIRES_TXT)
+    audit_wheel.audit('dist')  # no SystemExit means it passed
+
+
+_BAD_REQUIRES_TXT = {
+    'undeclared-in-declared-section': (REQUIRES_TXT + b'evil-malware-pkg\n', 'DEPENDENCY'),
+    'weaker-specifier': (REQUIRES_TXT.replace(b'>=3.0', b'>=0.1'), 'DEPENDENCY'),
+    'missing-dependency': (REQUIRES_TXT.replace(b'pytest>=8.0\n', b''), 'MISSING DEPENDENCY'),
+    'marker-section': (
+        REQUIRES_TXT + b'\n[:python_version >= "3"]\nevil-malware-pkg\n',
+        'DEPENDENCY',
+    ),
+    'undeclared-section': (REQUIRES_TXT + b'\n[evil]\nevil-malware-pkg\n', 'DEPENDENCY'),
+}
+
+
+@pytest.mark.parametrize('case', sorted(_BAD_REQUIRES_TXT))
+def test_fails_on_tampered_requires_txt(repo, capsys, case):
+    data, category = _BAD_REQUIRES_TXT[case]
+    _build_with_egg_info(repo, 'requires.txt', data)
+    _audit_fails_with(capsys, category)
+
+
+def _build_with_setup_cfg(repo: Path, data: bytes) -> None:
+    _wheel(repo, PKG_FILES)
+    files = dict(PKG_FILES)
+    files['setup.cfg'] = data
+    _sdist(repo, files)
+
+
+def test_passes_on_generated_setup_cfg(repo):
+    _build_with_setup_cfg(repo, SETUP_CFG)
+    audit_wheel.audit('dist')  # no SystemExit means it passed
+
+
+def test_fails_on_setup_cfg_with_install_requires(repo, capsys):
+    # setuptools honours [options] install_requires from an sdist's setup.cfg.
+    _build_with_setup_cfg(repo, SETUP_CFG + b'[options]\ninstall_requires = evil-malware-pkg\n')
+    _audit_fails_with(capsys, 'SETUP.CFG')

@@ -12,16 +12,20 @@ knowable set. This gate enforces that set, failing closed on anything else:
     altered code is caught (a file-name check alone would miss an in-place edit);
   * treats the wheel as a closed allowlist: every member must be a tracked
     ``credactor/`` file or one of the expected ``.dist-info`` files, and the
-    ``.dist-info`` metadata that pip consumes is content-checked -- no
-    install-time ``Requires-Dist``, the console entry point is unchanged, and a
-    bundled licence matches HEAD -- so a build step cannot inject a dependency,
-    repoint the entry point, or smuggle a ``.pth``/``.so``/module past the gate;
+    ``.dist-info`` metadata that pip consumes is content-checked -- exactly one
+    ``Name`` and one ``Version`` (equal to ``__version__`` at HEAD, the wheel file
+    name and the sdist directory), ``Requires-Dist`` and ``Provides-Extra`` equal
+    to what ``pyproject.toml`` at HEAD declares, the console entry point is
+    unchanged, and a bundled licence matches HEAD -- so a build step cannot inject
+    a dependency, repoint the entry point, or smuggle a ``.pth``/``.so``/module
+    past the gate;
   * audits the sdist fail-closed: tracked files are byte-checked against HEAD,
     any untracked ``.py`` or ``credactor/`` member is rejected, and the only
     untracked members allowed are setuptools build metadata (``PKG-INFO``,
-    ``setup.cfg``, ``*.egg-info/`` bookkeeping) -- itself content-checked for
-    injected dependencies -- so the xz-style "fixture file in the tarball but not
-    in git" class is rejected;
+    ``setup.cfg``, ``*.egg-info/`` bookkeeping) -- the metadata checked as in the
+    wheel, ``requires.txt`` against the same declared set, ``setup.cfg`` only as
+    the exact bytes setuptools generates -- so the xz-style "fixture file in the
+    tarball but not in git" class is rejected;
   * rejects duplicate archive members (a set collapses them and only one copy is
     hashed, so an evil-first/clean-last pair would otherwise pass) and any sdist
     member whose path escapes the version directory (tar-slip).
@@ -31,13 +35,26 @@ trustworthy (malicious authorship), nor defend a fully compromised runner that
 can patch this script or re-tamper ``dist/`` after the gate exits.
 """
 
+import ast
 import hashlib
 import os
 import posixpath
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
+from collections import Counter
+from email.parser import HeaderParser
+from typing import NamedTuple
+
+try:
+    from packaging.markers import Marker
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+except ImportError:  # pragma: no cover
+    sys.exit('audit_wheel.py needs packaging: pip install --require-hashes -r requirements-ci.txt')
 
 # Credactor's fixed identity. This gate audits Credactor's own artifacts, so the
 # package name, console entry point, and top-level module are known constants.
@@ -67,11 +84,80 @@ _SDIST_EGGINFO_FILES = frozenset(
     }
 )
 
+# SR-28: the setup.cfg setuptools writes into every sdist. setuptools honours
+# [options] in it at install time, so anything else is rejected. A setuptools
+# pin bump that changes these bytes fails here, which is the intended outcome.
+_GENERATED_SETUP_CFG = b'[egg_info]\ntag_build = \ntag_date = 0\n\n'
+
+
+class _Expected(NamedTuple):
+    """What the metadata must say, derived from HEAD (SR-28)."""
+
+    version: str
+    requires: Counter[str]  # normalised requirement keys, see _requirement_key
+    extras: Counter[str]
+
+
+def _blob(commit: str, path: str) -> bytes:
+    """Return the bytes of the file at *path* in *commit*."""
+    return subprocess.check_output(['git', 'show', f'{commit}:{path}'])
+
 
 def _blob_sha256(commit: str, path: str) -> str:
     """Return the sha256 of the file at *path* in *commit*."""
-    blob = subprocess.check_output(['git', 'show', f'{commit}:{path}'])
-    return hashlib.sha256(blob).hexdigest()
+    return hashlib.sha256(_blob(commit, path)).hexdigest()
+
+
+def _requirement_key(req: Requirement) -> str:
+    """Return a normalised form of *req*, so equal requirements compare equal."""
+    extras = ','.join(sorted(canonicalize_name(e) for e in req.extras))
+    marker = str(req.marker) if req.marker is not None else ''
+    return f'{canonicalize_name(req.name)}[{extras}]{req.url or ""}{req.specifier}; {marker}'
+
+
+def _gated(requirement: str, marker: str, extra: str) -> Requirement:
+    """Parse *requirement*, gated on *marker* and on ``extra == "<extra>"``, joined
+    the way setuptools writes them. Either may be empty."""
+    clauses = []
+    if marker:
+        clauses.append(f'({marker})' if extra else marker)
+    if extra:
+        clauses.append(f'extra == "{canonicalize_name(extra)}"')
+    req = Requirement(requirement)
+    if clauses:
+        req.marker = Marker(' and '.join(clauses))
+    return req
+
+
+def _head_version(commit: str) -> str:
+    """Return ``credactor.__version__`` at *commit*, PEP 440 normalised."""
+    tree = ast.parse(_blob(commit, f'{PACKAGE}/__init__.py'))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and [getattr(t, 'id', None) for t in node.targets] == ['__version__']
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            return str(Version(node.value.value))
+    raise ValueError(f'no __version__ string in {PACKAGE}/__init__.py at {commit}')
+
+
+def _expected_metadata(commit: str) -> _Expected:
+    """Derive the expected version, dependencies and extras from HEAD (SR-28)."""
+    project = tomllib.loads(_blob(commit, 'pyproject.toml').decode('utf-8'))['project']
+    requires: Counter[str] = Counter(
+        _requirement_key(Requirement(d)) for d in project.get('dependencies', [])
+    )
+    extras: Counter[str] = Counter()
+    for extra, deps in project.get('optional-dependencies', {}).items():
+        extras[canonicalize_name(extra)] += 1
+        for dep in deps:
+            req = Requirement(dep)
+            marker = str(req.marker) if req.marker is not None else ''
+            req.marker = None
+            requires[_requirement_key(_gated(str(req), marker, extra))] += 1
+    return _Expected(_head_version(commit), requires, extras)
 
 
 def _head_state() -> tuple[dict[str, str], set[str], str]:
@@ -91,44 +177,89 @@ def _head_state() -> tuple[dict[str, str], set[str], str]:
     return pkg, tracked, commit
 
 
-def _metadata_errors(label: str, text: str) -> list[str]:
-    """Check Core Metadata (wheel METADATA / sdist PKG-INFO) for injection.
+def _requirement_errors(
+    label: str, found: list[Requirement | str], want: Counter[str]
+) -> list[str]:
+    """Compare *found* requirements with the expected multiset *want* (SR-28).
 
-    Credactor declares no runtime dependencies, so every ``Requires-Dist`` must
-    be gated by an ``extra ==`` marker; an unconditional one would be installed
-    on every ``pip install`` and is treated as injected. The ``Name`` field must
-    also be Credactor's own.
+    A string in *found* is a value that did not parse, which is never expected.
     """
     errors: list[str] = []
-    name_value: str | None = None
-    for line in text.splitlines():
-        # Core Metadata headers end at the first blank line; the body follows.
-        if line == '':
-            break
-        if line.startswith('Name:'):
-            name_value = line.split(':', 1)[1].strip()
-        elif line.startswith('Requires-Dist:') and 'extra ==' not in line:
-            errors.append(f'{label}: UNEXPECTED DEPENDENCY {line.strip()}')
-    if name_value is not None and name_value != PACKAGE:
-        errors.append(f'{label}: NAME MISMATCH {name_value!r} (expected {PACKAGE!r})')
+    seen: Counter[str] = Counter()
+    shown: dict[str, str] = {}
+    for req in found:
+        if isinstance(req, str):
+            errors.append(f'{label}: UNEXPECTED DEPENDENCY {req!r} (does not parse)')
+            continue
+        key = _requirement_key(req)
+        seen[key] += 1
+        shown.setdefault(key, str(req))
+    errors.extend(f'{label}: UNEXPECTED DEPENDENCY {shown[k]}' for k in sorted(seen - want))
+    errors.extend(f'{label}: MISSING DEPENDENCY {k}' for k in sorted(want - seen))
     return errors
 
 
-def _requires_txt_errors(label: str, text: str) -> list[str]:
-    """Reject an unconditional dependency in an egg-info ``requires.txt``.
+def _metadata_errors(label: str, text: str, expected: _Expected) -> list[str]:
+    """Check Core Metadata (wheel METADATA / sdist PKG-INFO) against HEAD.
 
-    Extras appear under ``[name]`` section headers; any requirement listed before
-    the first section is an unconditional install-time dependency, which Credactor
-    does not have.
+    SR-28: parsed as headers (case-insensitive names, folded lines joined), with
+    exactly one ``Name`` and one ``Version``, and ``Requires-Dist`` and
+    ``Provides-Extra`` equal to what pyproject.toml declares. Anything more would
+    be installed by pip, anything less means the build is not what was reviewed.
     """
+    msg = HeaderParser().parsestr(text)
+
+    def values(field: str) -> list[str]:
+        # Unfold a folded header (RFC 5322): drop the line breaks, keep the rest.
+        return [''.join(str(v).splitlines()).strip() for v in msg.get_all(field) or []]
+
+    errors: list[str] = []
+    names = values('Name')
+    if names != [PACKAGE]:
+        errors.append(f'{label}: NAME MISMATCH {names!r} (expected exactly [{PACKAGE!r}])')
+    versions = values('Version')
+    if versions != [expected.version]:
+        errors.append(
+            f'{label}: VERSION MISMATCH {versions!r} (expected exactly [{expected.version!r}])'
+        )
+    extras = Counter(canonicalize_name(e) for e in values('Provides-Extra'))
+    if extras != expected.extras:
+        errors.append(
+            f'{label}: EXTRAS MISMATCH {sorted(extras.elements())} '
+            f'(expected {sorted(expected.extras.elements())})'
+        )
+    found: list[Requirement | str] = []
+    for value in values('Requires-Dist'):
+        try:
+            found.append(Requirement(value))
+        except InvalidRequirement:
+            found.append(value)
+    errors.extend(_requirement_errors(label, found, expected.requires))
+    return errors
+
+
+def _requires_txt_errors(label: str, text: str, expected: _Expected) -> list[str]:
+    """Check an egg-info ``requires.txt`` against the declared dependencies (SR-28).
+
+    Requirements before the first section are unconditional; a ``[extra]``,
+    ``[extra:marker]`` or ``[:marker]`` section gates the ones below it. Each is
+    turned back into a ``Requires-Dist`` form and the set must match exactly.
+    """
+    section = ''
+    found: list[Requirement | str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith('['):
-            break  # reached the first extras section; nothing unconditional above
-        return [f'{label}: UNEXPECTED DEPENDENCY {stripped}']
-    return []
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1]
+            continue
+        extra, _, marker = section.partition(':')
+        try:
+            found.append(_gated(stripped, marker, extra))
+        except InvalidRequirement:
+            found.append(f'[{section}] {stripped}')
+    return _requirement_errors(label, found, expected.requires)
 
 
 def _wheel_version(filename: str) -> str:
@@ -143,15 +274,23 @@ def _wheel_version(filename: str) -> str:
 
 
 def _audit_wheel_distinfo(
-    name: str, z: zipfile.ZipFile, distinfo: str, members: set[str], commit: str, tracked: set[str]
+    name: str,
+    z: zipfile.ZipFile,
+    distinfo: str,
+    members: set[str],
+    commit: str,
+    tracked: set[str],
+    expected: _Expected,
 ) -> list[str]:
     """Content-check the wheel's `.dist-info` against an allowlist (fail-closed)."""
     errors: list[str] = []
+    if f'{distinfo}METADATA' not in members:
+        errors.append(f'{name}: MISSING METADATA {distinfo}METADATA')
     for member in sorted(members):
         rel = member[len(distinfo) :]
         if rel == 'METADATA':
             text = z.read(member).decode('utf-8', 'replace')
-            errors.extend(_metadata_errors(f'{name}:{rel}', text))
+            errors.extend(_metadata_errors(f'{name}:{rel}', text, expected))
         elif rel == 'entry_points.txt':
             if z.read(member).decode('utf-8', 'replace').strip() != EXPECTED_ENTRY_POINTS:
                 errors.append(f'{name}: ENTRY POINTS ALTERED {rel}')
@@ -173,13 +312,18 @@ def _audit_wheel_distinfo(
     return errors
 
 
-def _audit_wheel(path: str, pkg: dict[str, str], tracked: set[str], commit: str) -> list[str]:
+def _audit_wheel(
+    path: str, pkg: dict[str, str], tracked: set[str], commit: str, expected: _Expected
+) -> list[str]:
     """Verify a wheel: package files match HEAD, dist-info is an allowlist."""
     errors: list[str] = []
     name = os.path.basename(path)
     if not name.startswith(f'{PACKAGE}-'):
         return [f'{name}: unexpected wheel name (does not start with {PACKAGE}-)']
-    distinfo = f'{PACKAGE}-{_wheel_version(name)}.dist-info/'
+    version = _wheel_version(name)
+    if version != expected.version:
+        errors.append(f'{name}: VERSION MISMATCH in file name (expected {expected.version!r})')
+    distinfo = f'{PACKAGE}-{version}.dist-info/'
 
     with zipfile.ZipFile(path) as z:
         names = [i.filename for i in z.infolist() if not i.filename.endswith('/')]
@@ -210,7 +354,9 @@ def _audit_wheel(path: str, pkg: dict[str, str], tracked: set[str], commit: str)
             elif hashlib.sha256(z.read(f)).hexdigest() != pkg[f]:
                 errors.append(f'{name}: CONTENT MISMATCH {f} (does not match HEAD)')
 
-        errors.extend(_audit_wheel_distinfo(name, z, distinfo, distinfo_members, commit, tracked))
+        errors.extend(
+            _audit_wheel_distinfo(name, z, distinfo, distinfo_members, commit, tracked, expected)
+        )
     return errors
 
 
@@ -227,7 +373,7 @@ def _read_member(t: tarfile.TarFile, m: tarfile.TarInfo) -> bytes:
     return extracted.read()
 
 
-def _sdist_buildmeta_errors(name: str, rel: str, data: bytes) -> list[str]:
+def _sdist_buildmeta_errors(name: str, rel: str, data: bytes, expected: _Expected) -> list[str]:
     """Classify an untracked, non-package sdist member, fail-closed.
 
     The only untracked members an sdist legitimately ships are setuptools build
@@ -236,33 +382,38 @@ def _sdist_buildmeta_errors(name: str, rel: str, data: bytes) -> list[str]:
     """
     base = posixpath.basename(rel)
     if rel == 'PKG-INFO':
-        return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'))
+        return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
     if rel == 'setup.cfg':
-        # Inert: pyproject's [project] table is byte-verified against HEAD and is
-        # authoritative for the build, so a generated setup.cfg cannot inject a
-        # dependency or entry point. Allowed without further parsing.
+        # SR-28: setuptools reads [options] from it, so only the generated bytes pass.
+        if data != _GENERATED_SETUP_CFG:
+            return [f'{name}: SETUP.CFG ALTERED {rel} (differs from what setuptools generates)']
         return []
     if rel.startswith(f'{PACKAGE}.egg-info/') and base in _SDIST_EGGINFO_FILES:
         if base == 'PKG-INFO':
-            return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'))
+            return _metadata_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
         if base == 'entry_points.txt':
             if data.decode('utf-8', 'replace').strip() != EXPECTED_ENTRY_POINTS:
                 return [f'{name}: ENTRY POINTS ALTERED {rel}']
             return []
         if base == 'requires.txt':
-            return _requires_txt_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'))
+            return _requires_txt_errors(f'{name}:{rel}', data.decode('utf-8', 'replace'), expected)
         # SOURCES.txt, dependency_links.txt, top_level.txt: inert bookkeeping.
         return []
     return [f'{name}: UNEXPECTED {rel}']
 
 
-def _audit_sdist(path: str, pkg: dict[str, str], tracked: set[str], commit: str) -> list[str]:
+def _audit_sdist(
+    path: str, pkg: dict[str, str], tracked: set[str], commit: str, expected: _Expected
+) -> list[str]:
     """Verify an sdist: tracked files match HEAD, untracked allowed only if metadata."""
     errors: list[str] = []
     name = os.path.basename(path)
     base = name[: -len('.tar.gz')] if name.endswith('.tar.gz') else name
+    if base != f'{PACKAGE}-{expected.version}':
+        errors.append(f'{name}: VERSION MISMATCH in file name (expected {expected.version!r})')
     prefix = f'{base}/'
     seen_pkg: set[str] = set()
+    has_pkg_info = False
 
     with tarfile.open(path) as t:
         members = t.getmembers()
@@ -304,7 +455,10 @@ def _audit_sdist(path: str, pkg: dict[str, str], tracked: set[str], commit: str)
                 if hashlib.sha256(_read_member(t, m)).hexdigest() != _blob_sha256(commit, rel):
                     errors.append(f'{name}: CONTENT MISMATCH {rel} (does not match HEAD)')
             else:
-                errors.extend(_sdist_buildmeta_errors(name, rel, _read_member(t, m)))
+                has_pkg_info = has_pkg_info or rel == 'PKG-INFO'
+                errors.extend(_sdist_buildmeta_errors(name, rel, _read_member(t, m), expected))
+        if not has_pkg_info:
+            errors.append(f'{name}: MISSING METADATA PKG-INFO')
         errors.extend(
             f'{name}: MISSING FROM SDIST {missing}' for missing in sorted(set(pkg) - seen_pkg)
         )
@@ -329,11 +483,12 @@ def audit(dist_dir: str = 'dist') -> None:
     pkg, tracked, commit = _head_state()
     if not pkg:
         errors.append('HEAD has no tracked credactor/ files to audit against')
+    expected = _expected_metadata(commit)
 
     for f in wheels:
-        errors.extend(_audit_wheel(os.path.join(dist_dir, f), pkg, tracked, commit))
+        errors.extend(_audit_wheel(os.path.join(dist_dir, f), pkg, tracked, commit, expected))
     for f in sdists:
-        errors.extend(_audit_sdist(os.path.join(dist_dir, f), pkg, tracked, commit))
+        errors.extend(_audit_sdist(os.path.join(dist_dir, f), pkg, tracked, commit, expected))
 
     if errors:
         for e in errors:
