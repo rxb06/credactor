@@ -54,6 +54,10 @@ jobs:
         run: mypy credactor/ scripts/
 
       - name: Test (with coverage)
+        # bash stops at the first failing line on Windows too. Under the
+        # default pwsh, only the last line's exit code counted, so failing
+        # tests were hidden behind a passing `coverage report`.
+        shell: bash
         run: |
           coverage run -m pytest tests/ -v
           coverage report
