@@ -504,6 +504,25 @@ class TestIngestIntoGit:
         assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
         assert target.read_bytes() == before
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows feature')
+    def test_short_name_on_windows(self, tmp_path):
+        # Windows can also reach .git by its 8.3 short name (GIT~1).
+        import ctypes
+
+        repo, target = self._project(tmp_path)
+        git_dir = str(repo / '.git')
+        buf = ctypes.create_unicode_buffer(260)
+        if not ctypes.windll.kernel32.GetShortPathNameW(git_dir, buf, len(buf)):
+            pytest.skip('no short name for .git')
+        short = os.path.basename(buf.value)
+        if short.casefold() == '.git':
+            pytest.skip('8.3 short names are off on this volume')
+        before = target.read_bytes()
+        report = self._report(tmp_path, f'{short}/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
+
     @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
     def test_symlink_into_git(self, tmp_path):
         repo, target = self._project(tmp_path)
