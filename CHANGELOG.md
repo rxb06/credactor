@@ -208,8 +208,8 @@ other scanners.
   interactive prompt. A non-string `RuleID` no longer stops the run with a
   traceback. A report's commit id, which JSON prints as is, is kept only if it
   is 7 to 64 hex characters (SHA-1 or SHA-256) and shares no run of 6
-  characters with the secret; otherwise the finding is ingested without it,
-  with a warning.
+  characters with the secret, in either case; otherwise the finding is
+  ingested without it, with a warning.
 - **The GitHub Action runs Python in isolation.** The install runs from the
   runner's temp directory, and every Python call in the action uses isolated
   mode (`python -I`), so only the installed pip and the standard library can

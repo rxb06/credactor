@@ -3585,8 +3585,10 @@ class TestReportCommits:
         ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
         ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
         ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
+        ('deadbeefcafe0123456789ab', 'DEADBEEFCAFE', False),  # hex ignores case
+        ('DEADBEEFCAFE0123456789AB', 'deadbeefcafe', False),
     ],
-    ids=['equal', 'inside', 'overlap', 'short-overlap'],
+    ids=['equal', 'inside', 'overlap', 'short-overlap', 'upper-commit', 'upper-secret'],
 )
 def test_commit_sharing_the_secret_is_dropped(tmp_path, secret, commit, kept):
     # Gitleaks only: the three parsers share _report_commit.
