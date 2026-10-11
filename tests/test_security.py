@@ -1084,13 +1084,13 @@ class TestReadAuxFile:
         (tmp_path / '.gitignore').write_text('*.log\n', encoding='utf-8')
         assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) == '*.log\n'
 
-    def test_large_file_is_cut_with_a_warning(self, tmp_path, caplog):
+    def test_large_file_is_cut_with_a_warning(self, tmp_path, credactor_caplog):
         path = tmp_path / '.gitignore'
         path.write_bytes(b'a\n' * (1024 * 1024))  # 2 MiB
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             text = read_aux_file(str(path), tmp_path)
         assert len(text) == 1024 * 1024
-        assert any('reading only the first' in r.getMessage() for r in caplog.records)
+        assert any('reading only the first' in r.getMessage() for r in credactor_caplog.records)
 
     def test_cut_falls_on_a_line_end(self, tmp_path):
         # A cut inside '*.log' would leave the broader pattern '*'.

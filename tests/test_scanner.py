@@ -521,18 +521,18 @@ class TestScanFile:
     _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
     def test_inline_suppressed_pem_header_does_not_hide_following_lines(
-        self, make_file, config, caplog
+        self, make_file, config, credactor_caplog
     ):
         path = make_file(
             'k.py',
             f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{self._KEY}"\n',
         )
-        with caplog.at_level(logging.DEBUG, logger='credactor'):
+        with credactor_caplog.at_level(logging.DEBUG, logger='credactor'):
             findings = scan_file(path, config=config)
         assert [f['full_value'] for f in findings] == [self._KEY]
         assert [f['line'] for f in findings] == [2]
         assert f'{path}:1 suppressed by inline credactor:ignore' in [
-            r.getMessage() for r in caplog.records
+            r.getMessage() for r in credactor_caplog.records
         ]
 
     def test_allowlisted_pem_header_does_not_hide_following_lines(self, tmp_path, config):
