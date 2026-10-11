@@ -18,12 +18,17 @@ from pathlib import Path
 
 import pytest
 
+import credactor
+
 pytestmark = [
     pytest.mark.skipif(sys.platform == 'win32', reason='POSIX shell and symlink fixtures'),
     pytest.mark.skipif(shutil.which('bash') is None, reason='bash is not installed'),
 ]
 
 _ACTION = Path(__file__).resolve().parent.parent / 'action.yml'
+# The stand-in for the console script runs the package these tests imported,
+# installed or not.
+_PACKAGE_ROOT = str(Path(credactor.__file__).resolve().parent.parent)
 _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
 
@@ -96,6 +101,7 @@ class _Runner:
                 [str(self.bin), str(Path(sys.executable).parent), os.environ.get('PATH', '')]
             ),
             'HOME': os.environ.get('HOME', str(self.temp)),
+            'PYTHONPATH': _PACKAGE_ROOT,
             'GITHUB_OUTPUT': str(self.output),
             'GITHUB_STEP_SUMMARY': str(self.summary),
             'GITHUB_WORKSPACE': str(self.workspace),
