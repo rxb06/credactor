@@ -241,6 +241,9 @@ def run_case(
         message = record.getMessage()
         if message.startswith(_ROOT_WARNING):
             continue  # depends on who runs the suite, not on the case
+        if os.sep == '\\':
+            # A path logged with %r has its backslashes doubled.
+            message = message.replace('\\\\', '\\')
         for r in roots:
             message = message.replace(r, '<root>')
         if os.sep == '\\':

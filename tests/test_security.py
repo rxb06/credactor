@@ -1081,7 +1081,7 @@ class TestReadAuxFile:
         assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) is None
 
     def test_regular_file_is_read(self, tmp_path):
-        (tmp_path / '.gitignore').write_text('*.log\n', encoding='utf-8')
+        (tmp_path / '.gitignore').write_bytes(b'*.log\n')
         assert read_aux_file(str(tmp_path / '.gitignore'), tmp_path) == '*.log\n'
 
     def test_large_file_is_cut_with_a_warning(self, tmp_path, credactor_caplog):
