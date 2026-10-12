@@ -1,0 +1,52 @@
+{
+ "argv": [
+  "--staged",
+  "."
+ ],
+ "case": "staged-shapes",
+ "exit": 1,
+ "findings": {
+  "sub/crlf.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "323725e8eff4df0a",
+    "raw": "password = \"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "323725e8eff4df0a"
+   }
+  ],
+  "sub/u16.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "with space.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "a path with a space, CRLF and UTF-16 blobs; PA-09 must match git show",
+ "reported": true,
+ "tree_after": {
+  "clean.py": "9e26bf369911c45c",
+  "sub/crlf.py": "d11f9f78ebfdc013",
+  "sub/u16.py": "dfe7a4c77adcea2f",
+  "with space.py": "9e26bf369911c45c"
+ }
+}

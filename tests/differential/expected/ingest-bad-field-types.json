@@ -1,0 +1,36 @@
+{
+ "argv": [
+  "--ci",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-bad-field-types",
+ "exit": 1,
+ "findings": {
+  "notes.md": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "key <v:1a5d44a2dca19669>",
+    "severity": "medium",
+    "type": "external:gitleaks:unknown",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "1 Gitleaks finding(s) had a RuleID that is not a plain label (letters, digits, '.', '_' or '-', at most 64 characters); reported as 'unknown'.",
+   1
+  ]
+ ],
+ "note": "a list RuleID no longer crashes: PA-04 reports it as unknown and keeps the finding; SR-19 covers the remaining field types",
+ "reported": true,
+ "tree_after": {
+  "notes.md": "253730d9c593bcbd",
+  "report/gl.json": "3317b1704e873668"
+ }
+}

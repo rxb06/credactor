@@ -1,0 +1,16 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "json-not-opted-in",
+ "exit": 0,
+ "findings": {},
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "app.py": "9e26bf369911c45c",
+  "creds.json": "98c141d81ac5e7fb"
+ }
+}

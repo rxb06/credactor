@@ -36,6 +36,22 @@ project venv's own tools, so commit with the venv active):
 pip install pre-commit && pre-commit install
 ```
 
+### Behaviour snapshots
+
+`tests/differential/` runs the real CLI over a fixed corpus and compares the
+complete findings (every field, in order), the exit code, the log messages and
+the bytes of every file afterwards against committed snapshots. A change that
+alters any of these fails the suite with a diff. If the change is intended,
+regenerate the snapshots and explain the difference in the commit:
+
+```bash
+pytest tests/differential --update-differential
+git status && git diff tests/differential/expected
+```
+
+Snapshots store hashes, never secret values. Add a case to
+`tests/differential/corpus.py` when you add behaviour that is not yet covered.
+
 ## Build and Audit
 
 ```bash

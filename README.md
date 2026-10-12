@@ -85,7 +85,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.4   # pin to the latest release tag
+    rev: v2.7.5   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
@@ -93,7 +93,7 @@ repos:
 ### GitHub Action
 
 ```yaml
-- uses: rxb06/credactor@v2.7.4
+- uses: rxb06/credactor@v2.7.5
 ```
 
 The action always passes `--ci`, so it reports and gates but never rewrites the
@@ -103,14 +103,16 @@ without gating. An error fails the step either way.
 Upload to Code Scanning instead of failing on findings:
 
 ```yaml
-- uses: rxb06/credactor@v2.7.4
+- uses: rxb06/credactor@v2.7.5
   with:
     format: sarif
     upload-sarif: true
     fail-on-findings: false
 ```
 
-The job needs `permissions: security-events: write` for the upload. See the
+The job needs `permissions: security-events: write` for the upload. To use the
+report in a later step, read its path from the step's `report-file` output
+rather than assuming one. See the
 [CI integration guide](docs/ci_integration.md#github-action) for every input,
 including ingestion of Gitleaks, TruffleHog and Betterleaks reports.
 
@@ -175,7 +177,7 @@ A security tool should be safe to install, not only safe to run. Credactor's bui
 
 - **Zero runtime dependencies.** A default `pip install credactor` pulls in no third-party packages (only the optional `[encoding]` extra), so there is nothing to vet at install time.
 - **Hash-pinned toolchain.** CI and release builds install from a `--require-hashes` lockfile, build backend included (`python -m build --no-isolation` against a pinned setuptools), so a tampered dependency fails the build.
-- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed.
+- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed. The package metadata must declare exactly the version in `credactor/__init__.py` and the dependencies in `pyproject.toml`.
 - **SHA-pinned, least-privilege CI.** GitHub Actions pin to commit SHAs, and workflow tokens stay narrow — `contents: read` by default, `id-token: write` only for the publish job.
 
 ## Docs
