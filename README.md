@@ -124,7 +124,7 @@ Credactor detects the credential types that leak most often, and assigns each a 
 |---|---|---|
 | Cloud provider keys | AWS (`AKIA…`), GCP (`AIza…`), Stripe (`sk_live_…`), Slack (`xoxb-…`) | Critical |
 | Platform tokens | GitHub (`ghp_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), PyPI (`pypi-`) | Critical |
-| Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`) | Critical |
+| Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`, encrypted ones included), PGP private key blocks | Critical |
 | JWTs | `eyJ…` three-segment tokens | High |
 | Connection strings | URLs with inline credentials (`scheme://user:pass@host`) | High |
 | Credential variables | `password = "…"`, `api_key = "…"`, `secret_key = "…"` | High/Medium/Low |

@@ -57,6 +57,12 @@ class TestProviderPatterns:
         assert _PEM_KEY_RE.search('-----BEGIN PRIVATE KEY-----')
         assert _PEM_KEY_RE.search('-----BEGIN EC PRIVATE KEY-----')
 
+    def test_pem_header_encrypted_and_pgp(self):
+        assert _PEM_KEY_RE.search('-----BEGIN ENCRYPTED PRIVATE KEY-----')
+        assert _PEM_KEY_RE.search('-----BEGIN PGP PRIVATE KEY BLOCK-----')
+        assert not _PEM_KEY_RE.search('-----BEGIN PGP PUBLIC KEY BLOCK-----')
+        assert not _PEM_KEY_RE.search('-----BEGIN PGP PRIVATE KEY-----')
+
     def test_no_false_positive_aws(self):
         assert not _AWS_RE.search('AKIANOTLONG')  # too short
 

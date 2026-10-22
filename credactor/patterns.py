@@ -236,8 +236,10 @@ _CONN_STRING_RE = re.compile(
     r'[a-zA-Z][a-zA-Z0-9+.-]{0,30}://[^:@\s]{1,256}:[^@\s]{1,256}@[^\s"\']{3,256}'
 )
 
-# #18 – PEM private key header
-_PEM_KEY_RE = re.compile(r'-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+# #18 – PEM private key header. T29d: PKCS#8 ENCRYPTED and PGP armoured keys too.
+_PEM_KEY_RE = re.compile(
+    r'-----BEGIN\s+(?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'
+)
 
 
 # severity: critical > high > medium > low

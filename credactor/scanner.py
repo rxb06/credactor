@@ -40,7 +40,9 @@ _PASSWORD_VAR_KEYWORDS = ('password', 'passwd', 'passphrase', 'private_key', 'se
 # (increased from 100 to 500 to accommodate large RSA/EC keys without
 # false-resetting mid-block)
 _MAX_PEM_BLOCK_LINES = 500
-_PEM_END_RE = re.compile(r'-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+_PEM_END_RE = re.compile(
+    r'-----END\s+(?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'
+)
 # One line of a key body, bare as in a .pem file or quoted in code: optional
 # concatenation or opening punctuation, a quote, up to 76 base64 characters,
 # an escaped newline, a quote, and trailing '+', ',', ')', ';' or '\'.

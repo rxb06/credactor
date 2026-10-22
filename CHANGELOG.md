@@ -240,6 +240,12 @@ other scanners.
 - **The Action's `report-file` output is the physical path of the report, as a
   native path.** On Windows, Git Bash reported `/d/a/...` paths that the SARIF
   upload and other native tools cannot open.
+- **Encrypted and PGP private keys are detected.** `-----BEGIN ENCRYPTED
+  PRIVATE KEY-----` (PKCS#8) and `-----BEGIN PGP PRIVATE KEY BLOCK-----` are
+  now reported as private key blocks, like the RSA, EC, DSA and OpenSSH forms.
+  A directory scan reads them in the file types it scans (`.pem`, `.key`,
+  `.txt`, source files and others); an `.asc` export is read only when
+  `extra_extensions` in `.credactor.toml` lists it.
 
 ### Changed
 
