@@ -61,7 +61,7 @@ with `-f json` and read the `severity` field):
 
 | Severity | What earns it | Examples (verified) |
 |----------|---------------|---------------------|
-| **critical** | Deterministic provider prefixes and PEM private-key blocks — unambiguous, **no entropy floor** | AWS `AKIA…`, GCP `AIza…`, Stripe live `sk_live_…`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox…`, npm `npm_`, PyPI `pypi-`, `-----BEGIN … PRIVATE KEY-----` (encrypted ones included), `-----BEGIN PGP PRIVATE KEY BLOCK-----` |
+| **critical** | Deterministic provider prefixes and PEM private-key blocks: unambiguous, **no entropy floor** | AWS `AKIA…`, GCP `AIza…`, Stripe live `sk_live_…`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox…`, npm `npm_`, PyPI `pypi-`, `-----BEGIN … PRIVATE KEY-----` (encrypted ones included), `-----BEGIN PGP PRIVATE KEY BLOCK-----` |
 | **high** | JWTs, connection strings, and credential variables whose name implies a secret | `eyJ…` JWT, `postgresql://user:pass@host`, `password`/`api_key`/`token`/`secret_key`/`access_key` `= …` |
 | **medium** | Heuristic value matches and generic credential variables | quoted hex (32–64 chars), Stripe **test** key `sk_test_…`, `webhook_secret = …` |
 | **low** | Weak heuristics and ID-type variables | quoted Base64 (≥60 chars), `client_id` / `tenant_id` / `app_id` |
