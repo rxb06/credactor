@@ -39,7 +39,7 @@
   ],
   [
    "INFO",
-   "Skipping Gitleaks finding with empty Secret.",
+   "Skipping Gitleaks finding with an empty or unusable Secret.",
    1
   ],
   [

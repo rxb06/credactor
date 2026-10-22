@@ -619,7 +619,7 @@ CASES: list[Case] = [
         argv=('--ci', '--from-gitleaks', 'report/gl.json', '.'),
         note='report-controlled labels and invalid line numbers; PA-04 replaces labels '
         'outside [A-Za-z0-9._-]{1,64} with unknown and masks secrets in the rest, and '
-        'PA-05 changes the line numbers',
+        'PA-05 keeps the findings whose line is "3", true or null at line 0',
     ),
     Case(
         id='ingest-bad-field-types',
@@ -675,8 +675,10 @@ CASES: list[Case] = [
             ),
         },
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
-        note='current behaviour for SR-15, SR-17, SR-24 and PA-05; app.py and dsn.py '
-        'are positive controls that must keep redacting',
+        note='SR-15: short.py\'s secret "api" is reported but not written; SR-17: the '
+        'README.md key header is refused; PA-05: lines.py\'s line "x" is kept at line 0 '
+        'and not written; SR-24 is still current behaviour; app.py and dsn.py are '
+        'positive controls that must keep redacting',
     ),
     Case(
         id='ingest-fix-env',
@@ -710,7 +712,8 @@ CASES: list[Case] = [
             'report/gl.json': _gitleaks([_gl('github-pat', '.git/config', 2, GITHUB)]),
         },
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
-        note='records current behaviour (the .git file is rewritten); SR-16 changes it',
+        note='SR-16: the finding under .git is reported with a refuse reason, and the file '
+        'is not rewritten',
     ),
     Case(
         id='fix-sentinel',

@@ -39,6 +39,9 @@ class Finding(TypedDict):
     commit:         optional 12-char commit prefix when the finding came
                     from git-history scanning or an external scanner's
                     git source metadata.
+    refuse_reason:  optional; set when the finding is reported but must
+                    never drive a rewrite (for example a path under .git).
+                    The redactor counts it unresolved and says why.
     """
 
     file: str
@@ -49,6 +52,7 @@ class Finding(TypedDict):
     value_preview: str
     raw: str
     commit: NotRequired[str]
+    refuse_reason: NotRequired[str]
 
 
 # Severity ordering, highest first. Shared by the scanner's per-line span dedup

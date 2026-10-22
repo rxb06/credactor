@@ -203,6 +203,17 @@ def ignore_file_lines(text: str) -> list[str]:
     return io.StringIO(text, newline=None).readlines()
 
 
+def in_git_dir(path: str, root: str) -> bool:
+    """Whether *path*, taken relative to *root*, has a component that names
+    .git, ignoring case and the trailing dots and spaces Windows drops
+    (SR-16: repository metadata and hooks are never rewritten)."""
+    try:
+        rel = Path(os.path.relpath(path, root))
+    except ValueError:  # another drive on Windows
+        rel = Path(path)
+    return any(part.casefold().rstrip('. ') == '.git' for part in rel.parts)
+
+
 def mask_secret(value: str, *, visible: int = 4) -> str:
     """Mask a secret value, showing only the first `visible` characters."""
     if len(value) <= visible:

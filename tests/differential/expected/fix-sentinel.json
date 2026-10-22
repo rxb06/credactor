@@ -62,7 +62,7 @@
  "log": [
   [
    "WARNING",
-   "<root>/key.pem:1: refusing to redact a multi-line private key block \u2014 replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
+   "<root>/key.pem:1: refusing to redact a multi-line private key block: replacing its header line would leave the key material in the file while the next scan reports it clean. Rotate the key and remove the block manually.",
    1
   ],
   [

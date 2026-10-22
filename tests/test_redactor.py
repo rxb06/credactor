@@ -7,6 +7,8 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
@@ -1251,6 +1253,290 @@ class TestPrivateKeyBlockRefusal:
         assert unresolved == 1
 
 
+class TestPrivateKeyRefusalByValueAndLine:
+    """SR-17: the key refusal keys on the value and the line, not on the type
+    label. An ingested finding typed by a report's rule id, whose value is the
+    BEGIN line, must be refused like the native block finding."""
+
+    _BODY = 'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qFCzXY1CVHwPGVJP2XBpX3XY1p\n'
+
+    def _block(self, kind='RSA '):
+        return f'-----BEGIN {kind}PRIVATE KEY-----\n{self._BODY}-----END {kind}PRIVATE KEY-----\n'
+
+    def _finding(self, path, value, line=1, ftype='external:gitleaks:private-key'):
+        return {
+            'file': path,
+            'line': line,
+            'type': ftype,
+            'severity': 'critical',
+            'full_value': value,
+            'value_preview': '',
+            'raw': value,
+        }
+
+    @pytest.mark.parametrize(
+        'header',
+        [
+            '-----BEGIN RSA PRIVATE KEY-----',
+            '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+            '-----BEGIN PGP PRIVATE KEY BLOCK-----',
+            '-----begin private key-----',
+        ],
+    )
+    def test_header_value_refused_whatever_the_type(self, make_file, credactor_caplog, header):
+        end = header.replace('BEGIN', 'END').replace('begin', 'end')
+        path = make_file('README.md', f'{header}\n{self._BODY}{end}\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        result = batch_replace_in_file(path, [self._finding(path, header)], Config(no_backup=True))
+        assert result == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+        assert any('private key' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_end_marker_value_refused(self, make_file):
+        path = make_file('README.md', self._block(''))
+        finding = self._finding(path, '-----END PRIVATE KEY-----', line=3)
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        assert 'END PRIVATE KEY' in Path(path).read_text()
+
+    def test_value_on_a_marker_line_refused(self, make_file):
+        # The value holds no marker, but replacing it would break the header.
+        path = make_file(
+            'README.md',
+            self._block(),
+        )
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = self._finding(path, 'RSA PRIVATE', ftype='external:gitleaks:generic-api-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_sweep_leaves_marker_lines_alone(self, make_file, credactor_caplog):
+        path = make_file(
+            'notes.txt',
+            'level = PRIVATE\n' + self._block(),
+        )
+        finding = self._finding(path, 'PRIVATE', ftype='external:gitleaks:generic-api-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text().splitlines()
+        assert lines[0] == 'level = REDACTED_BY_CREDACTOR'
+        assert lines[1] == '-----BEGIN RSA PRIVATE KEY-----'
+        assert lines[3] == '-----END RSA PRIVATE KEY-----'
+        assert any('private key marker' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_final_sweep_leaves_marker_lines_alone(self, make_file):
+        from credactor.redactor import _final_file_sweep
+
+        path = make_file(
+            'notes.txt',
+            self._block(),
+        )
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = self._finding(path, 'PRIVATE', line=9, ftype='external:gitleaks:generic-api-key')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_other_lines_still_redact(self, make_file):
+        path = make_file(
+            'mixed.py',
+            f'api_key = "{_AWS_KEY}"\n' + self._block(''),
+        )
+        header = self._finding(path, '-----BEGIN PRIVATE KEY-----', line=2)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY), header], Config(no_backup=True)
+        ) == (1, 1)
+        content = Path(path).read_text()
+        assert _AWS_KEY not in content
+        assert '-----BEGIN PRIVATE KEY-----' in content
+
+
+_GH_TOKEN = 'ghp_' + 'Zq8Lm2Xv7Rt4Ky9Wn3Hp6Jd1Fs5Gb0Ac2UeQ'
+_JSON_KEY = (
+    '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7'
+    '\\n-----END PRIVATE KEY-----\\n'
+)
+
+
+def _external(path, value, line=1, rule='generic-api-key'):
+    return _mk_finding(path, value, ftype=f'external:gitleaks:{rule}', line=line)
+
+
+class TestSinkTokenMatching:
+    """SR-15: an ingested value is found in linear time, with the ASCII word
+    boundary the reporting scanners use, and a value refused on its own line
+    drives no sweep."""
+
+    def test_token_next_to_cjk_text_is_replaced(self, make_file):
+        path = make_file('README.ja.md', f'トークンは{_GH_TOKEN}です。\n')
+        assert batch_replace_in_file(
+            path, [_external(path, _GH_TOKEN)], Config(no_backup=True)
+        ) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8') == 'トークンはREDACTED_BY_CREDACTORです。\n'
+
+    def test_sweep_clears_a_copy_next_to_cjk_text(self, make_file):
+        path = make_file('notes.md', f'token {_GH_TOKEN}\nトークンは{_GH_TOKEN}です。\n')
+        assert batch_replace_in_file(
+            path, [_external(path, _GH_TOKEN)], Config(no_backup=True)
+        ) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_position_is_linear_on_a_long_line(self):
+        from credactor.redactor import _value_position
+
+        line = '0,' * 1_000_000
+        value = '0,' * 5000 + '1'
+        stale = _external('x', _GH_TOKEN)
+        start = time.perf_counter()
+        for _ in range(200):
+            assert _value_position(line, _external('x', value)) is None
+            assert _value_position(line, stale) is None
+        assert time.perf_counter() - start < 2.0
+
+    def test_value_refused_on_its_line_drives_no_sweep(self, make_file):
+        path = make_file(
+            'app.py',
+            f'aws_key = "{_AWS_KEY}"\npassword = load()\nif x:\n    pass\nelse:\n    pass\n',
+        )
+        findings = [_mk_finding(path, _AWS_KEY), _external(path, 'pass', line=2)]
+        assert batch_replace_in_file(path, findings, Config(no_backup=True)) == (1, 1)
+        content = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY not in content
+        assert content.count('    pass\n') == 2
+        assert 'password = load()' in content
+
+    def test_value_replaced_elsewhere_is_still_swept(self, make_file):
+        path = make_file('app.py', f'k = "{_GH_TOKEN}"\nx{_GH_TOKEN} = 1\n# copy: {_GH_TOKEN}\n')
+        findings = [_external(path, _GH_TOKEN, line=1), _external(path, _GH_TOKEN, line=2)]
+        assert batch_replace_in_file(path, findings, Config(no_backup=True)) == (1, 1)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines[1] == f'x{_GH_TOKEN} = 1'
+        assert lines[2] == '# copy: REDACTED_BY_CREDACTOR'
+
+
+class TestWholeKeyOnOneLine:
+    """SR-17: a value holding a whole private key (BEGIN to END on one line,
+    as a service-account JSON file keeps it) is replaced, since that removes
+    the key and both markers. Any value that would leave a marker is not."""
+
+    def test_service_account_key_is_replaced(self, make_file):
+        path = make_file(
+            'sa.json', f'{{"type": "service_account", "private_key": "{_JSON_KEY}"}}\n'
+        )
+        finding = _external(path, _JSON_KEY, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        content = Path(path).read_text(encoding='utf-8')
+        assert 'PRIVATE KEY' not in content
+        assert '"private_key": "REDACTED_BY_CREDACTOR"' in content
+
+    def test_pretty_printed_service_account_key_is_replaced(self, make_file):
+        path = make_file(
+            'sa.json', f'{{\n  "type": "service_account",\n  "private_key": "{_JSON_KEY}"\n}}\n'
+        )
+        finding = _external(path, _JSON_KEY, line=3, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert 'PRIVATE KEY' not in Path(path).read_text(encoding='utf-8')
+
+    def test_second_key_on_the_line_keeps_it_refused(self, make_file):
+        path = make_file('keys.json', f'["{_JSON_KEY}", "{_JSON_KEY.replace("7", "8")}"]\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = _external(path, _JSON_KEY, rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+    def test_header_only_value_still_refused(self, make_file):
+        path = make_file('sa.json', f'{{"private_key": "{_JSON_KEY}"}}\n')
+        finding = _external(path, '-----BEGIN PRIVATE KEY-----', rule='private-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+
+    def test_native_block_finding_still_refused(self, make_file):
+        path = make_file('key.py', f'KEY = "{_JSON_KEY}"\n')
+        finding = _mk_finding(path, f'KEY = "{_JSON_KEY}"', ftype='pattern:private key block')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+
+
+class TestDeliberateRefusalsAreNotStale:
+    """SR-15, SR-17: a refusal made on purpose at the sink does not count
+    toward the stale-report hint; a value missing from its line does."""
+
+    def _stale_hint(self, caplog):
+        return [r for r in caplog.records if 'the report is stale' in r.getMessage()]
+
+    def test_marker_line_refusal_is_not_stale(self, make_file, credactor_caplog):
+        path = make_file('app.env', f'PRIVATE_KEY="{_JSON_KEY}"\n')
+        body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7'
+        assert fix_all([_external(path, body)], os.path.dirname(path), Config(no_backup=True)) == 1
+        assert self._stale_hint(credactor_caplog) == []
+
+    def test_inside_a_word_refusal_is_not_stale(self, make_file, credactor_caplog):
+        path = make_file('app.py', 'password = load()\n')
+        assert (
+            fix_all([_external(path, 'pass')], os.path.dirname(path), Config(no_backup=True)) == 1
+        )
+        assert self._stale_hint(credactor_caplog) == []
+
+    def test_missing_value_is_stale(self, make_file, credactor_caplog):
+        path = make_file('app.py', 'x = 1\n')
+        assert (
+            fix_all([_external(path, _GH_TOKEN)], os.path.dirname(path), Config(no_backup=True))
+            == 1
+        )
+        assert len(self._stale_hint(credactor_caplog)) == 1
+
+
+class TestLineBreakValueAtTheSink:
+    """SR-15: a value holding a line break is never replaced. Lines keep their
+    terminator, so a value ending in one would join the line with the next."""
+
+    def test_value_ending_in_a_line_break_rewrites_nothing(self, make_file):
+        path = make_file('app.env', 'A=abcd1234\nB=keep_me\nC=abcd1234\nD=also_keep\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = _mk_finding(path, 'abcd1234\n', ftype='external:gitleaks:generic-api-key')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+
+class TestGitAtTheSink:
+    """SR-16: the sink refuses a path under .git as given or as resolved, so a
+    linked directory into .git is refused too."""
+
+    def test_linked_directory_into_git(self, tmp_path):
+        (tmp_path / '.git').mkdir()
+        config = tmp_path / '.git' / 'config'
+        config.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        try:
+            os.symlink('.git', tmp_path / 'meta', target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        path = str(tmp_path / 'meta' / 'config')
+        before = config.read_bytes()
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert config.read_bytes() == before
+
+
+class TestLineZeroAtTheSink:
+    """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
+    a caller that passes it cannot reach the last line through index -1."""
+
+    def test_line_zero_rewrites_nothing(self, make_file):
+        path = make_file('app.py', f'first = 1\napi_key = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as f:
+            before = f.read()
+        finding = _mk_finding(path, _AWS_KEY, line=0)
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (0, 1)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+
+
 class TestGuardPins:
     """SR-01 and PA-02: each test pins one write-path guard that could once be
     deleted, or quietly weakened, with the whole suite still green (found by
@@ -1715,6 +2001,40 @@ class TestGuardPins:
         monkeypatch.setattr('builtins.input', lambda *a: 'n')
         interactive_review(findings, str(tmp_path), Config(no_backup=True))
         assert _AWS_KEY not in capsys.readouterr().out
+
+    def test_nothing_under_git_is_rewritten_even_unmarked(self, tmp_path):
+        # SR-16, for library callers that pass a finding in without the ingest
+        # step's mark.
+        path = tmp_path / '.git' / 'config'
+        path.parent.mkdir()
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        before = path.read_bytes()
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert fix_all([finding], str(tmp_path), Config(no_backup=True)) == 1
+        assert path.read_bytes() == before
+        replaced, failed = batch_replace_in_file(str(path), [finding], Config(no_backup=True))
+        assert (replaced, failed) == (0, 1)
+        assert path.read_bytes() == before
+
+    def test_refused_finding_is_not_written_by_fix_all(self, make_file):
+        path = make_file('b.py', f'k = "{_AWS_KEY}"\n')
+        finding = _mk_finding(path, _AWS_KEY)
+        finding['refuse_reason'] = 'the path is inside .git'
+        assert fix_all([finding], os.path.dirname(path), Config(no_backup=True)) == 1
+        with open(path, encoding='utf-8') as f:
+            assert _AWS_KEY in f.read()
+
+    def test_refused_finding_is_shown_but_not_prompted(self, make_file, monkeypatch, capsys):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        finding = _mk_finding(path, _AWS_KEY)
+        finding['refuse_reason'] = 'the path is inside .git'
+        monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('prompted'))
+        assert interactive_review([finding], os.path.dirname(path), Config(no_backup=True)) == 1
+        out = capsys.readouterr().out
+        assert '-- Not rewritten: the path is inside .git.' in out
+        assert '1 skipped' in out
+        with open(path, encoding='utf-8') as f:
+            assert _AWS_KEY in f.read()
 
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked

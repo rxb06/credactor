@@ -62,7 +62,7 @@
   ],
   [
    "WARNING",
-   "Reported value not found on line 1 in <root>/drift.py \u2014 stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
+   "Reported value not found on line 1 in <root>/drift.py: stale report (file changed since the scan), multi-line value, or already redacted. Regenerate the scanner report and re-run.",
    1
   ]
  ],

@@ -702,6 +702,27 @@ Verified behaviour and **requirements**:
   `Verified: true` duplicate escalates a native medium to critical). The
   priority therefore decides only which `type` string survives an exact
   collision, never which finding is kept or at what severity.
+- An ingested finding under **`.git`** (a token in a remote URL in
+  `.git/config`, say) is reported and counted, so `--ci` and `--fix-all` exit
+  1, but it is **never rewritten**: fix it by hand and rotate the credential.
+  This holds when the scan target is `.git` itself or a directory inside it.
+  A report named in the config file's `[ingest]` table is named on stderr
+  before a run that can write (not under `--ci`, `--dry-run`, `--staged` or
+  `--scan-history`).
+- A finding whose report gives **no valid line number** (the field is missing,
+  or is not a whole number of at least 1) is reported at **line 0** and counted,
+  so `--ci` and `--fix-all` exit 1, but it is **never rewritten**, since the
+  line to change is unknown. In SARIF it names the file with no region.
+- A reported secret that is not one plausible token is reported and counted
+  but **never rewritten**, since it would match ordinary text on the line:
+  one with fewer than **4** letters, digits or underscores, one with
+  whitespace at either end or a line break in it, or one that reads as a
+  credential name (such as `password`, `db_password` or `x-api-key`: 64
+  characters or fewer, no digit, and matched whole by the credential variable
+  name pattern). So `Secret_2024` is still rewritten. Any other one is replaced only
+  where it stands as a whole token (no ASCII letter, digit or underscore on
+  either side): a line that holds it only inside a longer word is left alone
+  and counted as not fixed, and its value is not swept from other lines.
 - Ingested findings carry the type strings **`external:gitleaks:<RuleID>`**,
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule
@@ -776,7 +797,15 @@ Verified behaviour and **requirements**:
     record(s) skipped as invalid` summary (either scanner; for TruffleHog
     this covers parsed records with unusable fields — an unparseable NDJSON
     *line* follows the parse contract above), so an all-invalid report is
-    never byte-indistinguishable from a clean run. A finding whose
+    never byte-indistinguishable from a clean run. Only an unusable path or
+    secret makes a record invalid (a secret holding a lone surrogate, which
+    no scanner writes, counts as unusable). A label field of the wrong type is
+    replaced instead and the finding is kept: a rule id becomes `unknown`, bad
+    `Tags` entries and a non-string `ValidationStatus` are ignored, and a bad
+    commit id is dropped. If a record still cannot be read, it is read again
+    from its path, line and secret alone and kept with the rule `unknown`, or
+    counted invalid when that fails too, with a warning naming the record;
+    it never crashes the run. A finding whose
     path resolves **to the report file itself** is skipped to avoid
     self-corruption, with only a `-v` INFO note — **keep reports outside the
     target tree**: `.json` files are not scanned natively without
@@ -888,7 +917,15 @@ reported them.
 ### Symlinks and `SymlinkFile`
 
 An ingested finding whose path is a symlink **dereferences and redacts the
-real file** (containment is checked after resolution). The native scan
+real file** (containment is checked after resolution). The link itself is
+never rewritten. The run warns once for each such path, naming the path the
+report gave and the file it resolves to (`Gitleaks finding path 'link.py'
+goes through a symlink; it is taken as its target 'real.py'.`), so a rewrite
+of a file the report did not name is never silent. A symlinked directory on
+the way counts the same. A link above the scan target (macOS's `/tmp`, or a
+CI workspace reached through one, when the report gives absolute paths) does
+not count. A path that cannot be resolved at all, such as a symlink loop, is
+skipped as an invalid record. The native scan
 differs on two points: it *scans* within-root symlinked files (only symlinks
 resolving outside the root are skipped) but *refuses to redact* them — and
 when a native finding at the symlink path wins deduplication over its
@@ -914,6 +951,17 @@ unresolved, exit 1): its match value is only the `-----BEGIN` header line, so
 a line-based replacement would rewrite the header, leave the entire key
 material in the file, and make the next scan report it clean. Rotate the key
 and remove the block manually — redaction never half-eats a key block.
+
+The refusal does not depend on the finding's type. Any finding whose value
+holds a `-----BEGIN` or `-----END` marker with `PRIVATE KEY` (in any case) is
+refused, so an ingested finding whose secret is only a key's header line is
+refused as well, whatever the report's rule is called. No replacement, and no
+sweep for copies of a redacted value, changes a line that holds such a marker:
+a finding on that line is counted failed, and a copy left on it is named in a
+warning. The one exception is a value that holds the whole key, BEGIN to END,
+on one line (a service-account JSON file keeps its key that way): replacing it
+removes the key and both markers, so it is redacted, as long as no marker is
+left on the line afterwards.
 
 Betterleaks findings follow the external rule above. Betterleaks' `Match`
 field can span lines for some rules, so the `raw` context line of an ingested
