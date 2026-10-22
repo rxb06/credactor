@@ -10,7 +10,7 @@ version may happen in a **minor** release. Such a drop is always flagged
 below the release that dropped it (2.4.0 dropped Python 3.10, so:
 `credactor<2.4`).
 
-## [2.7.5] - 2026-10-05
+## [2.7.5] - 2026-10-22
 
 A hardening release for the GitHub Action, report output, the CI gate,
 ingested reports, the write path and the release build. A security advisory
