@@ -26,7 +26,7 @@ from .scanner import (
 )
 from .suppressions import AllowList
 from .types import Finding
-from .utils import is_within_root, utf16_variant
+from .utils import is_within_root, resolve_path, utf16_variant
 
 # Subprocess timeouts (seconds). Staged/rev-parse use a short bound; the
 # history `git log -p` walk needs a longer one — intentionally distinct.
@@ -123,8 +123,10 @@ def walk_and_scan(
             full_path = os.path.join(dirpath, filename)
 
             if os.path.islink(full_path):
+                # T29f: resolve_path, so a symlink loop goes on to the scan,
+                # which cannot open it and counts it as errored.
                 try:
-                    resolved_file = str(Path(full_path).resolve())
+                    resolved_file = str(resolve_path(full_path))
                     if not is_within_root(resolved_file, root_str):
                         continue
                 except OSError:
@@ -315,8 +317,10 @@ def scan_staged_files(
         if not _is_safe_relpath(line):
             continue
         full_path = str(toplevel / line)
+        # T29f: resolve_path, so a symlink loop is checked and its index blob
+        # scanned like any other staged file.
         try:
-            resolved = str(Path(full_path).resolve())
+            resolved = str(resolve_path(full_path))
         except OSError:
             continue
         if not is_within_root(resolved, str(root_path) + os.sep):

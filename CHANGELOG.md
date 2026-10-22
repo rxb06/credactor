@@ -250,6 +250,12 @@ other scanners.
   `var.`, `local.`, `module.` and `random_password.` no longer count as a
   runtime lookup inside a longer name or a path, and JavaScript's
   `module.exports` is not taken for a Terraform reference.
+- **A symlink loop no longer ends a scan on Python 3.11 and 3.12.** A looping
+  link is handled as on Python 3.13 and later: in a directory scan, one with a
+  scanned file name is counted as a file that could not be scanned, and
+  `--staged` scans its index entry like any other staged file. `.gitignore`
+  and `.credactorignore` entries still apply to it. Both used to stop the run
+  with exit 2.
 
 ### Changed
 
