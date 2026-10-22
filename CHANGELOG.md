@@ -14,6 +14,46 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **`--replace-with env` no longer names the variable after the secret.** The
+  env var name comes from the variable name, XML key or report rule id, and
+  one that spelled the secret left an uppercased copy of it in the redacted
+  file. A name that shares 8 letters and digits in a row with the secret now
+  falls back to `CREDENTIAL`.
+- **An unexpected error exits 2, not 1.** An exception that escaped the CLI
+  ended the run with Python's exit 1, the code for "findings found", so a gate
+  read a crash as a result. The traceback is now printed to stderr, sanitized
+  like the rest of the output, and the run exits 2.
+- **A git failure in `--staged` or `--scan-history` is an error, not a clean
+  scan.** Once `git rev-parse` had found the repository, a failing
+  `git diff --cached` or `git log` was reported as nothing to scan, exit 0; a
+  damaged index let a pre-commit hook pass. Both now exit 2, and so does a
+  broken ref, or a HEAD with no commits while other branches have some. A
+  repository with no commits on any branch still has nothing to scan for
+  `--scan-history`, exit 0. History now also scans type changes. Under
+  `--staged`, a staged file that cannot be read also exits 2, with or without
+  `--fail-on-error`.
+- **`--staged` reads exactly the staged files.** A type change (a symlink
+  replaced by a file) is now scanned, a path such as `1:x.py` is no longer read
+  as stage 1 of `x.py`, and a submodule, which has no content in the
+  superproject, is no longer read at all.
+- **`.gitignore` and `.credactorignore` are read with the same guards as a
+  scanned file.** `.gitignore` was opened before any check, so a FIFO could
+  block the scan and a device file could be read without end, and
+  `.credactorignore` followed a symlink out of the scan root and had no size
+  cap. Each is now read only if it is a regular file, through a symlink only if
+  the target stays inside the scan root, and at most 1 MiB of it, cut at a line
+  end, with a warning when it is larger. Lines are split at line ends only, as
+  git does. One that is refused is reported with the files that could not be
+  scanned, so `--fail-on-error` stops on it; the scan goes on without its
+  patterns.
+- **A suppressed private key header no longer hides the lines after it.** A
+  `-----BEGIN ... PRIVATE KEY-----` line that was ignored inline or allowlisted
+  still started a key block, so the lines after it, up to the END line or 500
+  lines, were not scanned. After a suppressed header, only lines shaped like a
+  key body are now skipped, quoted or bare, so a test key fixture still yields
+  no findings while any other line is scanned. A header with its END on the
+  same line opens no block. An inline-ignored header is logged under
+  `--verbose` like any other suppression.
 - **The text report masks every known secret on a displayed line.** Masking
   used to cover only the finding's own value, once. Every value found in the
   run is now masked wherever it appears in the report, including a second

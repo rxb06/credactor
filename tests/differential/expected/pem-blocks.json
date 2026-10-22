@@ -36,10 +36,36 @@
     "type": "pattern:private key block",
     "value": "8bcac7908eb95041"
    }
+  ],
+  "suppressed_header.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "323725e8eff4df0a",
+    "raw": "password = \"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "323725e8eff4df0a"
+   }
   ]
  },
- "log": [],
- "note": "suppressed_header.py records current behaviour; SR-08 changes it",
+ "log": [
+  [
+   "DEBUG",
+   "<root>/suppressed_header.py:1 suppressed by inline credactor:ignore",
+   1
+  ]
+ ],
+ "note": "SR-08: an ignored header no longer hides the lines after it (suppressed_header.py)",
  "reported": true,
  "tree_after": {
   "after_block.py": "77ed3da455979f33",

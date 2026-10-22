@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -284,12 +285,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Console entry point: run the scan and exit (130 on Ctrl-C)."""
+    """Console entry point: run the scan and exit (130 on Ctrl-C, 2 on an
+    unexpected error)."""
     try:
         _main_inner(argv)
     except KeyboardInterrupt:
         print('\nInterrupted.', file=sys.stderr)
         sys.exit(130)
+    except Exception:
+        # T15a: an uncaught exception would exit 1, which a gate reads as
+        # "findings found". Print the traceback, one sanitized line at a time
+        # (its text can hold file content), and exit 2 like any other error.
+        for line in traceback.format_exc().splitlines():
+            print(sanitize_for_display(line), file=sys.stderr)
+        _fatal('Unexpected error; please report it with the traceback above.')
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +599,18 @@ def _collect_findings(
     # hard error (exit 2), never a false-clean exit 0.
     try:
         if config.staged_only:
-            return (*scan_staged_files(target, config=config, allowlist=allowlist), [])
+            findings, errored = scan_staged_files(target, config=config, allowlist=allowlist)
+            if errored:
+                # SR-14: a pre-commit gate cannot call a commit clean when it
+                # could not read part of it, so this is fatal with or without
+                # --fail-on-error.
+                logger.warning(
+                    '%d staged file(s) could not be read:' + '\n  - %s' * len(errored),
+                    len(errored),
+                    *errored,
+                )
+                _fatal('Exiting: the staged content could not be checked.')
+            return findings, errored, []
         if config.scan_history:
             return scan_git_history(target, config=config, allowlist=allowlist), [], []
     except GitUnavailableError as exc:
@@ -836,6 +856,7 @@ def _main_inner(argv: list[str] | None = None) -> None:
     _print_banner(target_resolved_path)
 
     findings, errored_files, gitignore_skipped = _collect_findings(target, config, allowlist)
+    errored_files = allowlist.errored + errored_files  # SR-13: an unsafe .credactorignore
     findings = _ingest_external(findings, target, config, allowlist)
     _handle_errored_files(errored_files, config)
     if config.output_format == 'text':
