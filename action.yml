@@ -1,5 +1,5 @@
 name: 'Credactor - Secrets Redactor'
-description: 'Read-only credential scan and CI gate. SARIF output, plus Gitleaks / TruffleHog / Betterleaks report ingestion. Never rewrites your checkout.'
+description: 'Read-only credential scan and CI gate, with SARIF output and Gitleaks, TruffleHog and Betterleaks ingestion.'
 author: 'Rx'
 
 branding:
@@ -378,7 +378,7 @@ runs:
 
     - name: Upload SARIF to Code Scanning
       if: inputs.upload-sarif == 'true' && inputs.format == 'sarif' && steps.scan.outputs.report-file != ''
-      uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
       with:
         sarif_file: ${{ steps.scan.outputs.report-file }}
 
