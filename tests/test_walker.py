@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -144,6 +145,37 @@ class TestWalkAndScan:
         resolved = os.path.realpath(py_file)
         assert any(os.path.realpath(e) == resolved for e in errored)
 
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_symlink_loop_is_errored_not_fatal(self, tmp_dir, monkeypatch):
+        # T29f: Python 3.11 and 3.12 raise RuntimeError for a symlink loop
+        # where 3.13 returns the path; both must end the same way, with the
+        # ignore files that send the path through two more resolves.
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'a.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with open(os.path.join(tmp_dir, '.gitignore'), 'w') as f:
+            f.write('*.log\n')
+        with open(os.path.join(tmp_dir, '.credactorignore'), 'w') as f:
+            f.write('docs/*.md\n')
+        os.symlink('loop.py', os.path.join(tmp_dir, 'loop.py'))
+        _raise_on_loop(monkeypatch, 'loop.py')
+        findings, _, _, errored = walk_and_scan(
+            tmp_dir, config=Config(no_color=True), allowlist=AllowList(tmp_dir)
+        )
+        assert [f['full_value'] for f in findings] == [key]
+        assert [os.path.basename(e) for e in errored] == ['loop.py']
+
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_symlink_loop_still_matches_its_ignore_entry(self, tmp_dir, monkeypatch):
+        with open(os.path.join(tmp_dir, '.credactorignore'), 'w') as f:
+            f.write('loop.py\n')
+        os.symlink('loop.py', os.path.join(tmp_dir, 'loop.py'))
+        _raise_on_loop(monkeypatch, 'loop.py')
+        _, _, _, errored = walk_and_scan(
+            tmp_dir, config=Config(no_color=True), allowlist=AllowList(tmp_dir)
+        )
+        assert errored == []
+
     @pytest.mark.skipif(
         not hasattr(os, 'getuid') or os.getuid() == 0,
         reason='chmod 000 is not honoured as root / on Windows',
@@ -161,6 +193,18 @@ class TestWalkAndScan:
             assert any(os.path.realpath(e) == resolved for e in errored)
         finally:
             os.chmod(py_file, 0o644)
+
+
+def _raise_on_loop(monkeypatch, *names):
+    """Make Path.resolve on the named paths raise as 3.11 and 3.12 do."""
+    real = Path.resolve
+
+    def resolve(self, strict=False):
+        if self.name in names:
+            raise RuntimeError(f'Symlink loop from {str(self)!r}')
+        return real(self, strict=strict)
+
+    monkeypatch.setattr(Path, 'resolve', resolve)
 
 
 @pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
@@ -185,6 +229,27 @@ class TestStagedScanning:
         assert len(findings) >= 1
         assert errored == []
 
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_staged_symlink_loop_is_scanned(self, tmp_dir, monkeypatch):
+        # T29f: the staged blob of a link is its target text, read from the
+        # index, so a loop is scanned like any other staged file. Here the
+        # text holds a key, so the finding goes through the allowlist too.
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, '.credactorignore'), 'w') as f:
+            f.write('docs/*.md\n')
+        os.symlink(f'{key}.py', os.path.join(repo, 'loop.py'))
+        os.symlink('loop.py', os.path.join(repo, f'{key}.py'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        _raise_on_loop(monkeypatch, 'loop.py', f'{key}.py')
+        findings, errored = scan_staged_files(
+            repo, config=Config(no_color=True), allowlist=AllowList(repo)
+        )
+        assert [(os.path.basename(f['file']), f['full_value']) for f in findings] == [
+            ('loop.py', key)
+        ]
+        assert errored == []
+
     def test_raises_when_toplevel_unresolvable(self, tmp_dir):
         # L4: if rev-parse fails the dir isn't a usable git repo — this is a hard
         # GitUnavailableError (CLI exit 2), not a false-clean empty return.
@@ -194,6 +259,137 @@ class TestStagedScanning:
             pytest.raises(GitUnavailableError),
         ):
             scan_staged_files(tmp_dir, config=Config(no_color=True))
+
+    # SR-14: a git failure after a good rev-parse is an error, not a clean scan.
+    @pytest.mark.parametrize(
+        'failure',
+        [
+            mock.Mock(returncode=128, stdout='', stderr='fatal: index file corrupt'),
+            FileNotFoundError('git'),
+            subprocess.TimeoutExpired('git', 30),
+        ],
+        ids=['exit', 'missing', 'timeout'],
+    )
+    def test_diff_failure_after_rev_parse_raises(self, tmp_dir, failure):
+        ok = mock.Mock(returncode=0, stdout=tmp_dir + '\n', stderr='')
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                return ok
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError, match='git diff --cached failed'),
+        ):
+            scan_staged_files(tmp_dir, config=Config(no_color=True))
+
+    def test_corrupt_index_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], cwd=repo, check=True)
+        subprocess.run(['git', 'config', 'user.name', 't'], cwd=repo, check=True)
+        with open(os.path.join(repo, 'app.py'), 'w') as f:
+            f.write('x = 1\n')
+        subprocess.run(['git', 'add', 'app.py'], cwd=repo, check=True, capture_output=True)
+        subprocess.run(['git', 'commit', '-qm', 'x'], cwd=repo, check=True, capture_output=True)
+        with open(os.path.join(repo, '.git', 'index'), 'wb') as f:
+            f.write(b'DIRC\0\0\0\2\0\0\0\5garbage')
+        with pytest.raises(GitUnavailableError):
+            scan_staged_files(repo, config=Config(no_color=True))
+
+    def test_history_log_failure_with_commits_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'log']:
+                return mock.Mock(returncode=128, stdout='', stderr='fatal: bad object')
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError, match='git log failed'),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_log_timeout_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        real_run = subprocess.run
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'log']:
+                raise subprocess.TimeoutExpired('git', 30)
+            return real_run(args, **kwargs)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_with_an_unborn_head_but_other_refs_raises(self, tmp_dir):
+        # HEAD names a branch with no commits while another branch has some,
+        # as in a bare repository whose default branch was never pushed.
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/nothere'], cwd=repo, check=True)
+        with pytest.raises(GitUnavailableError):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_with_a_broken_branch_ref_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        self._commit_n_times(repo, 1)
+        branch = subprocess.run(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        with open(os.path.join(repo, '.git', 'refs', 'heads', branch), 'w') as f:
+            f.write('')
+        with pytest.raises(GitUnavailableError):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    def test_history_probe_that_cannot_run_raises(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                return mock.Mock(returncode=0, stdout='.git\n', stderr='')
+            if args[:2] == ['git', 'log']:
+                return mock.Mock(returncode=128, stdout='', stderr='fatal: no commits')
+            raise subprocess.TimeoutExpired('git', 30)
+
+        with (
+            mock.patch('credactor.walker.subprocess.run', side_effect=run),
+            pytest.raises(GitUnavailableError),
+        ):
+            scan_git_history(repo, config=Config(no_color=True))
+
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_history_scans_a_symlink_replaced_by_a_file(self, tmp_dir):
+        repo = self._init_repo(tmp_dir)
+        env = dict(check=True, capture_output=True, cwd=repo)
+        subprocess.run(['git', 'config', 'user.email', 't@t'], **env)
+        subprocess.run(['git', 'config', 'user.name', 't'], **env)
+        with open(os.path.join(repo, 'x.py'), 'w') as f:
+            f.write('x = 1\n')
+        os.symlink('x.py', os.path.join(repo, 'cfg.py'))
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-qm', 'link'], **env)
+        os.unlink(os.path.join(repo, 'cfg.py'))
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, 'cfg.py'), 'w') as f:
+            f.write(f'k = "{key}"\n')
+        subprocess.run(['git', 'add', '-A'], **env)
+        subprocess.run(['git', 'commit', '-qm', 'file'], **env)
+        findings = scan_git_history(repo, config=Config(no_color=True))
+        assert any(f['full_value'] == key for f in findings)
 
     def test_staged_in_non_git_dir_raises(self, tmp_dir):
         # L4: a plain (non-git) directory is a hard error for --staged

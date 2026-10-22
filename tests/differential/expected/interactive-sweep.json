@@ -1,0 +1,51 @@
+{
+ "argv": [
+  "--no-backup",
+  "."
+ ],
+ "case": "interactive-sweep",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "b8498412b57d7cac",
+    "raw": "old = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "b8498412b57d7cac",
+    "raw": "note = 1  # <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/app.py:2 suppressed by inline credactor:ignore",
+   1
+  ]
+ ],
+ "note": "interactive approvals and the final sweep, which runs through the shared write path (PA-14); SR-22: the inline-ignored line 2 is never swept",
+ "reported": true,
+ "tree_after": {
+  "app.py": "f54b1705a882f4ff"
+ }
+}

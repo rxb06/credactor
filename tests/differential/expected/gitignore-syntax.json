@@ -1,0 +1,81 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "gitignore-syntax",
+ "exit": 1,
+ "findings": {
+  ".env": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "AWS_ACCESS_KEY_ID=<v:1a5d44a2dca19669>",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "a/gen/x.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "file12.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "root_only.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "sub/root_only.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "anchoring, * versus /, **, parent-excluded negation, dir-only pattern against a file; SR-12 and PA-11 change some of it",
+ "reported": true,
+ "tree_after": {
+  ".env": "e956bde9874ac6c3",
+  ".gitignore": "619bafb14703fac4",
+  "a/gen/x.py": "aef561de5aaa378b",
+  "docs/deep/nested.py": "aef561de5aaa378b",
+  "docs/top.py": "aef561de5aaa378b",
+  "file1.py": "aef561de5aaa378b",
+  "file12.py": "aef561de5aaa378b",
+  "gen/y.py": "aef561de5aaa378b",
+  "logs/keep.py": "aef561de5aaa378b",
+  "root_only.py": "aef561de5aaa378b",
+  "sub/root_only.py": "aef561de5aaa378b"
+ }
+}

@@ -1,0 +1,56 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "."
+ ],
+ "case": "line-separators",
+ "exit": 0,
+ "findings": {
+  "seps.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "323725e8eff4df0a",
+    "raw": "a = 1\fpassword = \"<v:323725e8eff4df0a>\"",
+    "severity": "high",
+    "type": "variable:password",
+    "value": "323725e8eff4df0a"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "5f4b8f793c79706d",
+    "raw": "b = 2\u000btoken = \"<v:5f4b8f793c79706d>\"",
+    "severity": "high",
+    "type": "variable:token",
+    "value": "5f4b8f793c79706d"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "1a5d44a2dca19669",
+    "raw": "c = 3\u2028api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "b8498412b57d7cac",
+    "raw": "gh = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [],
+ "note": "PA-07 must keep readlines() splitting: only \\n, \\r\\n and \\r end a line",
+ "reported": true,
+ "tree_after": {
+  "seps.py": "69108c2566a09f99"
+ }
+}

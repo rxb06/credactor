@@ -1,0 +1,31 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "--replacement",
+  "CHANGE_ME_LATER",
+  "."
+ ],
+ "case": "fix-custom-replacement",
+ "exit": 0,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "app.py": "cd802098995e8e86"
+ }
+}

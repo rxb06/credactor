@@ -5,6 +5,7 @@ documentation.  They MUST NOT be redacted — add this directory to
 .credactorignore to prevent self-redaction.
 """
 
+import logging
 import os
 
 import pytest
@@ -17,6 +18,7 @@ from credactor.scanner import (
     scan_lines,
     should_scan_file,
 )
+from credactor.suppressions import AllowList
 
 
 class TestMinValueLengthCriticalExemption:
@@ -515,6 +517,125 @@ class TestScanFile:
         findings = scan_file(path, config=config)
         assert len(findings) == 0
 
+    # SR-08: a suppressed header must not hide the lines after it.
+    _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def test_inline_suppressed_pem_header_does_not_hide_following_lines(
+        self, make_file, config, credactor_caplog
+    ):
+        path = make_file(
+            'k.py',
+            f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{self._KEY}"\n',
+        )
+        with credactor_caplog.at_level(logging.DEBUG, logger='credactor'):
+            findings = scan_file(path, config=config)
+        assert [f['full_value'] for f in findings] == [self._KEY]
+        assert [f['line'] for f in findings] == [2]
+        assert f'{path}:1 suppressed by inline credactor:ignore' in [
+            r.getMessage() for r in credactor_caplog.records
+        ]
+
+    def test_allowlisted_pem_header_does_not_hide_following_lines(self, tmp_path, config):
+        (tmp_path / '.credactorignore').write_text('k.py:1\n', encoding='utf-8')
+        path = tmp_path / 'k.py'
+        path.write_text(
+            f'-----BEGIN RSA PRIVATE KEY-----\napi_key = "{self._KEY}"\n', encoding='utf-8'
+        )
+        findings = scan_file(str(path), config=config, allowlist=AllowList(str(tmp_path)))
+        assert [f['full_value'] for f in findings] == [self._KEY]
+
+    def test_suppressed_pem_header_body_and_end_give_no_findings(self, make_file, config):
+        body = ['MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB'] * 20
+        content = (
+            '-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\n'
+            + ''.join(line + '\n' for line in body)
+            + '-----END RSA PRIVATE KEY-----\n'
+        )
+        assert scan_file(make_file('k.pem.py', content), config=config) == []
+
+    _BODY = 'MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yPB'
+
+    def test_quoted_python_fixture_after_an_ignored_header(self, make_file, config):
+        # The body of a suppressed key is skipped in its usual in-code forms.
+        content = (
+            'TEST_KEY = (\n'
+            '    "-----BEGIN RSA PRIVATE KEY-----\\n"  # credactor:ignore\n'
+            + ''.join(f'    "{self._BODY}\\n"\n' for _ in range(6))
+            + '    "-----END RSA PRIVATE KEY-----\\n"\n'
+            ')\n'
+        )
+        assert scan_file(make_file('fixture.py', content), config=config) == []
+
+    def test_concatenated_js_fixture_after_an_ignored_header(self, make_file, config):
+        content = (
+            'const KEY =\n'
+            '  "-----BEGIN RSA PRIVATE KEY-----\\n" + // credactor:ignore\n'
+            + ''.join(f'  "{self._BODY}\\n" +\n' for _ in range(6))
+            + '  "-----END RSA PRIVATE KEY-----\\n";\n'
+        )
+        assert scan_file(make_file('fixture.js', content), config=config) == []
+
+    def test_line_that_is_not_a_body_line_is_scanned_inside_a_suppressed_block(
+        self, make_file, config
+    ):
+        token = 'ghp_' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78'
+        content = (
+            '-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\n'
+            f'{self._BODY}\n'
+            f'{token}\n'
+            f'{self._BODY}\n'
+            '-----END RSA PRIVATE KEY-----\n'
+        )
+        findings = scan_file(make_file('k.py', content), config=config)
+        assert [f['full_value'] for f in findings] == [token]
+
+    def test_one_line_pem_does_not_hide_the_lines_after_it(self, make_file, config):
+        content = (
+            f'TEST_KEY = "-----BEGIN RSA PRIVATE KEY-----\\n{self._BODY}\\n'
+            '-----END RSA PRIVATE KEY-----\\n"\n'
+            f'aws_key = "{self._KEY}"\n'
+        )
+        findings = scan_file(make_file('one.py', content), config=config)
+        assert self._KEY in [f['full_value'] for f in findings]
+
+    @pytest.mark.parametrize(
+        ('begin', 'end'),
+        [
+            ('-----BEGIN ENCRYPTED PRIVATE KEY-----', '-----END ENCRYPTED PRIVATE KEY-----'),
+            ('-----BEGIN PGP PRIVATE KEY BLOCK-----', '-----END PGP PRIVATE KEY BLOCK-----'),
+        ],
+    )
+    def test_encrypted_and_pgp_key_blocks_detected(self, make_file, config, begin, end):
+        content = f'{begin}\n{self._BODY}\n{end}\naws_key = "{self._KEY}"\n'
+        findings = scan_file(make_file('k.py', content), config=config)
+        assert [(f['line'], f['type']) for f in findings] == [
+            (1, 'pattern:private key block'),
+            (4, 'pattern:AWS access key'),
+        ]
+
+    @pytest.mark.parametrize('kind', ['ENCRYPTED PRIVATE KEY', 'PGP PRIVATE KEY BLOCK'])
+    def test_one_line_encrypted_or_pgp_key_does_not_hide_the_lines_after_it(
+        self, make_file, config, kind
+    ):
+        content = (
+            f'TEST_KEY = "-----BEGIN {kind}-----\\n{self._BODY}\\n-----END {kind}-----\\n"\n'
+            f'aws_key = "{self._KEY}"\n'
+        )
+        findings = scan_file(make_file('one.py', content), config=config)
+        assert self._KEY in [f['full_value'] for f in findings]
+
+    def test_suppressed_pgp_armour_gives_no_findings(self, make_file, config):
+        # Armour headers and the blank line before the body are scanned (they
+        # are not body-shaped) and hold nothing; the checksum line is skipped.
+        content = (
+            '-----BEGIN PGP PRIVATE KEY BLOCK-----  # credactor:ignore\n'
+            'Version: GnuPG v2\n'
+            'Comment: test fixture\n'
+            '\n' + ''.join(f'{self._BODY}\n' for _ in range(6)) + '=AbCd\n'
+            '-----END PGP PRIVATE KEY BLOCK-----\n'
+        )
+        assert scan_file(make_file('k.asc.py', content), config=config) == []
+
     def test_clean_file_no_findings(self, make_file, config):
         content = 'import os\napi_key = os.getenv("API_KEY")\nprint("hello world")\n'
         path = make_file('clean.py', content)
@@ -831,6 +952,34 @@ class TestDynamicLookupAuditTrail:
         # pass would catch the weak default, and it is (correctly) suppressed.
         scan_line(1, 'password = config.get("db_pass", "summer2024")', 'f.py')
         assert any('runtime/dynamic lookup' in r.message for r in credactor_caplog.records)
+
+
+class TestTerraformLookupBoundary:
+    """T29e: a Terraform reference word inside another name (metadata.json,
+    mymodule.py) is not a runtime lookup, so the assignment pass still runs."""
+
+    @pytest.mark.parametrize(
+        'comment',
+        [
+            '# see metadata.json',
+            '# see mymodule.py',
+            '# from userdata.yaml',
+            '# db.local.host',
+            '# see user-data.sh',
+        ],
+    )
+    def test_secret_found_next_to_a_name_holding_a_reference_word(self, config, comment):
+        line = f'password = "Summer2024!xyzQ"  {comment}'
+        findings = scan_line(1, line, 'f.py', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_module_exports_is_not_a_terraform_reference(self, config):
+        line = 'module.exports = { password: "Summer2024!xyzQ" };'
+        findings = scan_line(1, line, 'config.js', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_terraform_reference_still_skips_the_assignment_pass(self, config):
+        assert scan_line(1, 'password = var.db_password', 'main.tf', config=config) == []
 
 
 class TestHashContextWidened:

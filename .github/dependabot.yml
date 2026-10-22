@@ -2,10 +2,14 @@
 # commit SHAs and CI dependencies are hash-pinned, so without this nothing
 # ever proposes updates. Dependabot understands both pinning styles and opens
 # PRs that keep the version comments and hashes correct.
+#
+# Updates target develop, where every change lands before a release merges
+# it into main.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: monthly
     groups:
@@ -13,6 +17,7 @@ updates:
         patterns: ["*"]
   - package-ecosystem: pip
     directory: /
+    target-branch: develop
     schedule:
       interval: monthly
     # One grouped PR per month: independent bumps would each regenerate the

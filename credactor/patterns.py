@@ -152,12 +152,13 @@ DYNAMIC_LOOKUP_RE = re.compile(
     # Runtime env lookups across languages
     r'|process\.env\.'  # JS/Node: process.env.VAR
     r'|Rails\.application\.credentials'  # Ruby on Rails encrypted credentials
-    # Terraform / HCL references
-    r'|data\.\w+'  # Terraform: any data.* source
-    r'|var\.\w+'  # Terraform: var.name references
-    r'|local\.\w+'  # Terraform: local.* values
-    r'|module\.\w+'  # Terraform: module.* outputs
-    r'|random_password\.\w+'  # Terraform: random_password resource
+    # Terraform / HCL references. T29e: not inside a longer name or a path
+    # (metadata.json, user-data.sh, config/data.json), and not JS module.exports.
+    r'|(?<![\w./-])data\.\w+'  # Terraform: any data.* source
+    r'|(?<![\w./-])var\.\w+'  # Terraform: var.name references
+    r'|(?<![\w./-])local\.\w+'  # Terraform: local.* values
+    r'|(?<![\w./-])module\.(?!exports\b)\w+'  # Terraform: module.* outputs
+    r'|(?<![\w./-])random_password\.\w+'  # Terraform: random_password resource
     # Platform-specific runtime lookups
     r'|BuildConfig\.\w+'  # Android/Kotlin: compile-time constants
     r'|op://[\w/]+'  # 1Password CLI: op://vault/item/field
@@ -236,8 +237,10 @@ _CONN_STRING_RE = re.compile(
     r'[a-zA-Z][a-zA-Z0-9+.-]{0,30}://[^:@\s]{1,256}:[^@\s]{1,256}@[^\s"\']{3,256}'
 )
 
-# #18 – PEM private key header
-_PEM_KEY_RE = re.compile(r'-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----')
+# #18 – PEM private key header. T29d: PKCS#8 ENCRYPTED and PGP armoured keys too.
+_PEM_KEY_RE = re.compile(
+    r'-----BEGIN\s+(?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'
+)
 
 
 # severity: critical > high > medium > low
@@ -353,3 +356,87 @@ def xml_attr_finditer(line: str) -> Iterator[tuple[str, str, tuple[int, int]]]:
 # language's comment syntax (#, //, /*, <!--); SQL `--` is intentionally
 # excluded — no scanned file type uses it and it recurs in non-comment text.
 SUPPRESS_RE = re.compile(r'(?:#|//|/\*|<!--)\s*credactor:\s*ignore', re.IGNORECASE)
+
+
+# Key-scoped context check: a hex/base64 value whose OWN assignment key looks
+# like a hash/digest/checksum/commit/integrity/revision field is a hash output,
+# not a raw credential, so the quoted hex/Base64 value detectors skip it. S3: the
+# widened name set stops --fix-all auto-rewriting commit SHAs, SRI integrity
+# hashes, and checksums (which would silently corrupt code).
+#
+# SCAN-1: the terms are matched against the key bound to the matched value only
+# (extracted by _HASH_KEY_RE), NOT line-global, so (a) a hash key on one part of
+# a multi-assignment line cannot suppress an unrelated secret elsewhere, and (b)
+# a credential keyword in the key (see _CRED_KEYWORDS) vetoes the suppression so
+# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit
+# still flag: the credential keyword takes precedence (matches the manual).
+_HASH_CONTEXT_RE = re.compile(
+    r'(?:_hash|_hashed|_digest|_checksum|_fingerprint|_hmac|sha\d+|sha|md5'
+    r'|commit|integrity|checksum|digest|rev|revision|sri)$',
+    re.IGNORECASE,
+)
+
+# Capture the assignment key immediately preceding a value's opening quote, i.e.
+# the trailing `KEY :=/=/:` of the text before the value. Anchored at the end so
+# it isolates the single key bound to THIS value on a multi-assignment line.
+_HASH_KEY_RE = re.compile(
+    r'["\']?(?P<key>[\w.\-]{1,128})["\']?\s*(?::=|[:=])\s*$',
+)
+
+# SCAN-1: credential keywords whose presence ANYWHERE in the key vetoes the
+# hash-context suppression (the credential keyword takes precedence per the
+# manual). These are plain substrings, unlike CRED_VAR_PATTERNS' \b-anchored
+# alternatives, so a credential-keyed name with a hash-ish suffix such as
+# api_key_rev / token_rev / private_key_rev / oauth_token_sri / api_key_commit /
+# token_integrity is correctly NOT treated as a hash and flags again (as on
+# origin/main). None of the genuine hash keys (commit/checksum/digest/integrity/
+# md5/sha256/*_hash/git_rev) contains one of these, so they still suppress.
+_CRED_KEYWORDS = (
+    'api',
+    'key',
+    'token',
+    'secret',
+    'password',
+    'passwd',
+    'passphrase',
+    'pwd',
+    'auth',
+    'cred',
+    'oauth',
+    'private',
+    'bearer',
+)
+
+
+def _is_hash_context_at(line: str, value_start: int) -> bool:
+    """True if the heuristic hex/Base64 value at ``value_start`` is keyed like a
+    hash/digest/commit/integrity field (a hash output, not a raw credential).
+
+    SCAN-1: the key is taken from the single assignment immediately preceding the
+    value's opening quote, scoped to THIS value and not line-global, so a hash key
+    elsewhere on a multi-assignment line cannot suppress an unrelated secret. A
+    credential keyword anywhere in the key vetoes the suppression (the credential
+    keyword takes precedence), so api_key_rev / token_rev / private_key_rev /
+    oauth_token_sri / api_key_commit still flag as on origin/main."""
+    key_match = _HASH_KEY_RE.search(line[:value_start])
+    if key_match is None:
+        return False
+    key = key_match.group('key').lower()
+    if any(kw in key for kw in _CRED_KEYWORDS):
+        return False
+    return bool(_HASH_CONTEXT_RE.search(key))
+
+
+# The two value detectors that look at a value's shape only (bare hex, or
+# high-entropy Base64). The scanner applies the hash-field exemption to them
+# alone: a value one of the other detectors recognises (a provider prefix, a
+# JWT, a key header, a connection string) is a credential under any key.
+_HEURISTIC_VALUE_LABELS = ('hex credential', 'high-entropy string')
+
+
+def _known_format(value: str) -> bool:
+    """Whether a detector other than the two shape heuristics recognises
+    *value*, so no hash-like key can make it a hash output."""
+    return any(
+        vp.pattern.search(value) for vp in VALUE_PATTERNS if vp.label not in _HEURISTIC_VALUE_LABELS
+    )

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in Credactor. Bug reports, feature requests, and pull requests are welcome via [GitHub Issues](https://github.com/rxb06/credactor/issues).
+Thanks for your interest in Credactor. Bug reports, feature requests, and pull requests are welcome via [GitHub Issues](https://github.com/rxb06/credactor/issues). Report security vulnerabilities privately through [GitHub Security Advisories](https://github.com/rxb06/credactor/security/advisories/new), not a public issue (see [SECURITY.md](SECURITY.md)).
 
 ## Development Setup
 
@@ -27,24 +27,46 @@ ruff format --check credactor/ tests/ scripts/
 mypy credactor/ scripts/
 ```
 
-CI runs exactly these four checks (`make lint` covers the last three). A type
-error fails the build, so run mypy locally before pushing. To run the lint,
-type-check, and self-scan automatically on every commit (the hooks use the
-project venv's own tools, so commit with the venv active):
+The CI test job runs these four checks on Linux and Windows with Python 3.11
+to 3.13, with pytest run under coverage (`make lint` covers the last three).
+CI also runs a self-scan, a wheel build audit and a self-test of the GitHub
+Action. A type error fails the build, so run mypy locally before pushing. To
+run the lint, type-check, and self-scan automatically on every commit (the
+hooks use the project venv's own tools, so commit with the venv active):
 
 ```bash
 pip install pre-commit && pre-commit install
 ```
 
+### Behaviour snapshots
+
+`tests/differential/` runs the real CLI over a fixed corpus and compares the
+complete findings (every field, in order), the exit code, the log messages and
+the bytes of every file afterwards against committed snapshots. A change that
+alters any of these fails the suite with a diff. If the change is intended,
+regenerate the snapshots and explain the difference in the commit:
+
+```bash
+pytest tests/differential --update-differential
+git status && git diff tests/differential/expected
+```
+
+Snapshots store hashes, never secret values. Add a case to
+`tests/differential/corpus.py` when you add behaviour that is not yet covered.
+
 ## Build and Audit
 
 ```bash
-pip install build
-python -m build
+pip install --require-hashes -r requirements-ci.txt
+python -m build --no-isolation
 python scripts/audit_wheel.py
 ```
 
-The artifact audit (`scripts/audit_wheel.py`) verifies that the built wheel **and sdist** match the files tracked in the git repo, byte-for-byte against git HEAD (nothing extra smuggled in, nothing tracked left out, no sdist member escaping the archive root), and fails if no wheel or sdist was built at all. See [docs/security.md](docs/security.md#supply-chain-hardening) for details.
+`--no-isolation` builds with the hash-pinned setuptools installed above instead
+of downloading a fresh, unpinned backend. CI and the release workflow build the
+same way.
+
+The artifact audit (`scripts/audit_wheel.py`) checks the built wheel and sdist against git HEAD. Every file that comes from the repository must match its committed copy byte for byte (sha256), every `credactor/` file must be present, nothing untracked may appear apart from the build metadata, no sdist member may escape the archive root, and the package metadata (name, version, dependencies, extras, entry point) must match `pyproject.toml`. It fails if no wheel or sdist was built. See [docs/security.md](docs/security.md#supply-chain-hardening) for details.
 
 ## Code Style
 
@@ -59,9 +81,10 @@ The artifact audit (`scripts/audit_wheel.py`) verifies that the built wheel **an
 
 Every PR runs:
 
-- **test** - lint, type check, and pytest across Python 3.11–3.13 on Linux and Windows
-- **self-scan** - Credactor scans its own codebase (SARIF uploaded to Code Scanning)
-- **build-audit** - builds the wheel and verifies contents match the repo
+- **test**: lint, format check, type check, and pytest with coverage on Python 3.11 to 3.13, on Linux and Windows
+- **self-scan**: Credactor scans its own tree (SARIF uploaded to Code Scanning)
+- **build-audit**: builds the wheel and sdist and checks both, byte for byte, against the committed source
+- **action-selftest**: runs the GitHub Action from this checkout on Linux and Windows and checks its outputs and the cases it must refuse
 
 All CI dependencies are hash-pinned via `requirements-ci.txt` (`--require-hashes`). GitHub Actions are pinned to commit SHAs.
 
