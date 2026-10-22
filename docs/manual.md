@@ -391,7 +391,15 @@ journaling filesystems.
 
 Human-readable report; the credential is masked to its first 4 characters +
 `[REDACTED]`. `--no-color` strips ANSI codes (auto-disabled when stdout is not a
-terminal). Verified output:
+terminal). Paths, source lines and types are printed safe for a terminal or a
+CI log: escape sequences are removed; control, line-break and bidirectional
+characters, and bytes that could not be decoded, show as `?` (a tab as a
+space); and CI workflow command markers
+(`::` at the start of a line, `##[` and `##vso[`) are broken with a `?`. The
+same applies to the values in warnings on stderr. JSON and SARIF are not
+sanitized for terminals: they escape control characters, and write the command
+markers with a JSON escape (`#\u0023[`), so the data is unchanged. Verified
+output:
 
 ```text
 ======================================================================
@@ -411,6 +419,16 @@ terminal). Verified output:
 Machine-readable. Verified top-level keys: `findings`, `count`; each finding:
 `file`, `line`, `type`, `severity`, `value` (masked), `commit`. The full secret
 never appears (verified — masked in JSON and SARIF).
+
+A secret found in the run is also masked where it appears in a path, in every
+format: the text report adds a note under the `FILE:` line, and the SARIF
+message says the same. Paths and types are masked only with values of at
+least 8 characters that are not a plain number or a plain word (letters in
+one case, or capitalised), so a password that is also a word does not change
+unrelated paths or rule ids. Such a path no longer points at the file (in SARIF, the
+annotation link breaks); rename the file or directory as part of the fix. File names are
+not scanned, so a secret that appears only in a name is neither found nor
+masked.
 
 ```bash
 credactor --ci -f json . > findings.json
@@ -677,7 +695,10 @@ Verified behaviour and **requirements**:
   **`external:trufflehog:<DetectorName>`** and
   **`external:betterleaks:<RuleID>`** in every output format (in SARIF rule
   ids the `:` is sanitised to `-`) — filter on these in `-f json`
-  pipelines. Severity maps from a per-rule table for Gitleaks (with a
+  pipelines. A `RuleID` or `DetectorName` that is not a plain label (letters,
+  digits, `.`, `_` or `-`, at most 64 characters) is reported as `unknown`, and
+  the run warns with the count; the finding itself is kept. A secret value
+  that appears in a type is masked there like anywhere else. Severity maps from a per-rule table for Gitleaks (with a
   `Tags` override); for TruffleHog, `Verified: true` is always **critical**.
 - **Betterleaks severity** comes from the same per-rule table and the same
   `Tags` override as Gitleaks, because Betterleaks inherits the Gitleaks rule

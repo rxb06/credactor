@@ -1582,6 +1582,66 @@ class TestGuardPins:
             assert value not in captured.out + captured.err
             assert f'  Value    : {value[:4]}[REDACTED]\n' in captured.out
 
+    def test_interactive_prompt_masks_a_secret_in_the_type(self, make_file, monkeypatch, capsys):
+        # PA-04: an ingested type carries a report-controlled label, which can
+        # hold a secret, this finding's or another one's.
+        path = make_file('labels.py', f'api_key = "{_AWS_KEY}"\npassword = "{_PASSWORD}"\n')
+        findings = [
+            _mk_finding(path, _AWS_KEY, f'external:gitleaks:{_PASSWORD}', line=1),
+            _mk_finding(path, _PASSWORD, f'external:gitleaks:rule-{_AWS_KEY}', line=2),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        out = capsys.readouterr().out
+        for value in (_AWS_KEY, _PASSWORD):
+            assert value not in out
+        assert f'  Type     : external:gitleaks:{_PASSWORD[:4]}[REDACTED]\n' in out
+        assert f'  Type     : external:gitleaks:rule-{_AWS_KEY[:4]}[REDACTED]\n' in out
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Windows file names cannot hold these')
+    def test_interactive_prompt_sanitizes_paths(self, tmp_path, monkeypatch, capsys):
+        # SR-06: the prompt prints the path; a name can carry a line break and
+        # a CI workflow command.
+        path = tmp_path / 'x\n::error::y ##[warning]z.py'
+        path.write_text(f'api_key = "{_AWS_KEY}"\n', encoding='utf-8')
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(
+            [_mk_finding(str(path), _AWS_KEY)], str(tmp_path), Config(no_backup=True)
+        )
+        out = capsys.readouterr().out
+        assert '  [1/1]  x?::error::y #?[warning]z.py  --  line 1\n' in out
+        assert not [ln for ln in out.split('\n') if ln.lstrip().startswith('::') or '##[' in ln]
+
+    def test_interactive_prompt_masks_a_secret_in_the_path(self, tmp_path, monkeypatch, capsys):
+        # SR-07: a secret in a file or directory name is masked in the prompt.
+        path = tmp_path / _AWS_KEY / 'app.py'
+        path.parent.mkdir()
+        path.write_text(f'password = "{_PASSWORD}"\n', encoding='utf-8')
+        findings = [
+            _mk_finding(str(path), _PASSWORD, 'variable:password'),
+            _mk_finding(str(tmp_path / 'other.py'), _AWS_KEY),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(findings, str(tmp_path), Config(no_backup=True))
+        out = capsys.readouterr().out
+        assert _AWS_KEY not in out
+        assert f'  [1/2]  {os.path.join("AKIA[REDACTED]", "app.py")}  --  line 1\n' in out
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Windows file names cannot hold ESC')
+    def test_interactive_prompt_masks_a_value_split_by_an_escape(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # The escape is removed for display, which joins the two halves.
+        path = tmp_path / (_AWS_KEY[:8] + '\x1b[0m' + _AWS_KEY[8:] + '.py')
+        path.write_text(f'password = "{_PASSWORD}"\n', encoding='utf-8')
+        findings = [
+            _mk_finding(str(path), _PASSWORD, 'variable:password'),
+            _mk_finding(str(tmp_path / 'other.py'), _AWS_KEY),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        interactive_review(findings, str(tmp_path), Config(no_backup=True))
+        assert _AWS_KEY not in capsys.readouterr().out
+
     def test_interactive_prompt_strips_terminal_escapes(self, make_file, monkeypatch, capsys):
         # The prompt sanitizes what it prints. The visible prefix of a masked
         # value is four characters, which is enough for a complete escape

@@ -1,21 +1,31 @@
 """Security-focused tests for confirmed vulnerability mitigations."""
 
+import io
 import json
+import logging
 import os
 import sys
 import tempfile
 from io import StringIO
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
+from credactor._log import _BracketFormatter
 from credactor.cli import main
 from credactor.config import Config, ConfigError, apply_config_file, load_config_file
 from credactor.ingest import _gitleaks_severity
 from credactor.report import json_report, print_report, sarif_report
 from credactor.scanner import _is_safe_value, scan_file
 from credactor.suppressions import AllowList
-from credactor.utils import detect_encoding, is_within_root
+from credactor.utils import (
+    defuse_ci_commands,
+    detect_encoding,
+    display_chars,
+    is_within_root,
+    sanitize_for_display,
+)
 from credactor.walker import walk_and_scan
 
 
@@ -765,3 +775,293 @@ class TestUnconfirmedEncodingWarns:
         assert not any(
             'could not confirm encoding' in r.getMessage() for r in credactor_caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# SR-06: control characters and CI workflow commands in displayed text
+# ---------------------------------------------------------------------------
+
+_BIDI = [chr(c) for c in range(0x202A, 0x202F)] + [chr(c) for c in range(0x2066, 0x206A)]
+_REPLACED = (
+    [chr(c) for c in range(0x20) if c != 0x09]
+    + ['\x7f']
+    + [chr(c) for c in range(0x80, 0xA0)]
+    + ['\u2028', '\u2029']
+    + _BIDI
+)
+_AKIA = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+
+def _command_lines(text: str) -> list[str]:
+    """Lines a CI runner would read as a workflow command: GitHub trims leading
+    whitespace before looking for '::', and finds '##[' anywhere in a line."""
+    return [
+        line
+        for line in text.split('\n')
+        if line.lstrip().startswith('::') or '##[' in line or '##vso[' in line.lower()
+    ]
+
+
+class TestDisplayChars:
+    @pytest.mark.parametrize('ch', _REPLACED, ids=[f'U+{ord(c):04X}' for c in _REPLACED])
+    def test_control_line_break_and_bidi_characters_become_question_marks(self, ch):
+        assert display_chars(f'a{ch}b') == 'a?b'
+
+    @pytest.mark.parametrize(
+        'seq',
+        [
+            '\x1b[31m',
+            '\x1b[2J',
+            '\x1b[?25l',
+            '\x1b[38;5;196m',
+            '\x1b[1 q',
+            '\x1b]0;window title\x07',
+            '\x1b]8;;https://example.invalid\x1b\\',
+        ],
+        ids=['sgr', 'clear', 'private', 'sgr-256', 'intermediate', 'osc-bel', 'osc-st'],
+    )
+    def test_escape_sequences_are_removed_whole(self, seq):
+        assert display_chars(f'a{seq}b') == 'ab'
+
+    def test_lone_surrogates_become_question_marks(self):
+        # Undecodable bytes arrive as lone surrogates (surrogateescape, or
+        # os.fsdecode of a file name). Written out with surrogateescape they
+        # are raw bytes again, which can spell a C1 or bidi control.
+        assert display_chars('a\udce2\x1b[m\udc80\udcae\ud800b') == 'a????b'
+
+    def test_tab_becomes_a_space(self):
+        assert display_chars('\tkey = 1') == ' key = 1'
+
+    def test_printable_text_is_kept(self):
+        text = 'café 中文 😀 key = "x" # comment'
+        assert display_chars(text) == text
+
+    def test_old_name_is_gone(self):
+        import credactor.utils
+
+        assert not hasattr(credactor.utils, 'sanitize_for_terminal')
+
+
+class TestDefuseCiCommands:
+    @pytest.mark.parametrize(
+        ('text', 'expected'),
+        [
+            ('::error::x', '?:error::x'),
+            ('   ::warning file=a::x', '   ?:warning file=a::x'),
+            ('\u00a0::notice::x', '\u00a0?:notice::x'),
+            ('x ##[error]y', 'x #?[error]y'),
+            ('##[set-output name=a;]b ##[group]c', '#?[set-output name=a;]b #?[group]c'),
+            ('a ##vso[task.setvariable variable=x]y', 'a #?vso[task.setvariable variable=x]y'),
+            ('##VSO[task.prependpath]/x', '#?VSO[task.prependpath]/x'),
+        ],
+    )
+    def test_command_markers_are_broken(self, text, expected):
+        assert defuse_ci_commands(text) == expected
+
+    @pytest.mark.parametrize('text', ['a::b', 'std::string x', '## Heading', '#[x]', 'x #[y]'])
+    def test_ordinary_text_is_kept(self, text):
+        assert defuse_ci_commands(text) == text
+
+    def test_sanitize_for_display_does_both(self):
+        assert (
+            sanitize_for_display('::error::a\x1b[31m\nb ##[warning]c')
+            == '?:error::a?b #?[warning]c'
+        )
+
+
+class TestJsonOutputHasNoCommandMarkers:
+    """JSON and SARIF often go to stdout in a pipeline; a marker in a path
+    must not reach the job log as is, and the data must not change."""
+
+    NAMES: ClassVar[list[str]] = [
+        '##[error]boom.py',
+        '##vso[task.setvariable variable=A]b.py',
+        '##VSO[task.prependpath]c.py',
+        '###[warning]d.py',
+    ]
+
+    def _findings(self, root):
+        return [
+            {
+                'file': str(root / name),
+                'line': 1,
+                'type': 'pattern:AWS access key',
+                'severity': 'critical',
+                'full_value': _AKIA,
+                'value_preview': _AKIA,
+                'raw': f'k = "{_AKIA}"',
+            }
+            for name in self.NAMES
+        ]
+
+    def test_json(self, tmp_path):
+        text = json_report(self._findings(tmp_path), str(tmp_path))
+        assert _command_lines(text) == []
+        assert [f['file'] for f in json.loads(text)['findings']] == self.NAMES
+
+    def test_sarif(self, tmp_path):
+        text = sarif_report(self._findings(tmp_path), str(tmp_path))
+        assert _command_lines(text) == []
+        results = json.loads(text)['runs'][0]['results']
+        uris = [r['locations'][0]['physicalLocation']['artifactLocation']['uri'] for r in results]
+        assert uris == self.NAMES
+
+
+class TestLogFormatterSanitizes:
+    @staticmethod
+    def _format(msg, args):
+        record = logging.LogRecord('credactor', logging.WARNING, __file__, 1, msg, args, None)
+        return record, _BracketFormatter().format(record)
+
+    def test_template_newline_kept_argument_newline_replaced(self):
+        _, out = self._format('first\nsecond %s', ('a\nb',))
+        assert out == '[WARN] first\nsecond a?b'
+
+    def test_argument_after_a_template_newline_cannot_start_a_command(self):
+        _, out = self._format('files:\n%s', ('::error::x',))
+        assert _command_lines(out) == []
+
+    def test_marker_split_across_arguments_after_a_template_newline(self):
+        # Each argument is harmless alone; together they start a line.
+        _, out = self._format('files:\n%s%s', (':', ':error::y'))
+        assert _command_lines(out) == []
+
+    def test_command_marker_split_across_template_and_argument(self):
+        _, out = self._format('a #%s', ('#[error]x',))
+        assert _command_lines(out) == []
+
+    def test_mapping_argument(self):
+        _, out = self._format('%(p)s done', ({'p': 'x\x1b[2Jy'},))
+        assert out == '[WARN] xy done'
+
+    def test_path_and_exception_arguments(self):
+        _, out = self._format('%s: %s', (Path('a\nb'), OSError('bad\rthing')))
+        assert '\n' not in out
+        assert '\r' not in out
+
+    def test_other_arguments_unchanged(self):
+        _, out = self._format('%d file(s), %r', (3, 1.5))
+        assert out == '[WARN] 3 file(s), 1.5'
+
+    def test_record_is_not_changed(self):
+        record, _ = self._format('%s', ('a\nb',))
+        assert record.args == ('a\nb',)
+        assert record.getMessage() == 'a\nb'
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='Windows file names cannot hold these')
+class TestHostileNamesAndLines:
+    """SR-06 acceptance: no path, source line or log argument can put a
+    workflow command, an escape sequence or a line break into CI output."""
+
+    NAMES: ClassVar[list[str]] = [
+        '\n::error::X',
+        'a\rb',
+        'c\x1b[31md',
+        'e\x9bf',
+        'g\u2028h',
+        'i\u202ej',
+        '##[error]k',
+    ]
+
+    def _run(self, argv, capsys):
+        with pytest.raises(SystemExit):
+            main(argv)
+        return capsys.readouterr()
+
+    def _assert_clean(self, captured):
+        for name, text in (('stdout', captured.out), ('stderr', captured.err)):
+            assert _command_lines(text) == [], name
+            for bad in ('\x1b', '\x9b', '\u202e', '\u2028', '\r'):
+                assert bad not in text, (name, bad)
+
+    @pytest.mark.parametrize('mode', ['--dry-run', '--ci'])
+    def test_file_and_directory_names(self, tmp_path, capsys, mode):
+        for i, name in enumerate(self.NAMES):
+            (tmp_path / f'{name}{i}.py').write_text(f'aws_key = "{_AKIA}"\n', encoding='utf-8')
+            sub = tmp_path / f'd{name}{i}'
+            sub.mkdir()
+            (sub / 'app.py').write_text(f'aws_key = "{_AKIA}"\n', encoding='utf-8')
+        captured = self._run([mode, str(tmp_path)], capsys)
+        assert captured.out.count('AKIA[REDACTED]') == 2 * len(self.NAMES)
+        self._assert_clean(captured)
+
+    def test_source_lines_holding_commands(self, tmp_path, capsys):
+        (tmp_path / 'a.py').write_text(
+            f'::error title=x::y key = "{_AKIA}"\n'
+            f'  ::warning::z key2 = "{_AKIA}"\n'
+            f'k = "{_AKIA}"  # ##[error]fake ##vso[task.setvariable variable=a]b\n',
+            encoding='utf-8',
+        )
+        captured = self._run(['--ci', str(tmp_path)], capsys)
+        assert captured.out.count('AKIA[REDACTED]') == 3
+        self._assert_clean(captured)
+
+    def test_gitignored_names(self, tmp_path, capsys):
+        (tmp_path / '.gitignore').write_text('ignored*\n', encoding='utf-8')
+        for i, name in enumerate(['::error::x', '##[error]y', 'z\nw']):
+            (tmp_path / f'ignored{name}{i}.txt').write_text('x\n', encoding='utf-8')
+        (tmp_path / 'b.py').write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        captured = self._run(['--ci', str(tmp_path)], capsys)
+        assert 'not scanned -- covered by .gitignore' in captured.out
+        self._assert_clean(captured)
+
+    def test_target_path_in_the_scanning_line(self, tmp_path, capsys):
+        target = tmp_path / '\n::error::t ##[warning]u'
+        target.mkdir()
+        (target / 'c.py').write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        self._assert_clean(self._run(['--ci', str(target)], capsys))
+
+    def test_undecodable_bytes_in_a_line_and_a_name(self, tmp_path):
+        # A strict UTF-8 stream must accept the report (no crash), and a
+        # surrogateescape stream must not receive raw C1 or bidi bytes.
+        line = 'k = "' + _AKIA + '"  # \udce2\x1b[m\udc80\udcae x \udcc2\x1b[m\udc9b2J'
+        finding = {
+            'file': str(tmp_path / 'e\udc9bf.py'),
+            'line': 1,
+            'type': 'pattern:AWS access key',
+            'severity': 'critical',
+            'full_value': _AKIA,
+            'value_preview': _AKIA,
+            'raw': line,
+        }
+        for errors in ('strict', 'surrogateescape'):
+            raw = io.BytesIO()
+            stream = io.TextIOWrapper(raw, encoding='utf-8', errors=errors)
+            print_report([finding], str(tmp_path), no_color=True, stream=stream)
+            stream.flush()
+            data = raw.getvalue()
+            for bad in (b'\xc2\x9b', b'\xe2\x80\xae', b'\x9b', b'\x80\xae'):
+                assert bad not in data, (errors, bad)
+            assert b'AKIA[REDACTED]' in data
+
+    @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='needs byte file names')
+    def test_undecodable_file_name_on_disk(self, tmp_path, capsys):
+        name = os.fsdecode(b'e\x9bf.py')
+        (tmp_path / name).write_text(f'k = "{_AKIA}"\n', encoding='utf-8')
+        captured = self._run(['--ci', str(tmp_path)], capsys)
+        assert 'e?f.py' in captured.out
+        for text in (captured.out, captured.err):
+            assert not any(0xD800 <= ord(c) <= 0xDFFF for c in text)
+
+    @pytest.mark.skipif(hasattr(os, 'getuid') and os.getuid() == 0, reason='root can traverse')
+    def test_untraversable_directory_warning(self, tmp_path, capsys):
+        locked = tmp_path / '\n::error::locked ##[error]v'
+        locked.mkdir()
+        (tmp_path / 'c.py').write_text('x = 1\n', encoding='utf-8')
+        locked.chmod(0)
+        try:
+            captured = self._run(['--ci', str(tmp_path)], capsys)
+        finally:
+            locked.chmod(0o755)
+        assert 'Cannot traverse' in captured.err
+        self._assert_clean(captured)
+
+    def test_errored_files_are_listed_one_per_line(self, tmp_path, capsys, monkeypatch):
+        from credactor import cli
+
+        paths = [str(tmp_path / 'one\n::error::x'), str(tmp_path / 'two')]
+        cli._handle_errored_files(paths, Config())
+        err = capsys.readouterr().err
+        assert err.count('\n  - ') == 2
+        assert _command_lines(err) == []

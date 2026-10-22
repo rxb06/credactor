@@ -262,7 +262,17 @@ CASES: list[Case] = [
         },
         argv=('--ci', '.'),
         note='distinct secrets, repeats, and pattern/assignment overlap on one line; '
-        'the text report leaks other values on the line until SR-05',
+        'SR-05 masks every value on a displayed line',
+    ),
+    Case(
+        id='secret-in-file-name',
+        files={
+            f'{AWS}.py': _t(f'aws_key = "{AWS}"\n'),
+            f'keys/{GITHUB}/app.py': _t(f'token = "{GITHUB}"\npassword = "{STRONG}"\n'),
+        },
+        argv=('--ci', '.'),
+        note='SR-07: a secret found in the run is masked in file and directory names in every '
+        'report format (names are not scanned, so a secret only in a name is not found)',
     ),
     Case(
         id='xml-attribute-orders',
@@ -606,8 +616,9 @@ CASES: list[Case] = [
             ),
         },
         argv=('--ci', '--from-gitleaks', 'report/gl.json', '.'),
-        note='report-controlled labels and invalid line numbers; PA-04 and PA-05 change '
-        'type and line, and the outputs leak the labels until PA-04',
+        note='report-controlled labels and invalid line numbers; PA-04 replaces labels '
+        'outside [A-Za-z0-9._-]{1,64} with unknown and masks secrets in the rest, and '
+        'PA-05 changes the line numbers',
     ),
     Case(
         id='ingest-bad-field-types',
@@ -616,7 +627,8 @@ CASES: list[Case] = [
             'report/gl.json': _gitleaks([_gl([1], 'notes.md', 1, AWS, Tags={})]),
         },
         argv=('--ci', '--from-gitleaks', 'report/gl.json', '.'),
-        note='records the current crash; SR-19 turns it into a handled record',
+        note='a list RuleID no longer crashes: PA-04 reports it as unknown and keeps '
+        'the finding; SR-19 covers the remaining field types',
     ),
     Case(
         id='ingest-context-shapes',

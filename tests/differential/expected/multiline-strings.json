@@ -20,7 +20,7 @@
     "commit": null,
     "line": 1,
     "preview": "d631f4d08459385d",
-    "raw": "\\nsection:\\n  token: <v:8c5a659e7f42eb95>~99",
+    "raw": "\\nsection:\\n  token: <v:8c5a659e7f42eb95>\\n",
     "severity": "high",
     "type": "multiline:JWT token",
     "value": "8c5a659e7f42eb95"

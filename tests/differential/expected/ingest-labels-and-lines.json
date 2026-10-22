@@ -24,7 +24,7 @@
     "preview": "b8498412b57d7cac",
     "raw": "token <v:b8498412b57d7cac>",
     "severity": "medium",
-    "type": "external:gitleaks:x <v:b8498412b57d7cac>",
+    "type": "external:gitleaks:unknown",
     "value": "b8498412b57d7cac"
    },
    {
@@ -33,7 +33,7 @@
     "preview": "5f4b8f793c79706d",
     "raw": "pw <v:5f4b8f793c79706d>",
     "severity": "medium",
-    "type": "external:gitleaks:bad\u001b[31m",
+    "type": "external:gitleaks:unknown",
     "value": "5f4b8f793c79706d"
    },
    {
@@ -42,7 +42,7 @@
     "preview": "5f4b8f793c79706d",
     "raw": "key <v:1a5d44a2dca19669>",
     "severity": "medium",
-    "type": "external:gitleaks:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+    "type": "external:gitleaks:unknown",
     "value": "5f4b8f793c79706d"
    },
    {
@@ -61,9 +61,14 @@
    "INFO",
    "Deduplicated 1 finding(s).",
    1
+  ],
+  [
+   "WARNING",
+   "3 Gitleaks finding(s) had a RuleID that is not a plain label (letters, digits, '.', '_' or '-', at most 64 characters); reported as 'unknown'.",
+   1
   ]
  ],
- "note": "report-controlled labels and invalid line numbers; PA-04 and PA-05 change type and line, and the outputs leak the labels until PA-04",
+ "note": "report-controlled labels and invalid line numbers; PA-04 replaces labels outside [A-Za-z0-9._-]{1,64} with unknown and masks secrets in the rest, and PA-05 changes the line numbers",
  "reported": true,
  "tree_after": {
   "notes.md": "ec400e779a3eee28",
