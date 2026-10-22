@@ -246,6 +246,10 @@ other scanners.
   A directory scan reads them in the file types it scans (`.pem`, `.key`,
   `.txt`, source files and others); an `.asc` export is read only when
   `extra_extensions` in `.credactor.toml` lists it.
+- **Terraform reference forms are matched only as references.** `data.`,
+  `var.`, `local.`, `module.` and `random_password.` no longer count as a
+  runtime lookup inside a longer name or a path, and JavaScript's
+  `module.exports` is not taken for a Terraform reference.
 
 ### Changed
 

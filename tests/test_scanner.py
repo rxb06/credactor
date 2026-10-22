@@ -954,6 +954,34 @@ class TestDynamicLookupAuditTrail:
         assert any('runtime/dynamic lookup' in r.message for r in credactor_caplog.records)
 
 
+class TestTerraformLookupBoundary:
+    """T29e: a Terraform reference word inside another name (metadata.json,
+    mymodule.py) is not a runtime lookup, so the assignment pass still runs."""
+
+    @pytest.mark.parametrize(
+        'comment',
+        [
+            '# see metadata.json',
+            '# see mymodule.py',
+            '# from userdata.yaml',
+            '# db.local.host',
+            '# see user-data.sh',
+        ],
+    )
+    def test_secret_found_next_to_a_name_holding_a_reference_word(self, config, comment):
+        line = f'password = "Summer2024!xyzQ"  {comment}'
+        findings = scan_line(1, line, 'f.py', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_module_exports_is_not_a_terraform_reference(self, config):
+        line = 'module.exports = { password: "Summer2024!xyzQ" };'
+        findings = scan_line(1, line, 'config.js', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_terraform_reference_still_skips_the_assignment_pass(self, config):
+        assert scan_line(1, 'password = var.db_password', 'main.tf', config=config) == []
+
+
 class TestHashContextWidened:
     """S3: quoted hex/base64 on a line keyed like a commit/checksum/integrity/
     digest field is treated as a hash, not a credential — so --fix-all does not

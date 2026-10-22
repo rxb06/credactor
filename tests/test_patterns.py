@@ -291,6 +291,11 @@ class TestDynamicLookup:
             'vault:secret/data/myapp#key',
             'ENC[AES256_GCM,data:abc123]',
             'hvac.Client(url="https://vault")',
+            'password = var.db_password',
+            'token = "${data.aws_secretsmanager_secret_version.x.secret_string}"',
+            'value = local.api_token',
+            'key = module.vault.secret',
+            'pw = random_password.db.result',
         ],
     )
     def test_matches(self, line):
@@ -303,6 +308,19 @@ class TestDynamicLookup:
             'secret = "AKIAIOSFODNN7EXAMPLE"',
             'password = "p4$$w0rd!"',
             'just_a_string',
+            # T29e: a reference word inside a longer name is not a reference
+            'see metadata.json',
+            'import mymodule.py',
+            'globalvar.name',
+            'db.local.host',
+            'my_random_password.value',
+            'cfg.var.name',
+            'x.module.y',
+            'x.data.y',
+            'x.random_password.y',
+            'see user-data.sh',
+            'see config/data.json',
+            'module.exports = { password: "x" }',
         ],
     )
     def test_no_match(self, line):

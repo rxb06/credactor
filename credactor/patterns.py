@@ -152,12 +152,13 @@ DYNAMIC_LOOKUP_RE = re.compile(
     # Runtime env lookups across languages
     r'|process\.env\.'  # JS/Node: process.env.VAR
     r'|Rails\.application\.credentials'  # Ruby on Rails encrypted credentials
-    # Terraform / HCL references
-    r'|data\.\w+'  # Terraform: any data.* source
-    r'|var\.\w+'  # Terraform: var.name references
-    r'|local\.\w+'  # Terraform: local.* values
-    r'|module\.\w+'  # Terraform: module.* outputs
-    r'|random_password\.\w+'  # Terraform: random_password resource
+    # Terraform / HCL references. T29e: not inside a longer name or a path
+    # (metadata.json, user-data.sh, config/data.json), and not JS module.exports.
+    r'|(?<![\w./-])data\.\w+'  # Terraform: any data.* source
+    r'|(?<![\w./-])var\.\w+'  # Terraform: var.name references
+    r'|(?<![\w./-])local\.\w+'  # Terraform: local.* values
+    r'|(?<![\w./-])module\.(?!exports\b)\w+'  # Terraform: module.* outputs
+    r'|(?<![\w./-])random_password\.\w+'  # Terraform: random_password resource
     # Platform-specific runtime lookups
     r'|BuildConfig\.\w+'  # Android/Kotlin: compile-time constants
     r'|op://[\w/]+'  # 1Password CLI: op://vault/item/field
