@@ -4,8 +4,11 @@ about: Something didn't work as expected
 labels: bug
 ---
 
-> ⚠️ **Do not paste real credentials.** Redact or use fake/example values in any
-> snippet, command output, or log you share.
+> **Do not paste real credentials.** Redact them or use fake example values in
+> any snippet, command output or log you share.
+>
+> **Found a security vulnerability?** Do not open an issue. Report it privately
+> through [GitHub Security Advisories](https://github.com/rxb06/credactor/security/advisories/new).
 
 **What happened**
 A clear description of the bug.
