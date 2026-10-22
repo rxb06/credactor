@@ -1,5 +1,5 @@
 name: 'Credactor - Secrets Redactor'
-description: 'Read-only credential scan and CI gate. SARIF output, plus Gitleaks / TruffleHog / Betterleaks report ingestion. Never rewrites your checkout.'
+description: 'Read-only credential scan and CI gate, with SARIF output and Gitleaks, TruffleHog and Betterleaks ingestion.'
 author: 'Rx'
 
 branding:
