@@ -1,0 +1,39 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-git-dir",
+ "exit": 0,
+ "findings": {
+  ".git/config": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "\ttoken = <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "external:gitleaks:github-pat",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "Plaintext backup created beside original file.\n  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.",
+   1
+  ]
+ ],
+ "note": "records current behaviour (the .git file is rewritten); SR-16 changes it",
+ "reported": true,
+ "tree_after": {
+  ".git/config": "14b70462e5335e56",
+  ".git/config.bak": "9fbe45948e2f12c7",
+  "app.py": "9e26bf369911c45c",
+  "report/gl.json": "22476ccf3b6aca6a"
+ }
+}

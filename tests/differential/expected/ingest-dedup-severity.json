@@ -1,0 +1,41 @@
+{
+ "argv": [
+  "--ci",
+  "--from-trufflehog",
+  "report/th.ndjson",
+  "."
+ ],
+ "case": "ingest-dedup-severity",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "5f4b8f793c79706d",
+    "raw": "webhook_secret = \"<v:5f4b8f793c79706d>\"",
+    "severity": "critical",
+    "type": "variable:webhook_secret",
+    "value": "5f4b8f793c79706d"
+   }
+  ]
+ },
+ "log": [
+  [
+   "INFO",
+   "Dedup raised severity medium -> critical at <root>/app.py:1 (kept variable:webhook_secret, merged external:trufflehog:Generic).",
+   1
+  ],
+  [
+   "INFO",
+   "Deduplicated 1 finding(s).",
+   1
+  ]
+ ],
+ "note": "native medium finding merged with a verified external duplicate",
+ "reported": true,
+ "tree_after": {
+  "app.py": "9b21142679321a0a",
+  "report/th.ndjson": "a390e1b23d6153a0"
+ }
+}

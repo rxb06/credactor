@@ -1,0 +1,73 @@
+{
+ "argv": [
+  "--fix-all",
+  "--yes",
+  "--no-backup",
+  "--replace-with",
+  "env",
+  "."
+ ],
+ "case": "fix-env-quote-forms",
+ "exit": 0,
+ "findings": {
+  "q.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "a = \"\"\"<v:1a5d44a2dca19669>\"\"\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "b = b'<v:b8498412b57d7cac>'",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "3535ae411c51e493",
+    "raw": "c = f\"<v:3535ae411c51e493>\"",
+    "severity": "critical",
+    "type": "pattern:Stripe live key",
+    "value": "3535ae411c51e493"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "df1b0737a6ef1482",
+    "raw": "d = r\"<v:df1b0737a6ef1482>\"",
+    "severity": "critical",
+    "type": "pattern:Slack token",
+    "value": "df1b0737a6ef1482"
+   },
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "--replace-with env changes string literals to function calls. Ensure environment variables are set before running the modified code.",
+   1
+  ]
+ ],
+ "note": "records the broken output for triple quotes and prefixed strings; SR-25 changes it",
+ "reported": true,
+ "tree_after": {
+  "q.py": "6d885c32cad7e564"
+ }
+}

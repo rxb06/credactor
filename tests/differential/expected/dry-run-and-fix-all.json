@@ -1,0 +1,34 @@
+{
+ "argv": [
+  "--dry-run",
+  "--fix-all",
+  "."
+ ],
+ "case": "dry-run-and-fix-all",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "WARNING",
+   "--dry-run takes precedence; ignoring --fix-all \u2014 no files will be modified.",
+   1
+  ]
+ ],
+ "note": "dry-run wins; the file must be unchanged",
+ "reported": true,
+ "tree_after": {
+  "app.py": "aef561de5aaa378b"
+ }
+}

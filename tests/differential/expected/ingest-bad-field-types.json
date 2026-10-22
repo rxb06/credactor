@@ -1,0 +1,18 @@
+{
+ "argv": [
+  "--ci",
+  "--from-gitleaks",
+  "report/gl.json",
+  "."
+ ],
+ "case": "ingest-bad-field-types",
+ "exit": "exception:TypeError",
+ "findings": null,
+ "log": [],
+ "note": "records the current crash; SR-19 turns it into a handled record",
+ "reported": false,
+ "tree_after": {
+  "notes.md": "253730d9c593bcbd",
+  "report/gl.json": "3317b1704e873668"
+ }
+}

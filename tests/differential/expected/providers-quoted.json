@@ -1,0 +1,81 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "providers-quoted",
+ "exit": 1,
+ "findings": {
+  "providers.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "aws_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "gh = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "3535ae411c51e493",
+    "raw": "stripe_key = '<v:3535ae411c51e493>'",
+    "severity": "critical",
+    "type": "pattern:Stripe live key",
+    "value": "3535ae411c51e493"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "df1b0737a6ef1482",
+    "raw": "slack = \"<v:df1b0737a6ef1482>\"",
+    "severity": "critical",
+    "type": "pattern:Slack token",
+    "value": "df1b0737a6ef1482"
+   },
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "d631f4d08459385d",
+    "raw": "jwt = \"<v:8c5a659e7f42eb95>\"",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "8c5a659e7f42eb95"
+   },
+   {
+    "commit": null,
+    "line": 6,
+    "preview": "0e1f844a475a96f0",
+    "raw": "dsn = \"<v:0e1f844a475a96f0>\"",
+    "severity": "high",
+    "type": "pattern:connection string",
+    "value": "0e1f844a475a96f0"
+   },
+   {
+    "commit": null,
+    "line": 7,
+    "preview": "6721246223140285",
+    "raw": "digest_like = \"<v:6721246223140285>\"",
+    "severity": "medium",
+    "type": "pattern:hex credential",
+    "value": "6721246223140285"
+   }
+  ]
+ },
+ "log": [],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "providers.py": "d35d73b13cfc11c4"
+ }
+}

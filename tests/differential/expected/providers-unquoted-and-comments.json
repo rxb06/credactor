@@ -1,0 +1,66 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "providers-unquoted-and-comments",
+ "exit": 1,
+ "findings": {
+  "app.env": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "AWS_ACCESS_KEY_ID=<v:1a5d44a2dca19669>",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "GH_TOKEN=<v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ],
+  "comments.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "# old key: <v:1a5d44a2dca19669>",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "// token <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "3535ae411c51e493",
+    "raw": "x = 1  # trailing <v:3535ae411c51e493>",
+    "severity": "critical",
+    "type": "pattern:Stripe live key",
+    "value": "3535ae411c51e493"
+   }
+  ]
+ },
+ "log": [],
+ "note": "provider prefixes are scanned in comments; heuristic patterns are not",
+ "reported": true,
+ "tree_after": {
+  "app.env": "b3f73317dfa49182",
+  "comments.py": "50fd327ef8d3773d"
+ }
+}

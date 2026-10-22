@@ -1,0 +1,68 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "dynamic-lookups",
+ "exit": 0,
+ "findings": {},
+ "log": [
+  [
+   "DEBUG",
+   "<root>/app.js:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/main.tf:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/main.tf:2 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:2 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:3 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:4 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:5 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:6 suppressed by safe value heuristic",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/runtime.py:7 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ]
+ ],
+ "note": "the last runtime.py line records current behaviour; SR-11 changes it",
+ "reported": true,
+ "tree_after": {
+  "app.js": "99828777c807c4c8",
+  "main.tf": "195af0616ea2e31f",
+  "runtime.py": "90410c6071134433"
+ }
+}

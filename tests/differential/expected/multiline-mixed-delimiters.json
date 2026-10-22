@@ -1,0 +1,78 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "multiline-mixed-delimiters",
+ "exit": 1,
+ "findings": {
+  "cr_block.py": [
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "d631f4d08459385d",
+    "raw": "  token: <v:8c5a659e7f42eb95>",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "8c5a659e7f42eb95"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "d631f4d08459385d",
+    "raw": "\\n  token: <v:8c5a659e7f42eb95>~109",
+    "severity": "high",
+    "type": "multiline:JWT token",
+    "value": "8c5a659e7f42eb95"
+   }
+  ],
+  "crlf_block.py": [
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "d631f4d08459385d",
+    "raw": "  token: <v:8c5a659e7f42eb95>",
+    "severity": "high",
+    "type": "pattern:JWT token",
+    "value": "8c5a659e7f42eb95"
+   },
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "d631f4d08459385d",
+    "raw": "\\n  token: <v:8c5a659e7f42eb95>~109",
+    "severity": "high",
+    "type": "multiline:JWT token",
+    "value": "8c5a659e7f42eb95"
+   }
+  ],
+  "mixed.py": [
+   {
+    "commit": null,
+    "line": 2,
+    "preview": "b8498412b57d7cac",
+    "raw": "key: <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "\\nkey: <v:b8498412b57d7cac>\\n",
+    "severity": "critical",
+    "type": "multiline:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [],
+ "note": "PA-08 must reset its line cursor per delimiter; PA-07 must keep these lines",
+ "reported": true,
+ "tree_after": {
+  "cr_block.py": "6285cb50b5c4d30a",
+  "crlf_block.py": "e444902e4615aeda",
+  "mixed.py": "56d98f08205239b4"
+ }
+}

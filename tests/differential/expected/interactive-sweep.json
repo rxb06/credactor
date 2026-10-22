@@ -1,0 +1,56 @@
+{
+ "argv": [
+  "--no-backup",
+  "."
+ ],
+ "case": "interactive-sweep",
+ "exit": 1,
+ "findings": {
+  "app.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 3,
+    "preview": "b8498412b57d7cac",
+    "raw": "old = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "b8498412b57d7cac",
+    "raw": "note = 1  # <v:b8498412b57d7cac>",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/app.py:2 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "WARNING",
+   "<root>/app.py: also cleared 1 additional copy of redacted value(s) beyond the adjudicated finding(s) (value-global sweep).",
+   1
+  ]
+ ],
+ "note": "interactive approvals and the final sweep; SR-22 and PA-14 change this",
+ "reported": true,
+ "tree_after": {
+  "app.py": "38b5ed0e4808facc"
+ }
+}

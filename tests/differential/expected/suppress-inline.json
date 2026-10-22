@@ -1,0 +1,62 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "suppress-inline",
+ "exit": 1,
+ "findings": {
+  "inline.py": [
+   {
+    "commit": null,
+    "line": 5,
+    "preview": "1a5d44a2dca19669",
+    "raw": "e = \"<v:1a5d44a2dca19669>\"  -- credactor:ignore",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   },
+   {
+    "commit": null,
+    "line": 7,
+    "preview": "1a5d44a2dca19669",
+    "raw": "f = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "<root>/inline.py:1 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/inline.py:2 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/inline.py:3 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/inline.py:4 suppressed by inline credactor:ignore",
+   1
+  ],
+  [
+   "DEBUG",
+   "<root>/inline.py:6 suppressed by inline credactor:ignore",
+   1
+  ]
+ ],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "inline.py": "23856a0baceb7da8"
+ }
+}

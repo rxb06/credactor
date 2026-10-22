@@ -1,0 +1,49 @@
+{
+ "argv": [
+  "--ci",
+  "."
+ ],
+ "case": "pem-blocks",
+ "exit": 1,
+ "findings": {
+  "after_block.py": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   },
+   {
+    "commit": null,
+    "line": 4,
+    "preview": "1a5d44a2dca19669",
+    "raw": "api_key = \"<v:1a5d44a2dca19669>\"",
+    "severity": "critical",
+    "type": "pattern:AWS access key",
+    "value": "1a5d44a2dca19669"
+   }
+  ],
+  "key.pem": [
+   {
+    "commit": null,
+    "line": 1,
+    "preview": "8bcac7908eb95041",
+    "raw": "<v:8bcac7908eb95041>",
+    "severity": "critical",
+    "type": "pattern:private key block",
+    "value": "8bcac7908eb95041"
+   }
+  ]
+ },
+ "log": [],
+ "note": "suppressed_header.py records current behaviour; SR-08 changes it",
+ "reported": true,
+ "tree_after": {
+  "after_block.py": "77ed3da455979f33",
+  "key.pem": "09a15bbfbfbd92d6",
+  "suppressed_header.py": "bdbc969633949ce4"
+ }
+}

@@ -1,0 +1,34 @@
+{
+ "argv": [
+  "--scan-history",
+  "."
+ ],
+ "case": "history",
+ "exit": 1,
+ "findings": {
+  "app.py (commit c1)": [
+   {
+    "commit": "c1",
+    "line": 1,
+    "preview": "b8498412b57d7cac",
+    "raw": "token = \"<v:b8498412b57d7cac>\"",
+    "severity": "critical",
+    "type": "pattern:GitHub token",
+    "value": "b8498412b57d7cac"
+   }
+  ]
+ },
+ "log": [
+  [
+   "DEBUG",
+   "app.py (commit c2):1 assignment scan skipped \u2014 runtime/dynamic lookup",
+   1
+  ]
+ ],
+ "note": "",
+ "reported": true,
+ "tree_after": {
+  "README.txt": "5891b5b522d5df08",
+  "app.py": "9db278a7b5db040f"
+ }
+}
