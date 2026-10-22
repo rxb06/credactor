@@ -191,3 +191,46 @@ def test_latin1_bytes_roundtrip(tmp_path):
     # replaced line is pure ASCII.
     expected = '# café résumé\n'.encode('latin-1') + b'api_key = "REDACTED_BY_CREDACTOR"\n'
     assert p.read_bytes() == expected
+
+
+@pytest.mark.parametrize('seed', range(40))
+@pytest.mark.parametrize('path', ['batch', 'interactive'])
+def test_no_approved_value_left_outside_preserved_lines(tmp_path, monkeypatch, seed, path):
+    """PA-14: whatever the layout, once every finding is approved the file
+    holds no approved value except on lines the user preserved with
+    credactor:ignore, and those lines are left byte-identical."""
+    from credactor.redactor import interactive_review
+
+    rng = random.Random(seed)
+    secrets = [_secret() for _ in range(rng.randint(1, 3))]
+    shapes = [
+        'key_{i} = "{s}"\n',
+        'url = "https://x.invalid/?t={s}"\n',
+        '# rotated from {s}\n',
+        'pair = ("{s}", "{s}")\n',
+        'kept = "{s}"  # credactor:ignore\n',
+        'x = 1\n',
+    ]
+    lines = [
+        rng.choice(shapes).format(i=n, s=rng.choice(secrets)) for n in range(rng.randint(3, 12))
+    ]
+    lines.append(f'key_last = "{secrets[0]}"\n')  # at least one finding
+    target = tmp_path / 'root' / 'app.py'
+    target.parent.mkdir()
+    target.write_text(''.join(lines), encoding='utf-8', newline='')
+
+    cfg = Config(no_color=True)
+    findings = scan_file(str(target), config=cfg)
+    assert findings
+    if path == 'batch':
+        batch_replace_in_file(str(target), findings, cfg)
+    else:
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review(findings, str(target.parent), cfg)
+
+    out = target.read_text(encoding='utf-8').splitlines(keepends=True)
+    preserved = [line for line in lines if 'credactor:ignore' in line]
+    assert [line for line in out if 'credactor:ignore' in line] == preserved
+    for line in out:
+        if 'credactor:ignore' not in line:
+            assert not any(s in line for s in secrets), line

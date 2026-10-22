@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -144,6 +145,37 @@ class TestWalkAndScan:
         resolved = os.path.realpath(py_file)
         assert any(os.path.realpath(e) == resolved for e in errored)
 
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_symlink_loop_is_errored_not_fatal(self, tmp_dir, monkeypatch):
+        # T29f: Python 3.11 and 3.12 raise RuntimeError for a symlink loop
+        # where 3.13 returns the path; both must end the same way, with the
+        # ignore files that send the path through two more resolves.
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(tmp_dir, 'a.py'), 'w') as f:
+            f.write(f'aws = "{key}"\n')
+        with open(os.path.join(tmp_dir, '.gitignore'), 'w') as f:
+            f.write('*.log\n')
+        with open(os.path.join(tmp_dir, '.credactorignore'), 'w') as f:
+            f.write('docs/*.md\n')
+        os.symlink('loop.py', os.path.join(tmp_dir, 'loop.py'))
+        _raise_on_loop(monkeypatch, 'loop.py')
+        findings, _, _, errored = walk_and_scan(
+            tmp_dir, config=Config(no_color=True), allowlist=AllowList(tmp_dir)
+        )
+        assert [f['full_value'] for f in findings] == [key]
+        assert [os.path.basename(e) for e in errored] == ['loop.py']
+
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_symlink_loop_still_matches_its_ignore_entry(self, tmp_dir, monkeypatch):
+        with open(os.path.join(tmp_dir, '.credactorignore'), 'w') as f:
+            f.write('loop.py\n')
+        os.symlink('loop.py', os.path.join(tmp_dir, 'loop.py'))
+        _raise_on_loop(monkeypatch, 'loop.py')
+        _, _, _, errored = walk_and_scan(
+            tmp_dir, config=Config(no_color=True), allowlist=AllowList(tmp_dir)
+        )
+        assert errored == []
+
     @pytest.mark.skipif(
         not hasattr(os, 'getuid') or os.getuid() == 0,
         reason='chmod 000 is not honoured as root / on Windows',
@@ -161,6 +193,18 @@ class TestWalkAndScan:
             assert any(os.path.realpath(e) == resolved for e in errored)
         finally:
             os.chmod(py_file, 0o644)
+
+
+def _raise_on_loop(monkeypatch, *names):
+    """Make Path.resolve on the named paths raise as 3.11 and 3.12 do."""
+    real = Path.resolve
+
+    def resolve(self, strict=False):
+        if self.name in names:
+            raise RuntimeError(f'Symlink loop from {str(self)!r}')
+        return real(self, strict=strict)
+
+    monkeypatch.setattr(Path, 'resolve', resolve)
 
 
 @pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
@@ -183,6 +227,27 @@ class TestStagedScanning:
             f.write('aws = "clean"\n')
         findings, errored = scan_staged_files(repo, config=Config(no_color=True))
         assert len(findings) >= 1
+        assert errored == []
+
+    @pytest.mark.skipif(os.name == 'nt', reason='symlinks')
+    def test_staged_symlink_loop_is_scanned(self, tmp_dir, monkeypatch):
+        # T29f: the staged blob of a link is its target text, read from the
+        # index, so a loop is scanned like any other staged file. Here the
+        # text holds a key, so the finding goes through the allowlist too.
+        repo = self._init_repo(tmp_dir)
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        with open(os.path.join(repo, '.credactorignore'), 'w') as f:
+            f.write('docs/*.md\n')
+        os.symlink(f'{key}.py', os.path.join(repo, 'loop.py'))
+        os.symlink('loop.py', os.path.join(repo, f'{key}.py'))
+        subprocess.run(['git', 'add', '-A'], cwd=repo, check=True, capture_output=True)
+        _raise_on_loop(monkeypatch, 'loop.py', f'{key}.py')
+        findings, errored = scan_staged_files(
+            repo, config=Config(no_color=True), allowlist=AllowList(repo)
+        )
+        assert [(os.path.basename(f['file']), f['full_value']) for f in findings] == [
+            ('loop.py', key)
+        ]
         assert errored == []
 
     def test_raises_when_toplevel_unresolvable(self, tmp_dir):

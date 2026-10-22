@@ -521,18 +521,18 @@ class TestScanFile:
     _KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
 
     def test_inline_suppressed_pem_header_does_not_hide_following_lines(
-        self, make_file, config, caplog
+        self, make_file, config, credactor_caplog
     ):
         path = make_file(
             'k.py',
             f'-----BEGIN RSA PRIVATE KEY-----  # credactor:ignore\napi_key = "{self._KEY}"\n',
         )
-        with caplog.at_level(logging.DEBUG, logger='credactor'):
+        with credactor_caplog.at_level(logging.DEBUG, logger='credactor'):
             findings = scan_file(path, config=config)
         assert [f['full_value'] for f in findings] == [self._KEY]
         assert [f['line'] for f in findings] == [2]
         assert f'{path}:1 suppressed by inline credactor:ignore' in [
-            r.getMessage() for r in caplog.records
+            r.getMessage() for r in credactor_caplog.records
         ]
 
     def test_allowlisted_pem_header_does_not_hide_following_lines(self, tmp_path, config):
@@ -597,6 +597,44 @@ class TestScanFile:
         )
         findings = scan_file(make_file('one.py', content), config=config)
         assert self._KEY in [f['full_value'] for f in findings]
+
+    @pytest.mark.parametrize(
+        ('begin', 'end'),
+        [
+            ('-----BEGIN ENCRYPTED PRIVATE KEY-----', '-----END ENCRYPTED PRIVATE KEY-----'),
+            ('-----BEGIN PGP PRIVATE KEY BLOCK-----', '-----END PGP PRIVATE KEY BLOCK-----'),
+        ],
+    )
+    def test_encrypted_and_pgp_key_blocks_detected(self, make_file, config, begin, end):
+        content = f'{begin}\n{self._BODY}\n{end}\naws_key = "{self._KEY}"\n'
+        findings = scan_file(make_file('k.py', content), config=config)
+        assert [(f['line'], f['type']) for f in findings] == [
+            (1, 'pattern:private key block'),
+            (4, 'pattern:AWS access key'),
+        ]
+
+    @pytest.mark.parametrize('kind', ['ENCRYPTED PRIVATE KEY', 'PGP PRIVATE KEY BLOCK'])
+    def test_one_line_encrypted_or_pgp_key_does_not_hide_the_lines_after_it(
+        self, make_file, config, kind
+    ):
+        content = (
+            f'TEST_KEY = "-----BEGIN {kind}-----\\n{self._BODY}\\n-----END {kind}-----\\n"\n'
+            f'aws_key = "{self._KEY}"\n'
+        )
+        findings = scan_file(make_file('one.py', content), config=config)
+        assert self._KEY in [f['full_value'] for f in findings]
+
+    def test_suppressed_pgp_armour_gives_no_findings(self, make_file, config):
+        # Armour headers and the blank line before the body are scanned (they
+        # are not body-shaped) and hold nothing; the checksum line is skipped.
+        content = (
+            '-----BEGIN PGP PRIVATE KEY BLOCK-----  # credactor:ignore\n'
+            'Version: GnuPG v2\n'
+            'Comment: test fixture\n'
+            '\n' + ''.join(f'{self._BODY}\n' for _ in range(6)) + '=AbCd\n'
+            '-----END PGP PRIVATE KEY BLOCK-----\n'
+        )
+        assert scan_file(make_file('k.asc.py', content), config=config) == []
 
     def test_clean_file_no_findings(self, make_file, config):
         content = 'import os\napi_key = os.getenv("API_KEY")\nprint("hello world")\n'
@@ -914,6 +952,34 @@ class TestDynamicLookupAuditTrail:
         # pass would catch the weak default, and it is (correctly) suppressed.
         scan_line(1, 'password = config.get("db_pass", "summer2024")', 'f.py')
         assert any('runtime/dynamic lookup' in r.message for r in credactor_caplog.records)
+
+
+class TestTerraformLookupBoundary:
+    """T29e: a Terraform reference word inside another name (metadata.json,
+    mymodule.py) is not a runtime lookup, so the assignment pass still runs."""
+
+    @pytest.mark.parametrize(
+        'comment',
+        [
+            '# see metadata.json',
+            '# see mymodule.py',
+            '# from userdata.yaml',
+            '# db.local.host',
+            '# see user-data.sh',
+        ],
+    )
+    def test_secret_found_next_to_a_name_holding_a_reference_word(self, config, comment):
+        line = f'password = "Summer2024!xyzQ"  {comment}'
+        findings = scan_line(1, line, 'f.py', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_module_exports_is_not_a_terraform_reference(self, config):
+        line = 'module.exports = { password: "Summer2024!xyzQ" };'
+        findings = scan_line(1, line, 'config.js', config=config)
+        assert [f['full_value'] for f in findings] == ['Summer2024!xyzQ']
+
+    def test_terraform_reference_still_skips_the_assignment_pass(self, config):
+        assert scan_line(1, 'password = var.db_password', 'main.tf', config=config) == []
 
 
 class TestHashContextWidened:

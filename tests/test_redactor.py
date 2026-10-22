@@ -402,6 +402,16 @@ class TestDeriveEnvVarName:
     def test_name_that_holds_the_secret_falls_back(self, ftype, value):
         assert _derive_env_var_name({'type': ftype, 'full_value': value}) == 'CREDENTIAL'
 
+    @pytest.mark.parametrize(
+        ('ftype', 'value'),
+        [('external:gitleaks:Zq7wPx', 'Zq7wPx'), ('external:gitleaks:key-Zq7w', 'Zq7w')],
+        ids=['short-equal', 'short-inside'],
+    )
+    def test_name_that_holds_a_short_secret_falls_back(self, ftype, value):
+        # A reported secret can be as short as 4 characters, fewer than the
+        # 8 the shared-run check needs.
+        assert _derive_env_var_name({'type': ftype, 'full_value': value}) == 'CREDENTIAL'
+
     def test_name_sharing_seven_characters_is_kept(self):
         finding = {
             'type': 'external:gitleaks:aws-access-token',
@@ -1640,11 +1650,13 @@ class TestReadOncePlanFirst:
         with open(path + '.bak', 'rb') as fh:
             assert fh.read() == original
 
-    def test_same_size_edit_in_place_is_seen(self, make_file, monkeypatch):
+    def test_same_size_edit_in_place_is_seen(self, tmp_path, monkeypatch):
         # One byte changed in place: size and inode stay, only mtime moves.
         import credactor.redactor as redactor
 
-        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# note\n')
+        # Written as bytes, so the offsets below hold on Windows too.
+        path = str(tmp_path / 'a.py')
+        Path(path).write_bytes(f'k = "{_AWS_KEY}"\n# note\n'.encode())
         real_apply = redactor._apply_findings
 
         def apply_then_touch(*args, **kwargs):
@@ -1660,14 +1672,15 @@ class TestReadOncePlanFirst:
         assert batch_replace_in_file(
             path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
         ) == (0, 1)
-        assert Path(path).read_text(encoding='utf-8').endswith('# notN\n')
+        assert Path(path).read_bytes().endswith(b'# notN\n')
 
-    def test_same_size_replacement_with_the_old_mtime_is_seen(self, make_file, monkeypatch):
+    def test_same_size_replacement_with_the_old_mtime_is_seen(self, tmp_path, monkeypatch):
         # The path now names another file of the same size and mtime (cp -p,
         # rsync -a): only the inode tells.
         import credactor.redactor as redactor
 
-        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        path = str(tmp_path / 'a.py')
+        Path(path).write_bytes(f'k = "{_AWS_KEY}"\n'.encode())
         real_apply = redactor._apply_findings
 
         def apply_then_replace(*args, **kwargs):
@@ -2321,7 +2334,9 @@ class TestWritePathFailures:
     def test_root_that_ends_in_a_separator(self, tmp_path):
         path = tmp_path / 'a.py'
         path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
-        root = os.path.abspath(os.sep)
+        # The root of the drive the file is on: os.path.abspath(os.sep) gives
+        # the current directory's drive, which on Windows may be another one.
+        root = tmp_path.anchor
         finding = _mk_finding(str(path), _AWS_KEY)
         assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
 

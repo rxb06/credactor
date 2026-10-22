@@ -160,6 +160,12 @@ def _hermetic_git(root: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
 
 
+# The CLI warns when it runs as root. A snapshot must not depend on who runs
+# the suite, so the warning is left out rather than faking the uid, which
+# would also change what Path.home() finds when HOME is unset.
+_ROOT_WARNING = 'Running as root'
+
+
 def run_case(
     case: Case, root: Path, monkeypatch: Any
 ) -> tuple[dict[str, Any], dict[str, str], list[str]]:
@@ -233,6 +239,11 @@ def run_case(
     counts: dict[tuple[str, str], int] = {}
     for record in capture.records:
         message = record.getMessage()
+        if message.startswith(_ROOT_WARNING):
+            continue  # depends on who runs the suite, not on the case
+        if os.sep == '\\':
+            # A path logged with %r has its backslashes doubled.
+            message = message.replace('\\\\', '\\')
         for r in roots:
             message = message.replace(r, '<root>')
         if os.sep == '\\':

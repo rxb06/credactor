@@ -3452,12 +3452,16 @@ class TestReportLabels:
             'bidi',
         ],
     )
-    def test_anything_but_a_plain_label_becomes_unknown(self, tmp_path, parser, label, caplog):
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+    def test_anything_but_a_plain_label_becomes_unknown(
+        self, tmp_path, parser, label, credactor_caplog
+    ):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             findings, target, secret, name = self._ingest(tmp_path, parser, label)
         assert findings[0]['type'] == f'external:{parser}:unknown'
         assert findings[0]['full_value'] == secret
-        warnings = [r.getMessage() for r in caplog.records if 'reported as' in r.getMessage()]
+        warnings = [
+            r.getMessage() for r in credactor_caplog.records if 'reported as' in r.getMessage()
+        ]
         assert warnings == [
             f'1 {name} finding(s) had a {"DetectorName" if parser == "trufflehog" else "RuleID"}'
             " that is not a plain label (letters, digits, '.', '_' or '-', at most 64"
@@ -3468,13 +3472,13 @@ class TestReportLabels:
             assert '\x1b' not in text, fmt
 
     @pytest.mark.parametrize('label', ['a', 'r' * 64, 'aws-access_token.v2', 'AWS'])
-    def test_plain_labels_are_kept(self, tmp_path, parser, label, caplog):
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+    def test_plain_labels_are_kept(self, tmp_path, parser, label, credactor_caplog):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             findings, _, _, _ = self._ingest(tmp_path, parser, label)
         assert findings[0]['type'] == f'external:{parser}:{label}'
-        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+        assert not [r for r in credactor_caplog.records if 'reported as' in r.getMessage()]
 
-    def test_missing_label_is_unknown_without_a_warning(self, tmp_path, parser, caplog):
+    def test_missing_label_is_unknown_without_a_warning(self, tmp_path, parser, credactor_caplog):
         ingest, report, target, _, _ = _PARSER_CASES[parser](tmp_path, 'x')
         field = 'DetectorName' if parser == 'trufflehog' else 'RuleID'
         records = (
@@ -3490,13 +3494,13 @@ class TestReportLabels:
             else json.dumps(records)
         )
         report.write_text(body, encoding='utf-8')
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             findings = ingest(str(report), str(target), new_ingest_stats())
         assert findings[0]['type'] == f'external:{parser}:unknown'
-        assert not [r for r in caplog.records if 'reported as' in r.getMessage()]
+        assert not [r for r in credactor_caplog.records if 'reported as' in r.getMessage()]
 
 
-def test_dedup_severity_log_masks_secrets_in_types(caplog):
+def test_dedup_severity_log_masks_secrets_in_types(credactor_caplog):
     # PA-04: the log names both findings' types, and an ingested type holds a
     # report's label.
     secret = 'AKIAIOSFODNN7EXAMPLE'
@@ -3507,11 +3511,13 @@ def test_dedup_severity_log_masks_secrets_in_types(caplog):
         _make_finding(file=path, ftype=f'external:trufflehog:{secret}', severity='critical'),
         _make_finding(full_value=other, line=11),
     ]
-    with caplog.at_level(logging.INFO, logger='credactor'):
+    with credactor_caplog.at_level(logging.INFO, logger='credactor'):
         result = deduplicate_findings(findings)
     assert len(result) == 2
     assert result[0]['severity'] == 'critical'
-    (message,) = [r.getMessage() for r in caplog.records if 'raised severity' in r.getMessage()]
+    (message,) = [
+        r.getMessage() for r in credactor_caplog.records if 'raised severity' in r.getMessage()
+    ]
     assert secret not in message
     assert other not in message
     assert 'external:gitleaks:ghp_[REDACTED]' in message
@@ -3541,19 +3547,19 @@ class TestReportCommits:
     """A report's commit id is emitted verbatim in JSON, so only a hex id
     that is not part of the secret is kept."""
 
-    def _ingest(self, tmp_path, parser, commit, caplog):
+    def _ingest(self, tmp_path, parser, commit, credactor_caplog):
         ingest, report, target = _with_commit(parser, tmp_path, commit)
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             findings = ingest(str(report), str(target), new_ingest_stats())
         assert len(findings) == 1, 'the finding is kept'
-        warned = [r.getMessage() for r in caplog.records if 'commit id' in r.getMessage()]
+        warned = [r.getMessage() for r in credactor_caplog.records if 'commit id' in r.getMessage()]
         return findings[0], warned
 
     @pytest.mark.parametrize(
         'commit', ['abc1234', 'ABCDEF0123456789abcdef0123456789abcdef01', 'a1' * 32]
     )
-    def test_hex_commit_is_kept(self, tmp_path, parser, commit, caplog):
-        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+    def test_hex_commit_is_kept(self, tmp_path, parser, commit, credactor_caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, credactor_caplog)
         assert finding['commit'] == commit[:12]
         assert warned == []
 
@@ -3562,8 +3568,8 @@ class TestReportCommits:
         ['##[error]abc', 'abc 1234', 'abc123', 'g' * 12, 'a' * 65, 'AKIAIOSFODNN'],
         ids=['marker', 'space', 'short', 'not-hex', 'long', 'secret'],
     )
-    def test_anything_else_is_dropped_and_counted(self, tmp_path, parser, commit, caplog):
-        finding, warned = self._ingest(tmp_path, parser, commit, caplog)
+    def test_anything_else_is_dropped_and_counted(self, tmp_path, parser, commit, credactor_caplog):
+        finding, warned = self._ingest(tmp_path, parser, commit, credactor_caplog)
         assert 'commit' not in finding
         name = {'gitleaks': 'Gitleaks', 'betterleaks': 'Betterleaks', 'trufflehog': 'TruffleHog'}
         assert warned == [
@@ -3579,8 +3585,10 @@ class TestReportCommits:
         ('c0ffee42', '0000c0ffee42aaaa0000c0ffee42aaaa00000000', False),  # inside it
         ('Ab12Cd34Ef56Gh78', '0Ab12Cd34Ef5', False),  # overlapping
         ('Ab12Cd34Ef56Gh78', '0Ab12C99999999', True),  # five characters only
+        ('deadbeefcafe0123456789ab', 'DEADBEEFCAFE', False),  # hex ignores case
+        ('DEADBEEFCAFE0123456789AB', 'deadbeefcafe', False),
     ],
-    ids=['equal', 'inside', 'overlap', 'short-overlap'],
+    ids=['equal', 'inside', 'overlap', 'short-overlap', 'upper-commit', 'upper-secret'],
 )
 def test_commit_sharing_the_secret_is_dropped(tmp_path, secret, commit, kept):
     # Gitleaks only: the three parsers share _report_commit.
@@ -3592,17 +3600,17 @@ def test_commit_sharing_the_secret_is_dropped(tmp_path, secret, commit, kept):
     assert ('commit' in finding) is kept
 
 
-def test_skipped_trufflehog_record_does_not_count_its_commit(tmp_path, caplog):
+def test_skipped_trufflehog_record_does_not_count_its_commit(tmp_path, credactor_caplog):
     target, _ = _make_th_target(tmp_path)
     git = {'file': 'missing.py', 'line': 1, 'commit': 'not-a-commit'}
     record = _make_trufflehog_finding(SourceMetadata={'Data': {'Git': git}})
-    with caplog.at_level(logging.WARNING, logger='credactor'):
+    with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
         findings = ingest_trufflehog(str(_write_ndjson(tmp_path, [record])), str(target))
     assert findings == []
-    assert not [r for r in caplog.records if 'commit id' in r.getMessage()]
+    assert not [r for r in credactor_caplog.records if 'commit id' in r.getMessage()]
 
 
-def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):
+def test_warnings_count_each_parser_on_its_own(tmp_path, credactor_caplog):
     # The CLI passes one stats dict to every parser, so each summary is a
     # delta against what that parser saw on entry.
     stats = new_ingest_stats()
@@ -3610,10 +3618,10 @@ def test_warnings_count_each_parser_on_its_own(tmp_path, caplog):
     gl = _write_report(tmp_path / 'gl', [_make_gitleaks_finding(RuleID='a b', Commit='x y')] * 2)
     th_target, _ = _make_th_target(tmp_path / 'th')
     th = _write_ndjson(tmp_path / 'th', [_make_trufflehog_finding()])
-    with caplog.at_level(logging.WARNING, logger='credactor'):
+    with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
         ingest_gitleaks(str(gl), str(gl_target), stats)
         ingest_trufflehog(str(th), str(th_target), stats)
-    messages = [r.getMessage() for r in caplog.records]
+    messages = [r.getMessage() for r in credactor_caplog.records]
     assert [m.split(' finding')[0] for m in messages if 'plain label' in m] == ['2 Gitleaks']
     assert [m.split(' finding')[0] for m in messages if 'commit id' in m] == ['2 Gitleaks']
     assert not [m for m in messages if 'TruffleHog' in m]
@@ -3672,13 +3680,13 @@ class TestImplausibleSecrets:
             'abcd1234\r',
         ],
     )
-    def test_kept_and_refused(self, tmp_path, parser, secret, caplog):
+    def test_kept_and_refused(self, tmp_path, parser, secret, credactor_caplog):
         ingest, report, target = _record_for(parser, tmp_path, secret, 'x = 1')
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             (finding,) = ingest(str(report), str(target), new_ingest_stats())
         assert finding['full_value'] == secret
         assert finding.get('refuse_reason')
-        assert any('not a single token' in r.getMessage() for r in caplog.records)
+        assert any('not a single token' in r.getMessage() for r in credactor_caplog.records)
 
     @pytest.mark.parametrize(
         'secret',
@@ -3881,7 +3889,7 @@ class TestRecordBackstop:
     from its location and secret (rule unknown), and an error there too
     counts it invalid. A field added later cannot crash the run."""
 
-    def test_error_in_a_label_keeps_the_finding(self, tmp_path, parser, caplog):
+    def test_error_in_a_label_keeps_the_finding(self, tmp_path, parser, credactor_caplog):
         from credactor import ingest as ingest_module
 
         name = _SR19_SEVERITY[parser]
@@ -3894,7 +3902,7 @@ class TestRecordBackstop:
 
         with (
             mock.patch(f'credactor.ingest.{name}', severity),
-            caplog.at_level(logging.WARNING, logger='credactor'),
+            credactor_caplog.at_level(logging.WARNING, logger='credactor'),
         ):
             (finding,), stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
         assert finding['type'] == f'external:{parser}:unknown'
@@ -3902,18 +3910,19 @@ class TestRecordBackstop:
         assert finding['line'] == 1
         assert stats['invalid_record'] == 0
         assert any(
-            'could not be read in full (TypeError)' in r.getMessage() for r in caplog.records
+            'could not be read in full (TypeError)' in r.getMessage()
+            for r in credactor_caplog.records
         )
 
-    def test_error_in_the_core_fields_counts_invalid(self, tmp_path, parser, caplog):
+    def test_error_in_the_core_fields_counts_invalid(self, tmp_path, parser, credactor_caplog):
         with (
             mock.patch('credactor.ingest._mark_implausible', side_effect=AttributeError),
-            caplog.at_level(logging.WARNING, logger='credactor'),
+            credactor_caplog.at_level(logging.WARNING, logger='credactor'),
         ):
             findings, stats = _sr19_ingest(parser, tmp_path, _sr19_record(parser))
         assert findings == []
         assert stats['invalid_record'] == 1
-        assert any('skipped as invalid' in r.getMessage() for r in caplog.records)
+        assert any('skipped as invalid' in r.getMessage() for r in credactor_caplog.records)
 
     def test_failed_retry_is_not_counted_either(self, tmp_path, parser):
         # Both attempts move a counter before they fail; the record ends up
@@ -4089,15 +4098,15 @@ class TestInvalidLineNumbers:
     line 0, reported and unresolved, and refuses the write. It was line 1."""
 
     @pytest.mark.parametrize('value', _BAD_LINES)
-    def test_kept_at_line_zero_and_refused(self, tmp_path, parser, value, caplog):
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+    def test_kept_at_line_zero_and_refused(self, tmp_path, parser, value, credactor_caplog):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             (finding,), stats = _sr19_ingest(parser, tmp_path, _with_line(parser, value))
         assert finding['line'] == 0
         assert finding['full_value'] == _SR19_SECRET
         assert 'line number' in finding['refuse_reason']
         assert stats['bad_line'] == 1
         assert stats['invalid_record'] == 0
-        assert any('no valid line number' in r.getMessage() for r in caplog.records)
+        assert any('no valid line number' in r.getMessage() for r in credactor_caplog.records)
 
     @pytest.mark.parametrize('value', [1, 2])
     def test_valid_line_is_kept(self, tmp_path, parser, value):
@@ -4138,24 +4147,24 @@ class TestIngestedSymlinkPaths:
     """SR-18: a report path through a symlink is taken as the
     file it points to, as before, with a warning naming both."""
 
-    def _ingest(self, tmp_path, parser, path, caplog):
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+    def _ingest(self, tmp_path, parser, path, credactor_caplog):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             (finding,), _ = _sr19_ingest(parser, tmp_path, _with_path(parser, path))
         real = str((tmp_path / 'repo' / 'src' / 'app.py').resolve())
-        warnings = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        warnings = [r.getMessage() for r in credactor_caplog.records if 'symlink' in r.getMessage()]
         return finding, real, warnings
 
-    def test_link_to_a_file_is_followed_and_named(self, tmp_path, parser, caplog):
+    def test_link_to_a_file_is_followed_and_named(self, tmp_path, parser, credactor_caplog):
         (tmp_path / 'repo' / 'src').mkdir(parents=True)
         _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
-        finding, real, warnings = self._ingest(tmp_path, parser, 'src/link.py', caplog)
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/link.py', credactor_caplog)
         assert finding['file'] == real
         (message,) = warnings
         # The target is shown with forward slashes on every platform.
         assert "path 'src/link.py' goes through a symlink" in message
         assert "taken as its target 'src/app.py'" in message
 
-    def test_one_warning_per_linked_path(self, tmp_path, parser, caplog):
+    def test_one_warning_per_linked_path(self, tmp_path, parser, credactor_caplog):
         (tmp_path / 'repo' / 'src').mkdir(parents=True)
         _symlink_or_skip(tmp_path / 'repo' / 'src' / 'link.py', 'app.py')
         records = [_with_path(parser, 'src/link.py') for _ in range(3)]
@@ -4169,12 +4178,14 @@ class TestIngestedSymlinkPaths:
             ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, records)
         else:
             ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, records)
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             findings = ingest(str(report), str(target), new_ingest_stats())
         assert len(findings) == 3
-        assert sum('symlink' in r.getMessage() for r in caplog.records) == 1
+        assert sum('symlink' in r.getMessage() for r in credactor_caplog.records) == 1
 
-    def test_absolute_path_through_a_linked_parent_of_the_root(self, tmp_path, parser, caplog):
+    def test_absolute_path_through_a_linked_parent_of_the_root(
+        self, tmp_path, parser, credactor_caplog
+    ):
         # A link above the root is not the report naming another file.
         real_parent = tmp_path / 'real'
         (real_parent / 'repo' / 'src').mkdir(parents=True)
@@ -4189,12 +4200,14 @@ class TestIngestedSymlinkPaths:
             ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
         else:
             ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             (finding,) = ingest(str(report), str(target), new_ingest_stats())
         assert finding['file'] == str((target / 'src' / 'app.py').resolve())
-        assert not any('symlink' in r.getMessage() for r in caplog.records)
+        assert not any('symlink' in r.getMessage() for r in credactor_caplog.records)
 
-    def test_absolute_path_through_an_alias_to_a_link_inside(self, tmp_path, parser, caplog):
+    def test_absolute_path_through_an_alias_to_a_link_inside(
+        self, tmp_path, parser, credactor_caplog
+    ):
         real_parent = tmp_path / 'real'
         (real_parent / 'repo' / 'src').mkdir(parents=True)
         _symlink_or_skip(tmp_path / 'alias', 'real')
@@ -4208,9 +4221,11 @@ class TestIngestedSymlinkPaths:
             ingest, report = ingest_betterleaks, _write_betterleaks_report(tmp_path, [record])
         else:
             ingest, report = ingest_trufflehog, _write_ndjson(tmp_path, [record])
-        with caplog.at_level(logging.WARNING, logger='credactor'):
+        with credactor_caplog.at_level(logging.WARNING, logger='credactor'):
             ingest(str(report), str(target), new_ingest_stats())
-        (message,) = [r.getMessage() for r in caplog.records if 'symlink' in r.getMessage()]
+        (message,) = [
+            r.getMessage() for r in credactor_caplog.records if 'symlink' in r.getMessage()
+        ]
         assert "taken as its target 'src/app.py'" in message
 
     def test_symlink_loop_does_not_end_the_run(self, tmp_path, parser):
@@ -4219,16 +4234,16 @@ class TestIngestedSymlinkPaths:
         findings, _ = _sr19_ingest(parser, tmp_path, _with_path(parser, 'loop/x.py'))
         assert findings == []
 
-    def test_link_to_a_directory_is_followed_and_named(self, tmp_path, parser, caplog):
+    def test_link_to_a_directory_is_followed_and_named(self, tmp_path, parser, credactor_caplog):
         (tmp_path / 'repo' / 'src').mkdir(parents=True)
         _symlink_or_skip(tmp_path / 'repo' / 'lnk', 'src')
-        finding, real, warnings = self._ingest(tmp_path, parser, 'lnk/app.py', caplog)
+        finding, real, warnings = self._ingest(tmp_path, parser, 'lnk/app.py', credactor_caplog)
         assert finding['file'] == real
         (message,) = warnings
         assert 'lnk/app.py' in message
 
-    def test_plain_path_has_no_warning(self, tmp_path, parser, caplog):
-        finding, real, warnings = self._ingest(tmp_path, parser, 'src/app.py', caplog)
+    def test_plain_path_has_no_warning(self, tmp_path, parser, credactor_caplog):
+        finding, real, warnings = self._ingest(tmp_path, parser, 'src/app.py', credactor_caplog)
         assert finding['file'] == real
         assert warnings == []
 

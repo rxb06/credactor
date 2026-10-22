@@ -471,7 +471,11 @@ class TestIngestIntoGit:
             main(list(argv))
         return exc_info.value.code
 
-    @pytest.mark.parametrize('rel', ['.git/config', '.git/hooks/pre-commit', 'sub/.git/config'])
+    # '.git.' names .git itself on Windows, which drops a trailing dot;
+    # elsewhere it is another directory, refused all the same.
+    GIT_PATHS = ('.git/config', '.git/hooks/pre-commit', 'sub/.git/config', '.git./config')
+
+    @pytest.mark.parametrize('rel', GIT_PATHS)
     def test_fix_all_leaves_git_untouched_and_exits_1(self, tmp_path, rel, capsys):
         repo, target = self._project(tmp_path, rel)
         before = target.read_bytes()
@@ -483,9 +487,10 @@ class TestIngestIntoGit:
         err = capsys.readouterr().err
         assert '.git' in err and 'not rewritten' in err
 
-    def test_ci_still_reports_it(self, tmp_path, capsys):
-        repo, _ = self._project(tmp_path)
-        report = self._report(tmp_path, '.git/config')
+    @pytest.mark.parametrize('rel', GIT_PATHS)
+    def test_ci_still_reports_it(self, tmp_path, capsys, rel):
+        repo, _ = self._project(tmp_path, rel)
+        report = self._report(tmp_path, rel)
         assert self._run('--ci', '-f', 'json', '--from-gitleaks', str(report), str(repo)) == 1
         data = json.loads(capsys.readouterr().out)
         assert data['count'] == 1
@@ -498,6 +503,25 @@ class TestIngestIntoGit:
         report = self._report(tmp_path, '.GIT/config')
         assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
         assert target.read_bytes() == before
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows feature')
+    def test_short_name_on_windows(self, tmp_path):
+        # Windows can also reach .git by its 8.3 short name (GIT~1).
+        import ctypes
+
+        repo, target = self._project(tmp_path)
+        git_dir = str(repo / '.git')
+        buf = ctypes.create_unicode_buffer(260)
+        if not ctypes.windll.kernel32.GetShortPathNameW(git_dir, buf, len(buf)):
+            pytest.skip('no short name for .git')
+        short = os.path.basename(buf.value)
+        if short.casefold() == '.git':
+            pytest.skip('8.3 short names are off on this volume')
+        before = target.read_bytes()
+        report = self._report(tmp_path, f'{short}/config')
+        assert self._run('--fix-all', '--yes', '--from-gitleaks', str(report), str(repo)) == 1
+        assert target.read_bytes() == before
+        assert not list(target.parent.glob('*.bak'))
 
     @pytest.mark.skipif(sys.platform == 'win32', reason='symlinks')
     def test_symlink_into_git(self, tmp_path):

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ._log import logger
 from .patterns import SCAN_EXTENSIONS, SUPPRESS_RE
-from .utils import ignore_file_lines, read_aux_file
+from .utils import ignore_file_lines, read_aux_file, resolve_path
 
 
 def has_inline_suppression(line: str) -> bool:
@@ -131,7 +131,8 @@ class AllowList:
         if cached is not None:
             return cached
         try:
-            rel = Path(filepath).resolve().relative_to(self._root).as_posix()
+            # T29f: resolve_path, so a symlink loop does not raise
+            rel = resolve_path(filepath).relative_to(self._root).as_posix()
         except ValueError:
             rel = filepath
         self._rel_cache[filepath] = rel

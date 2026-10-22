@@ -133,6 +133,23 @@ def detect_encoding(filepath: str) -> str:
     return 'latin-1'
 
 
+def resolve_path(path: str | Path) -> Path:
+    """``Path(path).resolve()`` that ends at a symlink loop as Python 3.13 does.
+
+    T29f: Python 3.11 and 3.12 raise RuntimeError for a loop, where 3.13
+    returns the path with the looping part left as it is. Resolve the parent
+    and keep the last part, so a loop gets the same path on every version.
+    OSError still propagates.
+    """
+    p = Path(path)
+    try:
+        return p.resolve()
+    except RuntimeError:
+        if p.parent == p:
+            raise
+        return resolve_path(p.parent) / p.name
+
+
 def is_within_root(path_str: str, root_str: str) -> bool:
     """Cross-platform path containment check.
 

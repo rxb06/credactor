@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from credactor.utils import group_by_file, in_git_dir, preview, relativize
+from credactor.utils import group_by_file, in_git_dir, preview, relativize, resolve_path
 
 
 class TestInGitDir:
@@ -23,6 +23,39 @@ class TestInGitDir:
     )
     def test_not_git(self, tmp_path, path):
         assert not in_git_dir(str(tmp_path / path), str(tmp_path))
+
+
+class TestResolvePath:
+    """T29f: a symlink loop resolves to its parent's real path plus its own
+    name, the path Python 3.13 returns, where 3.11 and 3.12 raise."""
+
+    def _raise_for(self, monkeypatch, name):
+        real = Path.resolve
+
+        def resolve(self, strict=False):
+            if self.name == name:
+                raise RuntimeError('Symlink loop')
+            return real(self, strict=strict)
+
+        monkeypatch.setattr(Path, 'resolve', resolve)
+
+    def test_loop_keeps_its_name_under_the_real_parent(self, tmp_path, monkeypatch):
+        (tmp_path / 'real').mkdir()
+        self._raise_for(monkeypatch, 'loop.py')
+        got = resolve_path(tmp_path / 'real' / 'loop.py')
+        assert got == (tmp_path / 'real').resolve() / 'loop.py'
+
+    def test_plain_path_is_resolved(self, tmp_path):
+        (tmp_path / 'a.py').write_text('x')
+        assert resolve_path(str(tmp_path / 'a.py')) == (tmp_path / 'a.py').resolve()
+
+    def test_os_error_is_not_caught(self, tmp_path, monkeypatch):
+        def resolve(self, strict=False):
+            raise OSError('denied')
+
+        monkeypatch.setattr(Path, 'resolve', resolve)
+        with pytest.raises(OSError):
+            resolve_path(tmp_path / 'a.py')
 
 
 class TestPreview:

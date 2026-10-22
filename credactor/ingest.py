@@ -137,7 +137,8 @@ def _report_label(value: object, stats: dict[str, Any] | None) -> str:
 # A report's commit id is emitted verbatim in JSON, so the same holds: only a
 # hex id is kept (SHA-1 or SHA-256), and not one that shares a run of
 # _COMMIT_SHARED characters with the secret (a hex secret would pass the
-# charset check). The finding is kept without it.
+# charset check), compared without case since hex has none. The finding is
+# kept without it.
 _COMMIT_RE = re.compile(r'[0-9a-fA-F]{7,64}')
 _COMMIT_SHARED = 6
 
@@ -149,8 +150,10 @@ def _report_commit(value: object, secret: str, stats: dict[str, Any] | None) -> 
     if not isinstance(value, str) or not value:
         return ''
     kept = value[:12]
+    folded, secret_folded = kept.casefold(), secret.casefold()
     shares = any(
-        kept[i : i + _COMMIT_SHARED] in secret for i in range(len(kept) - _COMMIT_SHARED + 1)
+        folded[i : i + _COMMIT_SHARED] in secret_folded
+        for i in range(len(folded) - _COMMIT_SHARED + 1)
     )
     if _COMMIT_RE.fullmatch(value) and not shares:
         return kept

@@ -1,7 +1,7 @@
 # Credactor Manual
 
 Complete reference for every flag, mode, and combination. 
-Reflects Credactor 2.7.4 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
+Reflects Credactor 2.7.5 (see the [CHANGELOG](../CHANGELOG.md)). For limitations and safe usage see the
 [Disclaimer](DISCLAIMER.md); for the threat model see [Security](security.md).
 
 ---
@@ -61,7 +61,7 @@ with `-f json` and read the `severity` field):
 
 | Severity | What earns it | Examples (verified) |
 |----------|---------------|---------------------|
-| **critical** | Deterministic provider prefixes and PEM private-key blocks — unambiguous, **no entropy floor** | AWS `AKIA…`, GCP `AIza…`, Stripe live `sk_live_…`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox…`, npm `npm_`, PyPI `pypi-`, `-----BEGIN … PRIVATE KEY-----` |
+| **critical** | Deterministic provider prefixes and PEM private-key blocks: unambiguous, **no entropy floor** | AWS `AKIA…`, GCP `AIza…`, Stripe live `sk_live_…`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox…`, npm `npm_`, PyPI `pypi-`, `-----BEGIN … PRIVATE KEY-----` (encrypted ones included), `-----BEGIN PGP PRIVATE KEY BLOCK-----` |
 | **high** | JWTs, connection strings, and credential variables whose name implies a secret | `eyJ…` JWT, `postgresql://user:pass@host`, `password`/`api_key`/`token`/`secret_key`/`access_key` `= …` |
 | **medium** | Heuristic value matches and generic credential variables | quoted hex (32–64 chars), Stripe **test** key `sk_test_…`, `webhook_secret = …` |
 | **low** | Weak heuristics and ID-type variables | quoted Base64 (≥60 chars), `client_id` / `tenant_id` / `app_id` |
@@ -251,8 +251,9 @@ Apply to `--fix-all` and interactive redaction. Verified outputs for the line
   finding (a `ghp_…` token) → `os.environ["GITHUB_TOKEN"]`. Verified for Python
   (`os.environ[...]`), JS (`process.env[...]`), Ruby (`ENV[...]`); Java/Go/PHP
   forms are covered by the test suite. A name that would share 8 letters or
-  digits in a row with the secret itself (case and separators ignored; only
-  the secret part of a URL or PEM value is compared) becomes `CREDENTIAL`, so
+  digits in a row with the secret itself, or hold the whole of a shorter one
+  (case and separators ignored; only the secret part of a URL or PEM value is
+  compared), becomes `CREDENTIAL`, so
   the rewritten line cannot hold a copy of the secret.
 - **Replacement is validated** (allowlist `[A-Za-z0-9_-]+`): a dangerous value
   (`bad;rm -rf`, markup, newlines, control chars) is **rejected with exit 2**
@@ -395,7 +396,7 @@ that at `.gitignore:39,42`), or use `--secure-delete` /
 ### What `--secure-delete` does
 
 On a successful redaction the `.bak` is overwritten with `os.urandom()` bytes,
-`fsync`'d, then unlinked (`redactor.py:276`). Verified: no `.bak` remains
+`fsync`'d, then unlinked (`redactor.py:495`). Verified: no `.bak` remains
 afterwards. It is wiped only when at least one replacement actually landed, and a
 single-pass overwrite is **not** a forensic guarantee on copy-on-write / SSD /
 journaling filesystems.
@@ -404,7 +405,7 @@ journaling filesystems.
 
 - **Atomic writes** — both the backup and the rewrite go through a temp file then
   `os.replace`, cleaned up in a `finally`; a mid-write crash leaves the original
-  intact (`redactor.py:292`, backup at `:197`).
+  intact (`redactor.py:511`, backup at `:373`).
 - **Permissions preserved** — a `chmod 600` file stays `600` after redaction.
 - **Multiple secrets per file** — replaced bottom-to-top so line numbers stay
   valid.
@@ -679,6 +680,11 @@ locations. Verified — each of the following yields 0 findings:
   covered by .gitignore]` block; **`-f json` / `-f sarif` emit no signal for
   these** — a gitignored `.env` full of secrets scans clean in machine
   formats, so audit with text output (or scan the file directly).
+  Credactor's `.gitignore` matching is simpler than git's: a negation line
+  (`!keep.py`) is ignored, so a file it brings back stays skipped, and a `*`
+  in a pattern also matches across `/` (`docs/*.py` skips `docs/deep/a.py`,
+  which git does not ignore). Both can leave a file git would commit
+  unscanned.
 - Files over the **50 MB per-file cap** (warned; the cap also applies to
   staged blobs). The skip does not trip `--fail-on-error`.
 

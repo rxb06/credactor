@@ -8,7 +8,7 @@ import fnmatch
 from collections.abc import Sequence
 from pathlib import Path
 
-from .utils import ignore_file_lines, read_aux_file
+from .utils import ignore_file_lines, read_aux_file, resolve_path
 
 
 def parse_gitignore_file(gi_path: str, base_dir: Path, *, root: Path) -> list[tuple[str, Path]]:
@@ -33,7 +33,7 @@ def parse_gitignore_file(gi_path: str, base_dir: Path, *, root: Path) -> list[tu
 
 def matches_gitignore(filepath: str, patterns: Sequence[tuple[str, str | Path]]) -> bool:
     """Return True if *filepath* is covered by any collected ``.gitignore`` pattern."""
-    file_path = Path(filepath).resolve()
+    file_path = resolve_path(filepath)  # T29f: a symlink loop does not raise
     # Most repos have a single .gitignore, so every rule shares one base_dir —
     # compute the relative form once per distinct base instead of once per
     # rule (relative_to dominated per-file cost and grew linearly with rules).

@@ -101,3 +101,56 @@ def test_an_inline_job_permission_is_caught(inline):
     perms = _permissions(_jobs(lines)['build'], 4)
     assert perms == {'*': inline}
     assert not all(value in {'read', 'none'} for value in perms.values())
+
+
+def _steps(job: list[str]) -> list[list[str]]:
+    """Split a job's lines into its steps (each starts with '      - ')."""
+    steps: list[list[str]] = []
+    for line in job:
+        if line.startswith('      - '):
+            steps.append([line])
+        elif steps and (not line.strip() or _indent(line) > 6):
+            steps[-1].append(line)
+    return steps
+
+
+def _unguarded_multiline_runs(job: list[str]) -> list[str]:
+    """Name each step whose run block has more than one line and no shell."""
+    if not any('runs-on:' in line and ('windows' in line or '${{' in line) for line in job):
+        return []  # a Linux or macOS runner already uses bash -e
+    found = []
+    for step in _steps(job):
+        for i, line in enumerate(step):
+            if line.strip() not in {'run: |', 'run: >'}:
+                continue
+            body = [entry for entry in _block(step, i) if entry.strip()]
+            if len(body) > 1 and not any(entry.strip().startswith('shell:') for entry in step):
+                found.append(step[0].strip())
+    return found
+
+
+@pytest.mark.parametrize('workflow', _WORKFLOWS, ids=lambda p: p.name)
+def test_multiline_steps_that_may_run_on_windows_set_a_shell(workflow):
+    # Under Windows' default pwsh, only the last line's exit code fails a
+    # step, so an earlier failing command (pytest) passes unseen.
+    lines = workflow.read_text(encoding='utf-8').splitlines()
+    for name, job in _jobs(lines).items():
+        assert _unguarded_multiline_runs(job) == [], name
+
+
+def test_an_unguarded_windows_step_is_caught():
+    # Guards the parser above.
+    job = [
+        '    runs-on: ${{ matrix.os }}',
+        '    steps:',
+        '      - name: Test',
+        '        run: |',
+        '          pytest',
+        '          coverage report',
+        '      - name: Fine',
+        '        shell: bash',
+        '        run: |',
+        '          pytest',
+        '          coverage report',
+    ]
+    assert _unguarded_multiline_runs(job) == ['- name: Test']

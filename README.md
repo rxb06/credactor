@@ -85,7 +85,7 @@ credactor --replace-with env .        # redact to env-var references instead of 
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.4   # pin to the latest release tag
+    rev: v2.7.5   # pin to the latest release tag
     hooks:
       - id: credactor
 ```
@@ -93,7 +93,7 @@ repos:
 ### GitHub Action
 
 ```yaml
-- uses: rxb06/credactor@v2.7.4
+- uses: rxb06/credactor@v2.7.5
 ```
 
 The action always passes `--ci`, so it reports and gates but never rewrites the
@@ -103,14 +103,16 @@ without gating. An error fails the step either way.
 Upload to Code Scanning instead of failing on findings:
 
 ```yaml
-- uses: rxb06/credactor@v2.7.4
+- uses: rxb06/credactor@v2.7.5
   with:
     format: sarif
     upload-sarif: true
     fail-on-findings: false
 ```
 
-The job needs `permissions: security-events: write` for the upload. See the
+The job needs `permissions: security-events: write` for the upload. To use the
+report in a later step, read its path from the step's `report-file` output
+rather than assuming one. See the
 [CI integration guide](docs/ci_integration.md#github-action) for every input,
 including ingestion of Gitleaks, TruffleHog and Betterleaks reports.
 
@@ -122,7 +124,7 @@ Credactor detects the credential types that leak most often, and assigns each a 
 |---|---|---|
 | Cloud provider keys | AWS (`AKIA…`), GCP (`AIza…`), Stripe (`sk_live_…`), Slack (`xoxb-…`) | Critical |
 | Platform tokens | GitHub (`ghp_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), PyPI (`pypi-`) | Critical |
-| Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`) | Critical |
+| Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`, encrypted ones included), PGP private key blocks | Critical |
 | JWTs | `eyJ…` three-segment tokens | High |
 | Connection strings | URLs with inline credentials (`scheme://user:pass@host`) | High |
 | Credential variables | `password = "…"`, `api_key = "…"`, `secret_key = "…"` | High/Medium/Low |

@@ -211,9 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     replace.add_argument(
         '--secure-delete',
         action='store_true',
-        help='after successful replacement, overwrite .bak files with random data '
-        'and delete them; prevents credential recovery from backups via '
-        'disk forensics',
+        help='after successful replacement, overwrite .bak files once with random '
+        'bytes before deleting them; not a forensic guarantee on SSDs or '
+        'copy-on-write filesystems',
     )
 
     # Configuration

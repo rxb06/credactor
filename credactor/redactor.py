@@ -106,12 +106,17 @@ def _derive_env_var_name(finding: Finding) -> str:
     shares = any(
         name[i : i + _ENV_NAME_SHARED] in value for i in range(len(name) - _ENV_NAME_SHARED + 1)
     )
-    return sanitized if sanitized and not shares else 'CREDENTIAL'
+    # A reported secret can be shorter than the shared run, so a name that
+    # holds the whole of it falls back too.
+    holds = len(value) >= _ENV_NAME_HELD and value in name
+    return sanitized if sanitized and not shares and not holds else 'CREDENTIAL'
 
 
 # A derived env var name that shares this many letters and digits in a row
-# with the secret is not used.
+# with the secret, or holds the whole of a secret at least _ENV_NAME_HELD long
+# (the shortest secret an ingested report may give), is not used.
 _ENV_NAME_SHARED = 8
+_ENV_NAME_HELD = 4
 _PEM_ARMOR_RE = re.compile(r'-----(?:BEGIN|END)[^-]*-----')
 _URL_USERINFO_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*)@')
 
