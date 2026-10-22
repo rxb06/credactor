@@ -6,22 +6,28 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import os
 import re
-import shutil
+import stat
 import string
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from ._log import logger
 from .config import DEFAULT_REPLACEMENT, Config
+from .patterns import _is_hash_context_at, _known_format
+from .suppressions import AllowList, has_inline_suppression
 from .types import Finding
 from .utils import (
     OutputMasker,
     detect_encoding,
     group_by_file,
     in_git_dir,
+    is_within_root,
     mask_secret,
     relativize,
     sanitize_for_display,
@@ -154,7 +160,21 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
     """
     for q in ('"', "'"):
         token = f'{q}{full_value}{q}'
-        if token in original:
+        pos = original.find(token)
+        if pos >= 0:
+            # SR-25: only a plain literal takes the bare expression. A letter
+            # before the opening quote is a string prefix (b, r, f, u) that
+            # would glue onto the expression (bos.environ). A quote right after
+            # the closing one, spaces allowed, is a longer quote run ("""...""")
+            # or implicit concatenation, either of which would leave a stray
+            # literal next to the expression. A token inside a literal opened
+            # earlier on the line (a JSON document held in a single-quoted
+            # string) would turn into code text inside that string.
+            before = original[pos - 1] if pos else ''
+            end = pos + len(token)
+            following = original[end:].lstrip(' \t')[:1]
+            if before.isalpha() or following in ('"', "'") or _inside_literal(original, pos):
+                break
             other = '"' if q == "'" else "'"
             # If the bare expression carries `other`-quotes and the matched
             # token is itself nested inside an enclosing `other`-quoted literal
@@ -164,13 +184,32 @@ def _replace_quoted(original: str, full_value: str, replacement: str, at: int) -
             # Fall back to the sentinel, which is always valid.
             if other in replacement and other in original.replace(token, '', 1):
                 break
-            return original.replace(token, replacement, 1)
+            return original[:pos] + replacement + original[end:]
     return original[:at] + DEFAULT_REPLACEMENT + original[at + len(full_value) :]
 
 
 # The scanners that write the reports are Go programs, whose word boundary is
 # ASCII, so a token right next to CJK text is still a whole token.
 _WORD_CHARS = frozenset(string.ascii_letters + string.digits + '_')
+
+
+def _inside_literal(line: str, pos: int) -> bool:
+    """Whether *pos* on *line* falls inside a string literal opened earlier on
+    the line. A backslash escapes the next character inside a literal."""
+    open_quote = ''
+    i = 0
+    while i < pos:
+        ch = line[i]
+        if open_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == open_quote:
+                open_quote = ''
+        elif ch in '"\'`':
+            open_quote = ch
+        i += 1
+    return bool(open_quote)
 
 
 def _value_position(line: str, finding: Finding) -> int | None:
@@ -331,15 +370,21 @@ def _backup_dir_via_unsafe_symlink(path_str: str) -> bool:
     return os.path.realpath(path_str) != expected
 
 
-def _create_backup(filepath: str, config: Config) -> str | None:
-    """Create a .bak copy of the file. Returns backup path or None on failure.
+def _create_backup(filepath: str, config: Config, data: bytes) -> str | None:
+    """Write *data*, the bytes the rewrite read, as the file's .bak. Returns
+    the backup path or None on failure.
+
+    SR-23: the backup goes into a fresh mkstemp file, created 0600, and nothing
+    copies the source's mode over it, so a readable or setuid source never
+    gives a readable or setuid backup. Writing the bytes that were read, not
+    copying the file again, also means the backup is exactly what was edited.
 
     With ``config.secure_backup_dir`` the backup is written DIRECTLY into that
     directory (never beside the original, not even momentarily) via
     ``_create_backup_in_secure_dir``. Otherwise it is placed beside the file.
     """
     if config.secure_backup_dir:
-        return _create_backup_in_secure_dir(filepath, config)
+        return _create_backup_in_secure_dir(filepath, config, data)
 
     bak = filepath + '.bak'
 
@@ -349,8 +394,8 @@ def _create_backup(filepath: str, config: Config) -> str | None:
     tmp_bak: str | None = None
     try:
         fd, tmp_bak = tempfile.mkstemp(dir=dir_name, suffix='.credactor.bak')
-        os.close(fd)
-        shutil.copy2(filepath, tmp_bak)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         os.replace(tmp_bak, bak)
         tmp_bak = None  # rename succeeded
     except OSError as exc:
@@ -370,7 +415,7 @@ def _create_backup(filepath: str, config: Config) -> str | None:
     return bak
 
 
-def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
+def _create_backup_in_secure_dir(filepath: str, config: Config, data: bytes) -> str | None:
     """Create the .bak DIRECTLY inside ``config.secure_backup_dir``.
 
     A plaintext copy never lands beside the original at any instant — this
@@ -403,10 +448,10 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
     dest = str(dest_dir / f'{Path(filepath).name}.{digest}.bak')
     tmp: str | None = None
     try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        _prepare_backup_dir(dest_dir, config)
         fd, tmp = tempfile.mkstemp(dir=str(dest_dir), suffix='.credactor.bak')
-        os.close(fd)
-        shutil.copy2(filepath, tmp)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         os.replace(tmp, dest)
         tmp = None  # rename succeeded
         return dest
@@ -422,6 +467,29 @@ def _create_backup_in_secure_dir(filepath: str, config: Config) -> str | None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         return None
+
+
+def _prepare_backup_dir(dest_dir: Path, config: Config) -> None:
+    """Create a missing --secure-backup-dir as 0700 (SR-23), or warn once when
+    an existing one is open to other users. mkdir applies the umask, so
+    the mode is set again after it."""
+    if not dest_dir.exists():
+        dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(dest_dir, 0o700)
+        return
+    # Windows has no such bits: chmod there only toggles read-only.
+    if os.name != 'posix' or config.backup_dir_warn_shown:
+        return
+    mode = stat.S_IMODE(dest_dir.stat().st_mode)
+    if mode & 0o077:
+        logger.warning(
+            '--secure-backup-dir %s is open to other users (mode %o), and the '
+            'backups in it hold the secrets in plaintext. Restrict it with chmod 700.',
+            dest_dir,
+            mode,
+        )
+        config.backup_dir_warn_shown = True
 
 
 def _secure_delete(filepath: str) -> None:
@@ -440,15 +508,24 @@ def _secure_delete(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 # Batch replacement per file (#14)
 # ---------------------------------------------------------------------------
-def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
-    """Write *lines* via a temp file + ``os.replace`` so a mid-write crash
-    leaves the original intact. Returns False (after logging) on failure."""
+def _write_atomic(
+    filepath: str,
+    data: bytes,
+    guard: Callable[[], bool] | None = None,
+) -> bool:
+    """Write *data* via a temp file + ``os.replace`` so a mid-write crash
+    leaves the original intact. *guard*, when given, runs once the temp file
+    is complete and just before the rename; if it returns False the temp
+    file is removed and nothing is published. Returns False (after logging a
+    write error) on failure."""
     dir_name = os.path.dirname(filepath) or '.'
     tmp_path: str | None = None
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.credactor.tmp')
-        with os.fdopen(fd, 'w', encoding=encoding, errors='surrogateescape', newline='') as fh:
-            fh.writelines(lines)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
+        if guard is not None and not guard():
+            return False
         os.replace(tmp_path, filepath)
         tmp_path = None  # rename succeeded — nothing to clean up
         return True
@@ -461,12 +538,226 @@ def _write_atomic(filepath: str, lines: list[str], encoding: str) -> bool:
                 os.unlink(tmp_path)
 
 
+def _rewrite_file(
+    filepath: str,
+    config: Config,
+    edit: Callable[[list[str]], bool],
+    *,
+    verb: str,
+    backup: bool,
+    root: str | None = None,
+) -> str:
+    """The one write path (PA-14). Every rewrite goes through here: a batch
+    replacement, an interactive approval, and the end-of-review sweep.
+
+    It refuses a symlink (S1), takes the advisory lock (SEC-15), and reads the
+    file once, as bytes, keeping each line's terminator (SR-24). *edit* then
+    changes the lines in memory and returns whether it changed anything. A
+    file with nothing to change is left alone: no backup, no write, so its
+    inode, hard links and extended attributes are kept. Otherwise the backup
+    is written from the bytes that were read (SR-23) when *backup* is set and
+    backups are on, a failed backup aborting the file. Just before publishing,
+    the file is checked against what was read: write modes assume no other
+    writer, and a file changed on disk meanwhile is left as it now is.
+    The new content is published atomically (PA-02), the original mode is
+    restored with its special bits, and under --secure-delete the backup is
+    then wiped.
+
+    With *root*, the path must also still reach a file inside it through real
+    directories only (SR-20), checked just before the backup and again just
+    before the rename, so a directory on the path swapped for a symlink cannot
+    send the backup or the write outside the scan root.
+
+    Returns 'written', 'unchanged', or 'failed' when the file was refused or
+    could not be read, backed up or written (each logged).
+    """
+    # S1: os.replace would rewrite the LINK node, not the file it points at,
+    # so the secret would remain in the target while we report success.
+    if os.path.islink(filepath):
+        logger.warning(
+            'Refusing to %s symlink %s: os.replace would rewrite the link, not its '
+            'target, so the secret would remain in the target file. Resolve the '
+            'symlink and re-run.',
+            verb,
+            filepath,
+        )
+        return 'failed'
+
+    # #16: detect the encoding
+    encoding = detect_encoding(filepath)
+
+    # Preserve file permissions (include setuid/setgid/sticky bits)
+    try:
+        orig_stat = os.stat(filepath)
+        orig_mode: int | None = orig_stat.st_mode & 0o7777
+    except OSError:
+        orig_mode = None
+
+    # Acquire advisory file lock to mitigate TOCTOU races between read and
+    # replace.  Uses fcntl on Unix; on Windows fcntl is unavailable so the
+    # handle is closed immediately to avoid blocking os.replace().
+    lock_fh = None
+    try:
+        lock_fh = open(filepath, 'r')  # noqa: SIM115
+        try:
+            import fcntl
+
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            # Windows: fcntl is unavailable, so close the handle to avoid blocking
+            # os.replace() which cannot overwrite an open file on Windows.
+            lock_fh.close()
+            lock_fh = None
+        except OSError as exc:
+            # SEC-15: the lock is best effort. When it cannot be taken (usually
+            # contention), record why (visible under --verbose) and proceed
+            # unlocked (SR-01).
+            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
+    except OSError:
+        pass
+
+    try:
+        try:
+            with open(filepath, 'rb') as fh:
+                data = fh.read()
+                seen = _identity(os.fstat(fh.fileno()))
+            # newline='' keeps each line's original terminator (CRLF/LF) so
+            # redaction never normalizes line endings on untouched lines. The
+            # wrapper decodes as it splits, so no second copy of the whole
+            # text is held next to the bytes.
+            with io.TextIOWrapper(
+                io.BytesIO(data), encoding=encoding, errors='surrogateescape', newline=''
+            ) as reader:
+                lines = reader.readlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError: a detected multibyte encoding (e.g.
+            # truncated UTF-16) failing mid-stream must fail THIS file only.
+            logger.error('Cannot read %s: %s', filepath, exc)
+            return 'failed'
+
+        if not edit(lines):
+            return 'unchanged'
+
+        # Encode before any backup or check, so content the file's encoding
+        # cannot hold (an undecodable byte kept as a lone surrogate, which
+        # UTF-16 refuses) fails this file here instead of ending the run.
+        try:
+            new_data = ''.join(lines).encode(encoding, errors='surrogateescape')
+        except UnicodeError as exc:
+            logger.error('Cannot write %s: the new content cannot be encoded (%s).', filepath, exc)
+            return 'failed'
+
+        def still_safe() -> bool:
+            return _still_safe_to_write(filepath, root, seen)
+
+        if not still_safe():
+            return 'failed'
+
+        # #1: back up before writing, from the bytes that were read.
+        bak: str | None = None
+        if backup and not config.no_backup:
+            bak = _create_backup(filepath, config, data)
+            if bak is None:
+                logger.error('Backup failed for %s; skipping replacements.', filepath)
+                return 'failed'
+
+        if not _write_atomic(filepath, new_data, guard=still_safe):
+            if bak:
+                _discard_backup(bak, config)
+            return 'failed'
+
+        # Restore original file permissions
+        if orig_mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(filepath, orig_mode)
+
+        if bak and config.secure_delete:
+            _secure_delete(bak)
+
+        return 'written'
+    finally:
+        if lock_fh is not None:
+            lock_fh.close()
+
+
+def _discard_backup(bak: str, config: Config) -> None:
+    """Remove the backup made for a file that was then not written. The file
+    is unchanged, so the backup has nothing to undo, and it holds the secret
+    in plaintext: wiped first under --secure-delete."""
+    if config.secure_delete:
+        _secure_delete(bak)
+    else:
+        with contextlib.suppress(OSError):
+            os.unlink(bak)
+    logger.info('%s: removed, since the file it backs up was not rewritten.', bak)
+
+
+def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _changed_on_disk(filepath: str, seen: tuple[int, int, int, int]) -> bool:
+    """Whether *filepath* is no longer the file that was read (SR-24): its
+    size, mtime or inode moved, or it is gone."""
+    try:
+        return _identity(os.stat(filepath)) != seen
+    except OSError:
+        return True
+
+
+def _still_safe_to_write(filepath: str, root: str | None, seen: tuple[int, int, int, int]) -> bool:
+    """Warn and return False when *filepath* must not be written now: it left
+    the scan root (SR-20), or it is not the file that was read (SR-24)."""
+    if root is not None and _outside_root(filepath, root):
+        logger.warning(
+            '%s is not inside the scan root through real directories (a '
+            'directory on its path may have been moved or replaced by a '
+            'symlink), so it is not rewritten.',
+            filepath,
+        )
+        return False
+    if _changed_on_disk(filepath, seen):
+        logger.warning(
+            '%s changed on disk while it was being redacted, so it is not '
+            'rewritten. Re-run once nothing else is editing it.',
+            filepath,
+        )
+        return False
+    return True
+
+
+def _outside_root(filepath: str, root: str) -> bool:
+    """Whether *filepath* no longer reaches a file inside *root* by real
+    directories: it resolves outside the root, or a component between the
+    root and the file is a symlink. A link above the root does not count."""
+    real_root = os.path.realpath(root)
+    if not is_within_root(os.path.realpath(filepath), real_root):
+        return True
+    path = os.path.abspath(filepath)
+    for base in (os.path.abspath(root), real_root):
+        if is_within_root(path, base):
+            break
+    else:
+        # Inside the root only once resolved: something on the way is a link.
+        return True
+    prefix = base
+    for part in Path(os.path.relpath(path, base)).parts:
+        if part == os.curdir:
+            continue
+        prefix = os.path.join(prefix, part)
+        if os.path.islink(prefix):
+            return True
+    return False
+
+
 def _final_file_sweep(
     filepath: str,
     approved: list[Finding],
     preserve_lines: set[int],
     config: Config,
-) -> None:
+    *,
+    root: str | None = None,
+) -> bool:
     """End-of-review sweep over one file with the session's full knowledge.
 
     The per-approval sweeps exclude every other known finding line statically
@@ -474,34 +765,27 @@ def _final_file_sweep(
     finding B's line survives even after B itself is approved. This pass
     re-sweeps the file for ALL approved values, preserving only the lines
     whose findings were skipped, failed, or never adjudicated (interrupt).
-    The write is atomic; under --secure-delete the .bak from the first
-    replacement is already wiped, so changes here are not recoverable (by
-    design for --secure-delete) — atomicity still guarantees no half-write.
+    It is written through the same path as every other rewrite. It makes no
+    backup: the first approval to the file made one, and under
+    --secure-delete that one is already wiped, so changes here are not
+    recoverable (by design for --secure-delete).
+
+    Returns False when the file needed a change that could not be written, so
+    copies of approved values may remain in it.
     """
-    if os.path.islink(filepath):
-        logger.warning(
-            'Refusing to sweep symlink %s: os.replace would rewrite the link, not its target.',
-            filepath,
-        )
-        return
-    try:
-        encoding = detect_encoding(filepath)
-        with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
-            lines = fh.readlines()
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.error('Cannot read %s: %s', filepath, exc)
-        return
-    before = list(lines)
-    _sweep_stray_copies(lines, approved, config, preserve_lines, filepath)
-    if lines == before:
-        return
-    try:
-        orig_mode: int | None = os.stat(filepath).st_mode
-    except OSError:
-        orig_mode = None
-    if _write_atomic(filepath, lines, encoding) and orig_mode is not None:
-        with contextlib.suppress(OSError):
-            os.chmod(filepath, orig_mode)
+    counts = _SweepCounts()
+
+    def edit(lines: list[str]) -> bool:
+        nonlocal counts
+        before = list(lines)
+        own = frozenset(f['line'] for f in approved)
+        counts = _sweep_stray_copies(lines, approved, config, preserve_lines, filepath, own)
+        return lines != before
+
+    if _rewrite_file(filepath, config, edit, verb='sweep', backup=False, root=root) == 'failed':
+        return False
+    _report_sweep(filepath, counts, config)
+    return True
 
 
 def _sweep_stray_copies(
@@ -510,9 +794,11 @@ def _sweep_stray_copies(
     config: Config,
     preserved: set[int],
     filepath: str,
-) -> None:
+    own_lines: frozenset[int] = frozenset(),
+) -> _SweepCounts:
     """Clear remaining exact copies of redacted values beyond the
-    adjudicated findings.
+    adjudicated findings, and return what was cleared and kept, for the
+    caller to report once the file is written.
 
     The per-finding replace handles one occurrence each, but the same secret
     literal can survive — a second occurrence on the finding's own line, a
@@ -521,11 +807,14 @@ def _sweep_stray_copies(
     ``preserved`` (1-based) are never touched: they belong to known findings
     whose own adjudication — an explicit interactive skip, a pending prompt,
     or a failed replacement — owns them. Scope is bounded to this one file.
+    ``own_lines`` are the lines whose findings were just replaced: a
+    credactor:ignore marker does not stop the sweep there, since the finding
+    itself was redacted on that line.
     """
     stray = DEFAULT_REPLACEMENT if config.replace_mode == 'env' else config.custom_replacement
     values = {f['full_value'] for f in file_findings if f['full_value']}
     if not values:
-        return
+        return _SweepCounts()
     # One compiled alternation (longest value first so a short value can't
     # shadow a longer one). Word-boundary anchors protect a secret embedded in
     # a larger *word* token (123456789), but a copy bounded by a non-word char
@@ -542,18 +831,78 @@ def _sweep_stray_copies(
         + r')(?!\w)',
         re.ASCII,
     )
+    # SR-21: only a value the shape heuristics alone recognise can be a hash
+    # output; a known-format token is a credential under any key.
+    exemptable = {v: not _known_format(v) for v in values}
     stray_count = 0
-    kept = 0
+    kept: list[int] = []
+    hashed: list[int] = []
     for idx in range(len(lines)):
+        line = lines[idx]
         if idx + 1 in preserved:
             continue
-        swept, n = pat.subn(lambda _m: stray, lines[idx])
-        if n and _holds_key_marker(lines[idx]):
-            # SR-17: a marker line is never changed, not even by the sweep.
-            kept += n
+        matches = list(pat.finditer(line))
+        # SR-22: a line the user marked credactor:ignore is not swept, unless
+        # a finding on it was just replaced.
+        if not matches or (idx + 1 not in own_lines and has_inline_suppression(line)):
             continue
-        lines[idx] = swept
+        parts: list[str] = []
+        pos = 0
+        n = 0
+        for match in matches:
+            if exemptable[match.group(0)] and _hash_keyed(line, match.start()):
+                # SR-21: a copy in a hash, commit or revision field is kept,
+                # as the scanner keeps it.
+                hashed.append(idx + 1)
+                continue
+            parts += (line[pos : match.start()], stray)
+            pos = match.end()
+            n += 1
+        if not n:
+            continue
+        if _holds_key_marker(line):
+            # SR-17: a marker line is never changed, not even by the sweep.
+            kept += [idx + 1] * n
+            continue
+        lines[idx] = ''.join(parts) + line[pos:]
         stray_count += n
+    return _SweepCounts(stray_count, tuple(hashed), tuple(kept))
+
+
+class _SweepCounts(NamedTuple):
+    """What a sweep did: copies cleared, and the line of each copy kept
+    because it is keyed as a hash (SR-21) or sits on a key marker line
+    (SR-17)."""
+
+    cleared: int = 0
+    kept_hash: tuple[int, ...] = ()
+    kept_marker: tuple[int, ...] = ()
+
+
+def _report_sweep(filepath: str, counts: _SweepCounts, config: Config) -> None:
+    """Log what the sweep did to a file whose rewrite went through (or was not
+    needed). A kept copy is reported once per run, however many sweeps of the
+    file see it, so interactive review does not repeat it per approval."""
+
+    def new(kind: str, kept_lines: tuple[int, ...]) -> int:
+        count = 0
+        for lineno in sorted(set(kept_lines)):
+            key = (filepath, kind, lineno)
+            if key not in config.sweep_kept_reported:
+                config.sweep_kept_reported.add(key)
+                count += kept_lines.count(lineno)
+        return count
+
+    hashed = new('hash', counts.kept_hash)
+    if hashed:
+        logger.warning(
+            '%s: kept %d cop%s of redacted value(s) keyed as a hash, commit or '
+            'revision, which the scanner does not report either.',
+            filepath,
+            hashed,
+            'y' if hashed == 1 else 'ies',
+        )
+    kept = new('marker', counts.kept_marker)
     if kept:
         logger.warning(
             '%s: left %d cop%s of redacted value(s) on lines that hold a private key '
@@ -562,18 +911,33 @@ def _sweep_stray_copies(
             kept,
             'y' if kept == 1 else 'ies',
         )
-    if stray_count:
+    if counts.cleared:
         # Default-visible (stderr): the file was modified beyond the
-        # adjudicated findings — the summary alone would under-report it.
+        # adjudicated findings, and the summary alone would under-report it.
         # ("additional", not "unreported": a second occurrence on a finding's
         # own line is also cleared here.)
         logger.warning(
             '%s: also cleared %d additional cop%s of redacted value(s) '
             'beyond the adjudicated finding(s) (value-global sweep).',
             filepath,
-            stray_count,
-            'y' if stray_count == 1 else 'ies',
+            counts.cleared,
+            'y' if counts.cleared == 1 else 'ies',
         )
+
+
+# How far back the key of a value is looked for: room for the longest key the
+# key pattern takes (128), its quotes, the operator and some spacing. Looking
+# back further cost time in proportion to the value's offset on the line.
+_KEY_WINDOW = 256
+
+
+def _hash_keyed(line: str, start: int) -> bool:
+    """Whether the value starting at *start* on *line* is keyed like a hash,
+    commit or revision field, by the scanner's own rule (a credential keyword
+    in the key vetoes it)."""
+    at = start - 1 if start and line[start - 1] in '"\'' else start
+    lo = max(0, at - _KEY_WINDOW)
+    return _is_hash_context_at(line[lo:at], at - lo)
 
 
 def _writable_findings(filepath: str, file_findings: list[Finding]) -> tuple[list[Finding], int]:
@@ -633,6 +997,7 @@ def batch_replace_in_file(
     skip_backup: bool = False,
     root: str | None = None,
     tally: dict[str, int] | None = None,
+    allowlist: AllowList | None = None,
 ) -> tuple[int, int]:
     """Replace all findings in a single file in one read-modify-write pass.
 
@@ -660,146 +1025,102 @@ def batch_replace_in_file(
             skip_backup=skip_backup,
             root=root,
             tally=tally,
+            allowlist=allowlist,
         )
         if tally is not None:
             tally['refused'] = tally.get('refused', 0) + refused
         return replaced, failed + refused
-
-    # S1: refuse a symlinked target. os.replace would rewrite the LINK node, not
-    # the file it points at, so the live secret would remain in the target while
-    # we report success. Fail closed: skip, warn, count all findings unresolved.
-    if os.path.islink(filepath):
-        logger.warning(
-            'Refusing to redact symlink %s: os.replace would rewrite the link, '
-            'not its target — the secret would remain in the target file. '
-            'Resolve the symlink and re-run.',
-            filepath,
-        )
-        return 0, len(file_findings)
 
     # S6: the CLI validates the replacement at its front door, but a library
     # caller building a Config directly skips that — re-check at the sink so an
     # out-of-charset (or empty) string is never written into a file.
     config.validate_replacement()
 
-    # #16 — detect encoding
-    encoding = detect_encoding(filepath)
+    # SR-22: lines a .credactorignore file:line entry names are the user's
+    # call, so the copy sweep leaves them as they are.
+    if allowlist is not None:
+        sweep_exclude_lines = sweep_exclude_lines | allowlist.suppressed_lines(filepath)
 
-    # Preserve file permissions (include setuid/setgid/sticky bits)
-    try:
-        orig_stat = os.stat(filepath)
-        orig_mode = orig_stat.st_mode & 0o7777  # full mode including setuid/setgid
-    except OSError:
-        orig_mode = None
+    counts = (0, 0)
+    refused_here = 0
+    sweep = _SweepCounts()
 
-    # Acquire advisory file lock to mitigate TOCTOU races between read and
-    # replace.  Uses fcntl on Unix; on Windows fcntl is unavailable so the
-    # handle is closed immediately to avoid blocking os.replace().
-    lock_fh = None
-    try:
-        lock_fh = open(filepath, 'r')  # noqa: SIM115
-        try:
-            import fcntl
+    def edit(lines: list[str]) -> bool:
+        nonlocal counts, refused_here, sweep
+        replaced, failed, refused_here, sweep = _apply_findings(
+            lines, file_findings, config, filepath, sweep_exclude_lines
+        )
+        counts = (replaced, failed)
+        return replaced > 0
 
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except ImportError:
-            # Windows: fcntl unavailable — close handle to avoid blocking
-            # os.replace() which cannot overwrite an open file on Windows.
-            lock_fh.close()
-            lock_fh = None
-        except OSError as exc:
-            # SEC-15: the lock is best effort. When it cannot be taken (usually
-            # contention), record why (visible under --verbose) and proceed
-            # unlocked (SR-01).
-            logger.info('%s: advisory lock not taken (%s), proceeding unlocked', filepath, exc)
-    except OSError:
-        pass
+    # skip_backup: interactive mode backs a file up once per session, on the
+    # FIRST approval; later approvals to the same file must NOT re-create the
+    # .bak (the per-file backup name is stable, so a second write would clobber
+    # it with the already-redacted file and lose the earlier secret's
+    # original). The first approval's .bak already holds every line's true
+    # original.
+    outcome = _rewrite_file(
+        filepath, config, edit, verb='redact', backup=not skip_backup, root=root
+    )
+    if outcome == 'failed':
+        # Refused, or unreadable, not backed up, or not written: every finding
+        # stays unresolved, and nothing the edit planned is reported as done.
+        return 0, len(file_findings)
+    if tally is not None:
+        tally['refused'] = tally.get('refused', 0) + refused_here
+    _report_sweep(filepath, sweep, config)
+    return counts
 
-    try:
-        try:
-            # newline='' preserves each line's original terminator (CRLF/LF) so
-            # redaction never normalizes line endings on untouched lines.
-            with open(filepath, encoding=encoding, errors='surrogateescape', newline='') as fh:
-                lines = fh.readlines()
-        except (OSError, UnicodeDecodeError) as exc:
-            # UnicodeDecodeError: a detected multibyte encoding (e.g.
-            # truncated UTF-16) failing mid-stream must fail THIS file only —
-            # an ingested finding pointing at such a file previously aborted
-            # the whole redaction run mid-loop.
-            logger.error('Cannot read %s: %s', filepath, exc)
-            return 0, len(file_findings)
 
-        # #1 — backup before modifying (immediately after read). skip_backup:
-        # interactive mode backs a file up once per session, on the FIRST
-        # approval; later approvals to the same file must NOT re-create the
-        # .bak (the per-file backup name is stable, so a second write would
-        # clobber it with the already-redacted file and lose the earlier
-        # secret's original). The first approval's .bak already holds every
-        # line's true original.
-        bak: str | None = None
-        if not config.no_backup and not skip_backup:
-            bak = _create_backup(filepath, config)
-            if bak is None:
-                logger.error('Backup failed for %s — skipping replacements.', filepath)
-                return 0, len(file_findings)
+def _apply_findings(
+    lines: list[str],
+    file_findings: list[Finding],
+    config: Config,
+    filepath: str,
+    sweep_exclude_lines: frozenset[int],
+) -> tuple[int, int, int, _SweepCounts]:
+    """Replace each finding on *lines* in place, bottom to top so earlier
+    replacements do not shift later ones, then sweep stray copies. Returns
+    (replaced, failed, refused on purpose, what the sweep did)."""
+    replaced = 0
+    failed = 0
+    refused_here = 0
+    failed_lines: set[int] = set()
+    replaced_lines: set[int] = set()
+    replaced_values: set[str] = set()
+    refused_values: set[str] = set()
+    marker_lines: dict[int, bool] = {}
 
-        replaced = 0
-        failed = 0
-        refused_here = 0
-        failed_lines: set[int] = set()
-        replaced_values: set[str] = set()
-        refused_values: set[str] = set()
-        marker_lines: dict[int, bool] = {}
-
-        # Sort by line number descending so earlier replacements don't shift later ones
-        sorted_findings = sorted(file_findings, key=lambda f: f['line'], reverse=True)
-
-        for finding in sorted_findings:
-            outcome = _replace_one(lines, finding, config, filepath, marker_lines)
-            if outcome == 'replaced':
-                replaced += 1
-                replaced_values.add(finding['full_value'])
-                continue
-            failed += 1
-            failed_lines.add(finding['line'])
-            if outcome == 'refused':
-                refused_here += 1
-                refused_values.add(finding['full_value'])
-        if tally is not None:
-            tally['refused'] = tally.get('refused', 0) + refused_here
-
-        # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by
-        # known findings the caller did not approve here (sweep_exclude_lines)
-        # and lines whose own replacement just failed keep their content —
-        # each finding's adjudication owns its line. A value refused on its
-        # own line (inside a longer word, or on a key marker line) and not
-        # replaced anywhere drives no sweep either: it was never confirmed as
-        # a token here.
-        if replaced:
-            unconfirmed = refused_values - replaced_values
-            _sweep_stray_copies(
-                lines,
-                [f for f in file_findings if f['full_value'] not in unconfirmed],
-                config,
-                set(sweep_exclude_lines) | failed_lines,
-                filepath,
-            )
-
-        if not _write_atomic(filepath, lines, encoding):
-            return 0, len(file_findings)
-
-        # Restore original file permissions
-        if orig_mode is not None:
-            with contextlib.suppress(OSError):
-                os.chmod(filepath, orig_mode)
-
-        if bak and config.secure_delete and replaced > 0:
-            _secure_delete(bak)
-
-        return replaced, failed
-    finally:
-        if lock_fh is not None:
-            lock_fh.close()
+    for finding in sorted(file_findings, key=lambda f: f['line'], reverse=True):
+        outcome = _replace_one(lines, finding, config, filepath, marker_lines)
+        if outcome == 'replaced':
+            replaced += 1
+            replaced_values.add(finding['full_value'])
+            replaced_lines.add(finding['line'])
+            continue
+        failed += 1
+        failed_lines.add(finding['line'])
+        if outcome == 'refused':
+            refused_here += 1
+            refused_values.add(finding['full_value'])
+    # H10 + value-global sweep: see _sweep_stray_copies. Lines owned by known
+    # findings the caller did not approve here (sweep_exclude_lines) and lines
+    # whose own replacement just failed keep their content: each finding's
+    # adjudication owns its line. A value refused on its own line (inside a
+    # longer word, or on a key marker line) and not replaced anywhere drives no
+    # sweep either: it was never confirmed as a token here.
+    sweep = _SweepCounts()
+    if replaced:
+        unconfirmed = refused_values - replaced_values
+        sweep = _sweep_stray_copies(
+            lines,
+            [f for f in file_findings if f['full_value'] not in unconfirmed],
+            config,
+            set(sweep_exclude_lines) | failed_lines,
+            filepath,
+            frozenset(replaced_lines),
+        )
+    return replaced, failed, refused_here, sweep
 
 
 def replace_single(
@@ -810,6 +1131,7 @@ def replace_single(
     sweep_exclude_lines: frozenset[int] = frozenset(),
     skip_backup: bool = False,
     root: str | None = None,
+    allowlist: AllowList | None = None,
 ) -> bool:
     """Replace a single finding. Used in interactive mode.
 
@@ -822,6 +1144,7 @@ def replace_single(
         sweep_exclude_lines=sweep_exclude_lines,
         skip_backup=skip_backup,
         root=root,
+        allowlist=allowlist,
     )
     return replaced > 0
 
@@ -833,6 +1156,7 @@ def interactive_review(
     findings: list[Finding],
     root: str,
     config: Config,
+    allowlist: AllowList | None = None,
 ) -> int:
     """Walk through every finding and ask the user whether to replace it.
 
@@ -878,10 +1202,24 @@ def interactive_review(
     # calls it once per approval — hence the per-session guard.
     backed_up_files: set[str] = set()
 
-    def _run_final_sweeps() -> None:
+    def _run_final_sweeps() -> int:
+        """Sweep each file with approvals; return how many could not be
+        written, so copies of approved values may remain in them."""
+        unwritten = 0
         for fp, approved in approved_by_file.items():
             preserve = lines_by_file[fp] - {f['line'] for f in approved}
-            _final_file_sweep(fp, approved, preserve, config)
+            if allowlist is not None:
+                preserve |= allowlist.suppressed_lines(fp)
+            if not _final_file_sweep(fp, approved, preserve, config, root=root):
+                unwritten += 1
+        if unwritten:
+            logger.warning(
+                '%d file(s) may still hold copies of approved values: the '
+                'end-of-review sweep could not rewrite them (see above). Each '
+                'counts as unresolved.',
+                unwritten,
+            )
+        return unwritten
 
     replacement_desc = config.custom_replacement
     if config.replace_mode == 'env':
@@ -923,7 +1261,7 @@ def interactive_review(
             except (KeyboardInterrupt, EOFError):
                 # Completes the already-approved adjudications only: pending
                 # and skipped findings' lines are preserved by construction.
-                _run_final_sweeps()
+                unwritten = _run_final_sweeps()
                 print(
                     f'\n\n  Interrupted — {replaced} replacement(s) already '
                     f'applied. No further changes will be made.'
@@ -934,7 +1272,7 @@ def interactive_review(
                     # replacement, so there is nothing to point at.
                     print('  .bak backups exist for modified files.')
                 _print_summary(replaced, skipped, total, config)
-                return total - replaced
+                return total - replaced + unwritten
 
             if answer in ('y', 'yes'):
                 fpath = finding['file']
@@ -946,6 +1284,7 @@ def interactive_review(
                     sweep_exclude_lines=frozenset(others),
                     skip_backup=fpath in backed_up_files,
                     root=root,
+                    allowlist=allowlist,
                 )
                 if ok:
                     backed_up_files.add(fpath)
@@ -963,15 +1302,16 @@ def interactive_review(
             else:
                 print("  Please enter 'y' or 'n'.")
 
-    _run_final_sweeps()
+    unwritten = _run_final_sweeps()
     _print_summary(replaced, skipped, total, config)
-    return total - replaced
+    return total - replaced + unwritten
 
 
 def fix_all(
     findings: list[Finding],
     root: str,
     config: Config,
+    allowlist: AllowList | None = None,
 ) -> int:
     """Replace all findings without prompting (#33).
 
@@ -987,7 +1327,7 @@ def fix_all(
     for filepath, file_findings in by_file.items():
         tally = {'refused': 0}
         replaced, failed = batch_replace_in_file(
-            filepath, file_findings, config, root=root, tally=tally
+            filepath, file_findings, config, root=root, tally=tally, allowlist=allowlist
         )
         total_replaced += replaced
         total_failed += failed

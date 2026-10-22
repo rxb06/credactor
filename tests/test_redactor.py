@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -1109,21 +1110,26 @@ class TestWritePathSafety:
         assert any('symlink' in r.getMessage().lower() for r in credactor_caplog.records)
 
     def test_write_atomic_failure_leaves_original_intact(self, make_file, monkeypatch):
-        # S14: a mid-write OSError must leave the original byte-identical, the
-        # .bak intact, and no .credactor.tmp orphaned.
-        def boom(*a, **k):
-            raise OSError('disk full')
-
+        # S14: a publish that fails must leave the original byte-identical and
+        # no .credactor.tmp orphaned. The backup made for it is removed, since
+        # the file it would restore was never changed.
         path = make_file('w.py', f'api_key = "{_AWS_KEY}"\n')
         with open(path) as f:
             before = f.read()
-        monkeypatch.setattr('os.fdopen', boom)
+        real_replace = os.replace
+
+        def boom(src, dst, *a, **k):
+            if os.path.abspath(dst) == os.path.abspath(path):
+                raise OSError('disk full')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr('os.replace', boom)
         config = Config(no_backup=False, replace_mode='sentinel')
         replaced, _ = batch_replace_in_file(path, [self._finding(path)], config)
         assert replaced == 0
         with open(path) as f:
             assert f.read() == before  # original intact
-        assert os.path.exists(path + '.bak')  # backup kept
+        assert not os.path.exists(path + '.bak')  # nothing to undo
         d = os.path.dirname(path)
         assert not [f for f in os.listdir(d) if f.endswith('.credactor.tmp')]
 
@@ -1523,6 +1529,803 @@ class TestGitAtTheSink:
         assert config.read_bytes() == before
 
 
+class TestOneWritePath:
+    """PA-14: the end-of-review sweep writes through the same path as every
+    other rewrite, so it gets the same lock, and it still makes no backup of
+    its own and leaves an unchanged file alone."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='fcntl is POSIX only')
+    def test_final_sweep_takes_the_lock(self, make_file, monkeypatch):
+        import fcntl
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        taken = []
+        real_flock = fcntl.flock
+        monkeypatch.setattr(fcntl, 'flock', lambda fd, op: taken.append(op) or real_flock(fd, op))
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert taken
+        assert _AWS_KEY not in Path(path).read_text(encoding='utf-8')
+
+    def test_final_sweep_keeps_the_sessions_backup(self, make_file):
+        # The first approval backed the file up; the sweep must not replace
+        # that backup with the already-redacted file.
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# {_AWS_KEY}\n')
+        Path(path + '.bak').write_text('original\n', encoding='utf-8')
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], {1}, Config())
+        assert Path(path + '.bak').read_text(encoding='utf-8') == 'original\n'
+        assert Path(path).read_text(encoding='utf-8').endswith('# REDACTED_BY_CREDACTOR\n')
+
+    def test_final_sweep_leaves_an_unchanged_file_alone(self, make_file, monkeypatch):
+        path = make_file('a.py', 'x = 1\n')
+        calls = []
+        monkeypatch.setattr(os, 'replace', lambda *a, **k: calls.append(a))
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert calls == []
+
+
+class TestReadOncePlanFirst:
+    """SR-24: the file is read once, every edit is planned in memory, and a
+    file with nothing to change is neither backed up nor rewritten. The
+    backup holds the bytes read, and a file changed on disk during the run is
+    left as the other writer left it."""
+
+    def test_nothing_to_change_writes_nothing(self, make_file):
+        path = make_file('a.py', 'x = 1\n')
+        before = os.stat(path)
+        link = path + '.link'
+        try:
+            os.link(path, link)
+        except (OSError, NotImplementedError):
+            link = None
+        stale = _mk_finding(path, _AWS_KEY, ftype='external:gitleaks:aws')
+        assert batch_replace_in_file(path, [stale], Config()) == (0, 1)
+        assert not os.path.exists(path + '.bak')
+        assert os.stat(path).st_ino == before.st_ino
+        if link:
+            assert os.path.samefile(path, link)
+
+    def test_mixed_file_is_backed_up_once_and_redacted(self, make_file):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        findings = [_mk_finding(path, _AWS_KEY), _mk_finding(path, _PASSWORD, line=1)]
+        assert batch_replace_in_file(path, findings, Config()) == (1, 1)
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == original
+        assert _AWS_KEY not in Path(path).read_text(encoding='utf-8')
+
+    def test_file_changed_during_the_run_is_left_alone(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        # Another writer changes the file after the read: the change is seen
+        # before the backup, so nothing is written, not even a .bak.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_edit(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('edited by someone else = True\n')
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_edit)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (0, 1)
+        assert Path(path).read_text(encoding='utf-8') == 'edited by someone else = True\n'
+        assert not os.path.exists(path + '.bak')
+        assert any('changed on disk' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_backup_holds_the_bytes_read(self, make_file, monkeypatch):
+        # A change the stat cannot see (same size, mtime put back) still does
+        # not reach the backup: it is written from the bytes that were read,
+        # not copied from the file again.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        with open(path, 'rb') as fh:
+            original = fh.read()
+        real_apply = redactor._apply_findings
+
+        def apply_then_rewrite_unseen(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            with open(path, 'r+b') as fh:
+                fh.write(b'K')
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_rewrite_unseen)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == original
+
+    def test_same_size_edit_in_place_is_seen(self, make_file, monkeypatch):
+        # One byte changed in place: size and inode stay, only mtime moves.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# note\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_touch(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            with open(path, 'r+b') as fh:
+                fh.seek(-2, os.SEEK_END)
+                fh.write(b'N')
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_touch)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert Path(path).read_text(encoding='utf-8').endswith('# notN\n')
+
+    def test_same_size_replacement_with_the_old_mtime_is_seen(self, make_file, monkeypatch):
+        # The path now names another file of the same size and mtime (cp -p,
+        # rsync -a): only the inode tells.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_replace(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            st = os.stat(path)
+            other = path + '.other'
+            with open(other, 'wb') as fh:
+                fh.write(b'x' * st.st_size)
+            os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+            os.replace(other, path)
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_replace)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert Path(path).read_bytes() == b'x' * len(f'k = "{_AWS_KEY}"\n')
+
+    def test_change_after_the_temp_file_is_written_is_seen(self, make_file, monkeypatch):
+        # The publish check runs once the temp file is complete, just before
+        # the rename, not only before the temp file is made.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_mkstemp = redactor.tempfile.mkstemp
+
+        def mkstemp_then_edit(*args, **kwargs):
+            result = real_mkstemp(*args, **kwargs)
+            if kwargs.get('suffix') == '.credactor.tmp':
+                with open(path, 'a', encoding='utf-8') as fh:
+                    fh.write('# appended\n')
+            return result
+
+        monkeypatch.setattr(redactor.tempfile, 'mkstemp', mkstemp_then_edit)
+        assert batch_replace_in_file(
+            path, [_mk_finding(path, _AWS_KEY)], Config(no_backup=True)
+        ) == (0, 1)
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+        assert not [p for p in os.listdir(os.path.dirname(path)) if p.endswith('.credactor.tmp')]
+
+    def test_file_changed_after_the_backup_is_left_alone(self, make_file, monkeypatch):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_backup = redactor._create_backup
+
+        def backup_then_edit(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_edit)
+        unresolved = fix_all([_mk_finding(path, _AWS_KEY)], os.path.dirname(path), Config())
+        assert unresolved == 1
+        content = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY in content and content.endswith('# appended\n')
+
+    def test_file_deleted_during_the_run_stays_deleted(self, make_file, monkeypatch):
+        # Publishing by rename would bring the file back; a vanished file is a
+        # change on disk like any other.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_apply = redactor._apply_findings
+
+        def apply_then_delete(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            os.unlink(path)
+            return result
+
+        monkeypatch.setattr(redactor, '_apply_findings', apply_then_delete)
+        config = Config(no_backup=True)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (0, 1)
+        assert not os.path.exists(path)
+
+    def test_final_sweep_leaves_a_changed_file_alone(self, make_file, monkeypatch):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'# {_AWS_KEY}\n')
+        real_sweep = redactor._sweep_stray_copies
+
+        def sweep_then_edit(*args, **kwargs):
+            real_sweep(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+
+        monkeypatch.setattr(redactor, '_sweep_stray_copies', sweep_then_edit)
+        _final_file_sweep(path, [_mk_finding(path, _AWS_KEY)], set(), Config(no_backup=True))
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX permission bits')
+class TestBackupModes:
+    """SR-23: a backup is written from the bytes read into a 0600 temp file,
+    never copied with the source's mode, and a new secure backup directory is
+    private."""
+
+    @pytest.mark.parametrize('mode', [0o644, 0o4755])
+    def test_backup_is_0600_and_the_file_keeps_its_mode(self, make_file, mode):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        os.chmod(path, mode)
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            pytest.skip('this filesystem does not keep the mode')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
+        assert stat.S_IMODE(os.stat(path + '.bak').st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode
+
+    def test_secure_backup_is_0600_in_a_new_private_directory(self, make_file, tmp_path):
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        os.chmod(path, 0o644)
+        backups = tmp_path / 'backups'
+        config = Config(secure_backup_dir=str(backups))
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
+        (bak,) = list(backups.iterdir())
+        assert stat.S_IMODE(os.stat(bak).st_mode) == 0o600
+
+    def test_new_secure_directory_is_usable_under_a_strict_umask(self, make_file, tmp_path):
+        # mkdir applies the umask, so the mode is set again after it.
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        backups = tmp_path / 'backups'
+        old = os.umask(0o277)
+        try:
+            result = batch_replace_in_file(
+                path, [_mk_finding(path, _AWS_KEY)], Config(secure_backup_dir=str(backups))
+            )
+        finally:
+            os.umask(old)
+        assert result == (1, 0)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
+
+    @pytest.mark.parametrize('mode', [0o755, 0o750, 0o705])
+    def test_open_secure_directory_is_warned_once(
+        self, make_file, tmp_path, credactor_caplog, mode
+    ):
+        backups = tmp_path / 'backups'
+        backups.mkdir()
+        os.chmod(backups, mode)
+        config = Config(secure_backup_dir=str(backups))
+        for name in ('a.py', 'b.py'):
+            path = make_file(name, f'k = "{_AWS_KEY}"\n')
+            assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        warned = [r for r in credactor_caplog.records if 'other users' in r.getMessage()]
+        assert len(warned) == 1
+
+    def test_new_secure_directory_is_made_private_by_mkdir(self, make_file, tmp_path, monkeypatch):
+        # Under umask 0 the mkdir mode alone decides, so a wider mode there
+        # shows even with the chmod after it disabled.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        backups = tmp_path / 'backups'
+        real_chmod = os.chmod
+        monkeypatch.setattr(
+            redactor.os,
+            'chmod',
+            lambda p, m, *a, **k: None if str(p) == str(backups) else real_chmod(p, m, *a, **k),
+        )
+        old = os.umask(0)
+        try:
+            config = Config(secure_backup_dir=str(backups))
+            assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(os.stat(backups).st_mode) == 0o700
+
+
+def _link_dir_or_skip(link, target):
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not supported')
+
+
+class TestParentSwap:
+    """SR-20: a directory on the path swapped for a symlink, before the
+    rewrite or while it runs, must not redirect the write outside the scan
+    root. The outside file is left byte-identical, and no backup is written
+    outside the root."""
+
+    def _tree(self, tmp_path):
+        root = tmp_path / 'root'
+        (root / 'sub').mkdir(parents=True)
+        inside = root / 'sub' / 'a.py'
+        inside.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        (outside / 'a.py').write_text(f'k = "{_AWS_KEY}"  # outside\n', encoding='utf-8')
+        return root, inside, outside
+
+    def _swap(self, root, outside):
+        os.rename(root / 'sub', root / 'sub_moved')
+        _link_dir_or_skip(root / 'sub', outside)
+
+    def test_swap_before_the_rewrite(self, tmp_path, monkeypatch):
+        import credactor.redactor as redactor
+
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        # The check runs before the backup, so none is ever written outside
+        # the root, not even one removed again after the publish is refused.
+        backups = []
+        real_backup = redactor._create_backup
+
+        def recording_backup(*args, **kwargs):
+            backups.append(args[0])
+            return real_backup(*args, **kwargs)
+
+        monkeypatch.setattr(redactor, '_create_backup', recording_backup)
+        result = batch_replace_in_file(str(inside), [finding], Config(), root=str(root))
+        assert result == (0, 1)
+        assert (outside / 'a.py').read_bytes() == before
+        assert not (outside / 'a.py.bak').exists()
+        assert backups == []
+
+    def test_directory_moved_out_after_the_backup(self, tmp_path, monkeypatch):
+        # The file keeps its inode, size and mtime, so only the root check
+        # before publishing can tell.
+        import credactor.redactor as redactor
+
+        root, inside, _ = self._tree(tmp_path)
+        away = tmp_path / 'away'
+        real_backup = redactor._create_backup
+
+        def backup_then_move(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            os.rename(root / 'sub', away)
+            _link_dir_or_skip(root / 'sub', away)
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_move)
+        before = inside.read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        result = batch_replace_in_file(str(inside), [finding], Config(), root=str(root))
+        assert result == (0, 1)
+        assert (away / 'a.py').read_bytes() == before
+        assert not [p for p in away.iterdir() if p.name.endswith('.credactor.tmp')]
+
+    def test_fix_all_passes_the_root(self, tmp_path, credactor_caplog):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        assert fix_all([finding], str(root), Config()) == 1
+        assert (outside / 'a.py').read_bytes() == before
+        assert any('scan root' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_interactive_approval_passes_the_root(self, tmp_path, monkeypatch):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        self._swap(root, outside)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        assert interactive_review([finding], str(root), Config()) == 1
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_swap_to_a_directory_inside_the_root(self, tmp_path):
+        # The path still resolves inside the root, but through a link: the
+        # file written would not be the one that was scanned.
+        root, inside, _ = self._tree(tmp_path)
+        other = root / 'other'
+        other.mkdir()
+        (other / 'a.py').write_text(f'k = "{_AWS_KEY}"  # other\n', encoding='utf-8')
+        before = (other / 'a.py').read_bytes()
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        os.rename(root / 'sub', root / 'sub_moved')
+        _link_dir_or_skip(root / 'sub', other)
+        assert batch_replace_in_file(str(inside), [finding], Config(), root=str(root)) == (0, 1)
+        assert (other / 'a.py').read_bytes() == before
+
+    def test_interactive_final_sweep_passes_the_root(self, tmp_path, monkeypatch):
+        # Both findings are approved, then the directory is swapped before the
+        # end-of-review sweep, which would clear the copy of the first value
+        # left on the second finding's line.
+        import credactor.redactor as redactor
+
+        root, inside, outside = self._tree(tmp_path)
+        inside.write_text(f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"  # {_AWS_KEY}\n', encoding='utf-8')
+        (outside / 'a.py').write_text(f'# {_AWS_KEY}\n', encoding='utf-8')
+        before = (outside / 'a.py').read_bytes()
+        first = _mk_finding(str(inside), _AWS_KEY, line=1)
+        second = _mk_finding(str(inside), _PASSWORD, line=2)
+        real_single = redactor.replace_single
+        calls = []
+
+        def single_then_swap(*args, **kwargs):
+            ok = real_single(*args, **kwargs)
+            calls.append(ok)
+            if len(calls) == 2:
+                self._swap(root, outside)
+            return ok
+
+        monkeypatch.setattr(redactor, 'replace_single', single_then_swap)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review([first, second], str(root), Config())
+        assert calls == [True, True]
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_final_sweep_checks_the_root(self, tmp_path):
+        root, inside, outside = self._tree(tmp_path)
+        before = (outside / 'a.py').read_bytes()
+        self._swap(root, outside)
+        finding = _mk_finding(str(inside), _AWS_KEY)
+        _final_file_sweep(str(inside), [finding], set(), Config(no_backup=True), root=str(root))
+        assert (outside / 'a.py').read_bytes() == before
+
+    def test_single_file_target_is_its_own_root(self, tmp_path):
+        path = tmp_path / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert batch_replace_in_file(str(path), [finding], Config(), root=str(path)) == (1, 0)
+
+    def test_root_reached_through_a_link_above_it(self, tmp_path):
+        # A link above the root (macOS /tmp, say) is not a swap below it.
+        real = tmp_path / 'real'
+        (real / 'root').mkdir(parents=True)
+        _link_dir_or_skip(tmp_path / 'alias', real)
+        path = tmp_path / 'alias' / 'root' / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        finding = _mk_finding(str(path), _AWS_KEY)
+        root = str(tmp_path / 'alias' / 'root')
+        assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
+
+
+class TestSweepSparesHashFields:
+    """SR-21: the copy sweep keeps a copy of a redacted value that sits in a
+    hash, commit or revision field, as the scanner does, unless a credential
+    keyword in the key vetoes that."""
+
+    _HEX = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+
+    def test_revision_and_commit_pins_are_kept(self, make_file, credactor_caplog):
+        path = make_file(
+            'deps.py',
+            f'token = "{self._HEX}"\nrevision = "{self._HEX}"\ncommit: {self._HEX}\n',
+        )
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines[0] == 'token = "REDACTED_BY_CREDACTOR"'
+        assert lines[1] == f'revision = "{self._HEX}"'
+        assert lines[2] == f'commit: {self._HEX}'
+        assert any('keyed as a hash' in r.getMessage() for r in credactor_caplog.records)
+
+    def test_credential_keyword_vetoes_the_exemption(self, make_file):
+        path = make_file('deps.py', f'token = "{self._HEX}"\napi_key_rev = "{self._HEX}"\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert self._HEX not in Path(path).read_text(encoding='utf-8')
+
+    def test_single_quoted_pin_is_kept(self, make_file):
+        path = make_file('deps.py', f"token = '{self._HEX}'\nrevision = '{self._HEX}'\n")
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8').splitlines()[1] == f"revision = '{self._HEX}'"
+
+    def test_known_format_token_under_a_hash_key_is_still_cleared(self, make_file):
+        # The scanner reports a known-format token under any key, so the
+        # exemption does not apply to it: only hex or Base64 values qualify.
+        path = make_file('app.py', f'cfg = {{"token": "{_GH_TOKEN}", "commit": "{_GH_TOKEN}"}}\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_interactive_clears_a_known_format_copy_under_a_hash_key(self, make_file, monkeypatch):
+        path = make_file('app.py', f'cfg = {{"token": "{_GH_TOKEN}", "commit": "{_GH_TOKEN}"}}\n')
+        findings = [_mk_finding(path, _GH_TOKEN, ftype='pattern:GitHub token')] * 2
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        assert interactive_review(findings, os.path.dirname(path), Config(no_backup=True)) == 0
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_sweep_is_linear_on_a_long_line(self, make_file):
+        # The key check looks back a bounded window, not the whole line.
+        filler = ('abcdefghij' * 100_000) + ''.join(f';var t{i}="{self._HEX}"' for i in range(20))
+        path = make_file('bundle.js', f'const token = "{self._HEX}";\n{filler}\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        start = time.perf_counter()
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert time.perf_counter() - start < 5.0
+        assert self._HEX not in Path(path).read_text(encoding='utf-8')
+
+    def test_final_sweep_keeps_them_too(self, make_file):
+        path = make_file('deps.py', f'# {self._HEX}\nrevision = "{self._HEX}"\n')
+        finding = _mk_finding(path, self._HEX, ftype='variable:token')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines == ['# REDACTED_BY_CREDACTOR', f'revision = "{self._HEX}"']
+
+
+class TestEnvModeLiteralShapes:
+    """SR-25: env mode inlines os.environ[...] only for a plain quoted
+    literal. A triple-quoted or prefixed literal (b, r, f, u, rb) falls back
+    to the sentinel, so the result parses and names nothing new but os."""
+
+    @staticmethod
+    def _names(source):
+        import ast
+
+        return {n.id for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)}
+
+    @pytest.mark.parametrize(
+        'template',
+        [
+            'api_key = """{v}"""\n',
+            "api_key = '''{v}'''\n",
+            'api_key = b"{v}"\n',
+            'api_key = r"{v}"\n',
+            'api_key = f"{v}"\n',
+            'api_key = rb"{v}"\n',
+            'api_key = u"{v}"\n',
+            "api_key = Rb'{v}'\n",
+        ],
+    )
+    def test_literal_shape_falls_back_to_the_sentinel(self, make_file, template):
+        source = template.format(v=_AWS_KEY)
+        path = make_file('app.py', source)
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert _AWS_KEY not in after
+        assert 'REDACTED_BY_CREDACTOR' in after
+        assert self._names(after) <= self._names(source) | {'os'}
+
+    @pytest.mark.parametrize(
+        'template',
+        [
+            'api_key = "{v}""x"\n',
+            'api_key = "{v}" "x"\n',
+            'api_key = \'{{"token": "{v}"}}\'\n',
+        ],
+    )
+    def test_token_that_is_part_of_a_larger_literal(self, make_file, template):
+        # Implicit concatenation, and a JSON document held in a single-quoted
+        # string: an inlined expression would parse and then be wrong.
+        source = template.format(v=_AWS_KEY)
+        path = make_file('app.py', source)
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert 'REDACTED_BY_CREDACTOR' in after
+        assert 'os.environ' not in after
+        self._names(after)  # still parses
+
+    def test_json_in_a_single_quoted_js_string(self, make_file):
+        path = make_file('app.js', f'const body = \'{{"token": "{_AWS_KEY}"}}\';\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == 'const body = \'{"token": "REDACTED_BY_CREDACTOR"}\';\n'
+
+    def test_literal_after_a_closed_string_is_still_inlined(self, make_file):
+        path = make_file('app.py', f"d = {{'a': 'x', 'api_key': \"{_AWS_KEY}\"}}\n")
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == "d = {'a': 'x', 'api_key': os.environ[\"API_KEY\"]}\n"
+
+    def test_escaped_quote_earlier_on_the_line(self, make_file):
+        path = make_file('app.py', f'x = "a\\"b"; api_key = "{_AWS_KEY}"\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        after = Path(path).read_text(encoding='utf-8')
+        assert after == 'x = "a\\"b"; api_key = os.environ["API_KEY"]\n'
+
+    def test_plain_literal_is_still_inlined(self, make_file):
+        path = make_file('app.py', f'api_key = "{_AWS_KEY}"\n')
+        config = Config(no_backup=True, replace_mode='env')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (1, 0)
+        assert Path(path).read_text(encoding='utf-8') == 'api_key = os.environ["API_KEY"]\n'
+
+
+class TestOwnLineOfAnIgnoredFinding:
+    """SR-22: a line marked credactor:ignore is skipped by the sweep only when
+    no finding was replaced on it. An ingested finding there is redacted
+    (documented), and the sweep then clears its other copies on that line."""
+
+    def test_second_copy_on_the_findings_own_line_is_cleared(self, make_file):
+        path = make_file(
+            'run.sh',
+            f'git clone https://{_GH_TOKEN}@github.com/o/r'
+            f' && echo {_GH_TOKEN} > .tok  # credactor:ignore\n',
+        )
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+    def test_other_ignored_lines_are_still_skipped(self, make_file):
+        path = make_file('run.sh', f'a={_GH_TOKEN}\nb={_GH_TOKEN}  # credactor:ignore\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        assert batch_replace_in_file(path, [finding], Config(no_backup=True)) == (1, 0)
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+        assert lines == ['a=REDACTED_BY_CREDACTOR', f'b={_GH_TOKEN}  # credactor:ignore']
+
+    def test_final_sweep_clears_an_approved_ignored_line(self, make_file):
+        path = make_file('run.sh', f'x=REDACTED_BY_CREDACTOR y={_GH_TOKEN}  # credactor:ignore\n')
+        finding = _external(path, _GH_TOKEN, rule='github-pat')
+        _final_file_sweep(path, [finding], set(), Config(no_backup=True))
+        assert _GH_TOKEN not in Path(path).read_text(encoding='utf-8')
+
+
+class TestSweepReportsWhatWasWritten:
+    """The sweep's counts are logged only once the file is written, a kept
+    copy is reported once per run, and an end-of-review sweep that cannot be
+    written leaves the run unresolved."""
+
+    _HEX = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+
+    def test_no_cleared_message_when_the_backup_fails(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n# {_AWS_KEY}\n')
+        monkeypatch.setattr(redactor, '_create_backup', lambda *a, **k: None)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (0, 1)
+        messages = [r.getMessage() for r in credactor_caplog.records]
+        assert not any('also cleared' in m for m in messages)
+        assert any('Backup failed' in m for m in messages)
+
+    def test_kept_copy_is_reported_once_in_interactive_review(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        path = make_file(
+            'deploy.py',
+            f'password = "{self._HEX}"\nsecret = "{self._HEX}"\nrevision = "{self._HEX}"\n',
+        )
+        findings = [
+            _mk_finding(path, self._HEX, ftype='variable:password', line=1),
+            _mk_finding(path, self._HEX, ftype='variable:secret', line=2),
+        ]
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        kept = [r for r in credactor_caplog.records if 'keyed as a hash' in r.getMessage()]
+        assert len(kept) == 1
+
+    def test_refused_final_sweep_leaves_the_run_unresolved(
+        self, make_file, monkeypatch, credactor_caplog
+    ):
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"  # {_AWS_KEY}\n')
+        findings = [
+            _mk_finding(path, _AWS_KEY, line=1),
+            _mk_finding(path, _PASSWORD, line=2),
+        ]
+        real_sweep = redactor._final_file_sweep
+
+        def sweep_with_a_change_on_disk(*args, **kwargs):
+            real_sweep_stray = redactor._sweep_stray_copies
+
+            def sweep_then_edit(*a, **k):
+                result = real_sweep_stray(*a, **k)
+                with open(path, 'a', encoding='utf-8') as fh:
+                    fh.write('# appended\n')
+                return result
+
+            monkeypatch.setattr(redactor, '_sweep_stray_copies', sweep_then_edit)
+            return real_sweep(*args, **kwargs)
+
+        monkeypatch.setattr(redactor, '_final_file_sweep', sweep_with_a_change_on_disk)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        unresolved = interactive_review(findings, os.path.dirname(path), Config(no_backup=True))
+        assert unresolved == 1
+        assert _AWS_KEY in Path(path).read_text(encoding='utf-8')
+        messages = [r.getMessage() for r in credactor_caplog.records]
+        assert not any('also cleared' in m for m in messages)
+
+    def test_failed_file_does_not_count_its_refusals(self, make_file, monkeypatch):
+        # A file that fails for another reason counts every finding as
+        # failed; a refusal inside it is not taken off the stale-report hint.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\npassword = load()\n')
+        monkeypatch.setattr(redactor, '_create_backup', lambda *a, **k: None)
+        tally = {'refused': 0}
+        findings = [
+            _mk_finding(path, _AWS_KEY),
+            _mk_finding(path, 'pass', ftype='external:gitleaks:generic', line=2),
+        ]
+        assert batch_replace_in_file(path, findings, Config(), tally=tally) == (0, 2)
+        assert tally == {'refused': 0}
+
+
+class TestWritePathFailures:
+    """A file that cannot be written fails on its own, leaves no stray backup,
+    and never ends the run."""
+
+    def test_unencodable_content_fails_the_file_not_the_run(self, tmp_path):
+        # An odd trailing byte decodes to a lone surrogate that UTF-16 cannot
+        # encode back. The file is failed before any backup is made.
+        bad = tmp_path / 'u16.py'
+        bad.write_bytes(f'api_token = "{_GH_TOKEN}"\n'.encode('utf-16-le') + b'\xe9')
+        good = tmp_path / 'ok.py'
+        good.write_text(f'api_key = "{_AWS_KEY}"\n', encoding='utf-8')
+        before = bad.read_bytes()
+        findings = [
+            _mk_finding(str(bad), _GH_TOKEN, ftype='variable:api_token'),
+            _mk_finding(str(good), _AWS_KEY),
+        ]
+        import credactor.redactor as redactor
+
+        with mock.patch.object(
+            redactor, 'detect_encoding', lambda p: 'utf-16-le' if p.endswith('u16.py') else 'utf-8'
+        ):
+            unresolved = fix_all(findings, str(tmp_path), Config())
+        assert unresolved == 1
+        assert bad.read_bytes() == before
+        assert not (tmp_path / 'u16.py.bak').exists()
+        assert _AWS_KEY not in good.read_text(encoding='utf-8')
+
+    @pytest.mark.parametrize('secure_delete', [False, True])
+    def test_backup_is_removed_when_nothing_is_published(
+        self, make_file, monkeypatch, secure_delete
+    ):
+        # The original was not changed, so a backup made for it has nothing
+        # to undo, and under --secure-delete it must not be left in plaintext.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\n')
+        real_backup = redactor._create_backup
+
+        def backup_then_edit(*args, **kwargs):
+            bak = real_backup(*args, **kwargs)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write('# appended\n')
+            return bak
+
+        monkeypatch.setattr(redactor, '_create_backup', backup_then_edit)
+        config = Config(secure_delete=secure_delete)
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], config) == (0, 1)
+        assert not os.path.exists(path + '.bak')
+
+    def test_session_backup_survives_a_later_failed_approval(self, make_file, monkeypatch):
+        # Only a backup made by this call is removed; the one the first
+        # approval made stays as the file's undo.
+        import credactor.redactor as redactor
+
+        path = make_file('a.py', f'k = "{_AWS_KEY}"\np = "{_PASSWORD}"\n')
+        assert batch_replace_in_file(path, [_mk_finding(path, _AWS_KEY)], Config()) == (1, 0)
+        with open(path + '.bak', 'rb') as fh:
+            first = fh.read()
+        monkeypatch.setattr(redactor, '_write_atomic', lambda *a, **k: False)
+        second = _mk_finding(path, _PASSWORD, line=2)
+        assert batch_replace_in_file(path, [second], Config(), skip_backup=True) == (0, 1)
+        with open(path + '.bak', 'rb') as fh:
+            assert fh.read() == first
+
+    def test_root_that_ends_in_a_separator(self, tmp_path):
+        path = tmp_path / 'a.py'
+        path.write_text(f'k = "{_AWS_KEY}"\n', encoding='utf-8')
+        root = os.path.abspath(os.sep)
+        finding = _mk_finding(str(path), _AWS_KEY)
+        assert batch_replace_in_file(str(path), [finding], Config(), root=root) == (1, 0)
+
+
 class TestLineZeroAtTheSink:
     """PA-05: line 0 means the line is unknown. The sink refuses it itself, so
     a caller that passes it cannot reach the last line through index -1."""
@@ -1548,8 +2351,9 @@ class TestGuardPins:
         # SEC-15: the rewrite takes a non-blocking exclusive flock on the very
         # file it rewrites, and still holds it while reading and while writing.
         # A probe on a second descriptor must find the file locked at both
-        # points. This spies on the read by its newline='' open, so a change to
-        # how the file is read must update the spy, not drop the check.
+        # points. This spies on the read by its binary open in the redactor
+        # (SR-24 reads the file once, as bytes), so a change to how the file
+        # is read must update the spy, not drop the check.
         import fcntl
 
         import credactor.redactor as redactor
@@ -1576,13 +2380,13 @@ class TestGuardPins:
                 return False
 
         def spy_open(file, *args, **kwargs):
-            if file == path and kwargs.get('newline') == '' and 'encoding' in kwargs:
+            if file == path and (args[:1] == ('rb',) or kwargs.get('mode') == 'rb'):
                 held['read'] = locked_elsewhere()
             return real_open(file, *args, **kwargs)
 
-        def spy_write(filepath, lines, encoding):
+        def spy_write(filepath, data, **kwargs):
             held['write'] = locked_elsewhere()
-            return real_write(filepath, lines, encoding)
+            return real_write(filepath, data, **kwargs)
 
         monkeypatch.setattr(fcntl, 'flock', recorder)
         monkeypatch.setattr(redactor, 'open', spy_open, raising=False)

@@ -677,7 +677,8 @@ CASES: list[Case] = [
         argv=('--fix-all', '--yes', '--from-gitleaks', 'report/gl.json', '.'),
         note='SR-15: short.py\'s secret "api" is reported but not written; SR-17: the '
         'README.md key header is refused; PA-05: lines.py\'s line "x" is kept at line 0 '
-        'and not written; SR-24 is still current behaviour; app.py and dsn.py are '
+        'and not written; SR-24: stale.py, with nothing to replace, is neither backed up '
+        'nor rewritten; app.py and dsn.py are '
         'positive controls that must keep redacting',
     ),
     Case(
@@ -747,7 +748,8 @@ CASES: list[Case] = [
             )
         },
         argv=('--fix-all', '--yes', '--no-backup', '--replace-with', 'env', '.'),
-        note='records the broken output for triple quotes and prefixed strings; SR-25 changes it',
+        note='SR-25: the triple-quoted and prefixed literals get the sentinel; the plain '
+        'literal on the last line still gets os.environ',
     ),
     Case(
         id='fix-custom-replacement',
@@ -766,7 +768,8 @@ CASES: list[Case] = [
             ),
         },
         argv=('--fix-all', '--yes', '--no-backup', '.'),
-        note='records current sweep behaviour; SR-21 and SR-22 change it',
+        note="SR-21: lock.py's revision pin is kept, api_key_rev is still swept; SR-22: "
+        'dupes.py keeps its inline-ignored line 2 and its allowlisted line 3',
     ),
     Case(
         id='fix-backup-collision-and-hardlink',
@@ -790,7 +793,8 @@ CASES: list[Case] = [
         },
         argv=('--no-backup', '.'),
         answers=('y', 'n', 'y'),
-        note='interactive approvals and the final sweep; SR-22 and PA-14 change this',
+        note='interactive approvals and the final sweep, which runs through the shared '
+        'write path (PA-14); SR-22: the inline-ignored line 2 is never swept',
     ),
     Case(
         id='dry-run-and-fix-all',

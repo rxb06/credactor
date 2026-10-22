@@ -879,6 +879,79 @@ class TestIngestedSymlinkCLI:
         assert "'real.py'" in err
 
 
+class TestSweepRespectsSuppressions:
+    """SR-22: the copy sweep leaves a line the user suppressed, inline or by a
+    .credactorignore file:line entry, byte-identical, in --fix-all and in
+    interactive review. Other copies are still swept."""
+
+    KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+
+    def _repo(self, tmp_path, ignore=''):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / 'dupes.py').write_text(
+            f'first = "{self.KEY}"\n'
+            f'second = "{self.KEY}"  # credactor:ignore\n'
+            f'third = "{self.KEY}"\n'
+            f'# a copy: {self.KEY}\n',
+            encoding='utf-8',
+        )
+        if ignore:
+            (repo / '.credactorignore').write_text(ignore, encoding='utf-8')
+        return repo
+
+    def _lines(self, repo):
+        return (repo / 'dupes.py').read_text(encoding='utf-8').splitlines()
+
+    def test_fix_all_leaves_an_inline_ignored_line(self, tmp_path):
+        repo = self._repo(tmp_path)
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--yes', '--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert self.KEY not in lines[0] + lines[2] + lines[3]
+
+    def test_fix_all_leaves_a_file_line_entry(self, tmp_path):
+        repo = self._repo(tmp_path, ignore='dupes.py:3\n')
+        with pytest.raises(SystemExit):
+            main(['--fix-all', '--yes', '--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[2] == f'third = "{self.KEY}"'
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert self.KEY not in lines[0] + lines[3]
+
+    def test_interactive_review_leaves_them_too(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path, ignore='dupes.py:3\n')
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        with pytest.raises(SystemExit):
+            main(['--no-backup', str(repo)])
+        lines = self._lines(repo)
+        assert lines[1] == f'second = "{self.KEY}"  # credactor:ignore'
+        assert lines[2] == f'third = "{self.KEY}"'
+        assert self.KEY not in lines[0] + lines[3]
+
+
+class TestFixAllThroughAnAliasedRoot:
+    """SR-20: the walker resolves file paths, while the scan root reaches the
+    write path as typed. A target reached through a link above it (macOS
+    /tmp) must still be redacted."""
+
+    def test_target_through_a_link_above_it(self, tmp_path):
+        real = tmp_path / 'real'
+        (real / 'proj').mkdir(parents=True)
+        try:
+            os.symlink(real, tmp_path / 'alias', target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks not supported')
+        key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+        (real / 'proj' / 'a.py').write_text(f'aws_key = "{key}"\n', encoding='utf-8')
+        with pytest.raises(SystemExit) as exc_info:
+            main(['--fix-all', '--yes', '--no-backup', str(tmp_path / 'alias' / 'proj')])
+        assert exc_info.value.code == 0
+        assert key not in (real / 'proj' / 'a.py').read_text(encoding='utf-8')
+
+
 class TestConfigFileIngestCLI:
     """P4.3 / P4.4: [ingest] from_gitleaks / from_trufflehog in .credactor.toml."""
 

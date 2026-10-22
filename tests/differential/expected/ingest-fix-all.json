@@ -153,7 +153,7 @@
    1
   ]
  ],
- "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; PA-05: lines.py's line \"x\" is kept at line 0 and not written; SR-24 is still current behaviour; app.py and dsn.py are positive controls that must keep redacting",
+ "note": "SR-15: short.py's secret \"api\" is reported but not written; SR-17: the README.md key header is refused; PA-05: lines.py's line \"x\" is kept at line 0 and not written; SR-24: stale.py, with nothing to replace, is neither backed up nor rewritten; app.py and dsn.py are positive controls that must keep redacting",
  "reported": true,
  "tree_after": {
   "README.md": "a6ff0fdb8882fe94",
@@ -165,7 +165,6 @@
   "lines.py.bak": "0c24368e177fd09f",
   "report/gl.json": "e0d588d70afdff6f",
   "short.py": "8ee075c4c8213876",
-  "stale.py": "9e26bf369911c45c",
-  "stale.py.bak": "9e26bf369911c45c"
+  "stale.py": "9e26bf369911c45c"
  }
 }

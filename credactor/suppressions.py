@@ -147,6 +147,10 @@ class AllowList:
         rel = self._rel(filepath)
         return lineno in self._file_line.get(rel, set())
 
+    def suppressed_lines(self, filepath: str) -> frozenset[int]:
+        """The line numbers of *filepath* named by file:line entries."""
+        return frozenset(self._file_line.get(self._rel(filepath), ()))
+
     def is_value_suppressed(self, value: str) -> bool:
         """Return True if the value literal is in the allowlist."""
         return value in self._value_literals

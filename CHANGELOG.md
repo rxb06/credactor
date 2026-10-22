@@ -14,6 +14,52 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Security
 
+- **`--replace-with env` no longer writes broken code for triple-quoted or
+  prefixed strings.** It consumed the quotes of a matched `"value"`, so a
+  triple-quoted literal kept its spare quotes (a syntax error), and a prefixed
+  one such as `b"…"` or `f"…"` became `bos.environ[…]`, which parses and then
+  fails at run time. Such a literal now gets the sentinel, as a value inside a
+  larger string already did, and so does a literal followed by another one
+  (implicit concatenation) or one held inside a larger string, such as a JSON
+  document in a single-quoted string, which used to end up with code text in
+  that string.
+- **The copy sweep leaves suppressed lines alone.** A suppressed value never
+  becomes a finding, so its line was not among the ones the sweep keeps, and
+  `--fix-all` rewrote a line marked `credactor:ignore` or named by a
+  `.credactorignore` `file:line` entry when it held a copy of a value redacted
+  elsewhere. The sweep now skips both, in `--fix-all`, each interactive
+  approval and the end-of-review sweep.
+- **The copy sweep keeps hash, commit and revision pins.** The scanner does
+  not report a bare hex or Base64 value keyed as a hash, commit or revision,
+  but the sweep that clears further copies of a redacted value did not look at
+  the key, so a revision pin that shared its bytes with a redacted value was
+  rewritten. The sweep now keeps such a copy, by the scanner's own rule, and
+  says how many it kept. A credential keyword in the key still wins, and a
+  known-format token (a provider prefix, a JWT, a connection string) is
+  cleared under any key, as the scanner reports it under any key.
+- **A directory swapped for a symlink cannot redirect a rewrite outside the
+  scan root.** Only the file itself was checked for being a symlink, so a
+  directory on its path replaced by a symlink during the run could send the
+  backup and the rewrite outside the tree. `--fix-all`,
+  interactive approvals and the end-of-review sweep now check, just before the
+  backup and again just before the rename, that the path still reaches a file
+  inside the scan root through real directories. If not, the file is not
+  written and its findings stay unresolved (exit 1).
+- **Backups are private, and hold exactly what was edited.** A `.bak` was
+  made with `copy2`, which copied the source file's mode onto it, so a
+  readable source gave a readable backup (a setuid one a setuid backup), and a
+  new `--secure-backup-dir` was created with the umask default. It also read
+  the file a second time, so the backup could differ from what was edited.
+  A backup is now written from the bytes that were read, into a new file with
+  mode `0600`, and a new secure backup directory is created `0700`; an
+  existing one that is open to other users gets a warning.
+- **A file changed during a write run is not overwritten.** Write modes
+  assume no other process edits the files meanwhile. Just before a file is
+  rewritten it is compared with what was read; if its size, modification time
+  or inode changed, or it is gone, it is left as it is, with a warning, and
+  its findings stay unresolved (exit 1). A backup already made for it is
+  removed again (wiped under `--secure-delete`), since the file was not
+  changed.
 - **Ingestion never rewrites anything under `.git`.** A report could name
   `.git/config` or a hook, which the native scan never visits, and `--fix-all`
   rewrote it. Such a finding is now reported as before, counts as unresolved
@@ -150,6 +196,22 @@ below the release that dropped it (2.4.0 dropped Python 3.10, so:
 
 ### Changed
 
+- **A file that cannot be written back in its encoding fails on its own.** A
+  UTF-16 file with an odd trailing byte decodes, but its new content cannot
+  be encoded again, and the error ended the whole `--fix-all` or interactive
+  run, leaving later files unredacted. The new content is now encoded before
+  any backup is made, and such a file is reported as not written while the
+  run goes on.
+- **A file with nothing to replace is no longer rewritten or backed up.**
+  `--fix-all` wrote a `.bak` and rewrote every file it was given, even one in
+  which no value could be replaced (a stale report), which gave the file a new
+  inode, split its hard links and dropped extended attributes. Every edit is
+  now planned in memory first, and such a file is left alone.
+- **Every rewrite goes through one write path.** The end-of-review sweep in
+  interactive mode kept its own copy of the symlink refusal, the atomic write
+  and the mode restore. It now shares the path that `--fix-all` and each
+  interactive approval use, so it also takes the advisory lock, and later
+  write-path checks apply to all three at once.
 - **An ingested finding with no valid line number is reported at line 0.**
   It was reported at line 1. In SARIF such a result names the file with no
   region, since SARIF lines start at 1. Two copies of one finding, one with a

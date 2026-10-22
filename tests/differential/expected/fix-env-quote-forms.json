@@ -65,9 +65,9 @@
    1
   ]
  ],
- "note": "records the broken output for triple quotes and prefixed strings; SR-25 changes it",
+ "note": "SR-25: the triple-quoted and prefixed literals get the sentinel; the plain literal on the last line still gets os.environ",
  "reported": true,
  "tree_after": {
-  "q.py": "6d885c32cad7e564"
+  "q.py": "e7936819ed1d813d"
  }
 }
