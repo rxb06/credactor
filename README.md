@@ -1,37 +1,63 @@
 [![PyPI](https://img.shields.io/pypi/v/credactor)](https://pypi.org/project/credactor/)
 [![CI](https://github.com/rxb06/credactor/actions/workflows/ci.yml/badge.svg)](https://github.com/rxb06/credactor/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/licence-Apache%202.0-blue)](https://github.com/rxb06/credactor/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/rxb06/credactor/blob/main/LICENSE)
 
 # Credactor
 
 **Find the secret. Fix it. Commit clean.**
 
-Secret scanners are good at sounding the alarm and not much help putting it out. They hand you a list of leaked credentials and leave the cleanup to you. Credactor closes the loop: it finds a hardcoded secret and rewrites it in place, so a leak goes from detection to fix in a single command.
+Most secret scanners stop at the alert: you get a list of leaked credentials
+and the cleanup is yours. Credactor finds hardcoded secrets and rewrites them
+in place, so a leak in your working tree goes from found to fixed in one
+command. It runs on your machine, as a pre-commit hook, or as a CI gate, and it
+can also fix what Gitleaks, TruffleHog or Betterleaks find.
 
-<img alt="Credactor: scan, redact, commit clean" src="https://raw.githubusercontent.com/rxb06/credactor/main/docs/assets/credactor-banner.png" width="1280" height="320" />
-Keeping credentials out of source code is a baseline security practice, not an optional one. Credactor makes that baseline cheap to hold, on your machine before a commit or in CI before a merge. Run it on its own, or alongside the scanners you already trust.
+<img alt="Credactor: scan, redact, commit clean" src="https://raw.githubusercontent.com/rxb06/credactor/main/docs/assets/credactor-banner.png" width="100%" />
 
 ```python
-# Credactor finds this:
+# Before
 db_password = "h8Tq2vKp9mRz4Wd"
 
-# By default it rewrites the secret as a sentinel that fails loudly at runtime:
+# credactor --fix-all .   (default: a sentinel that fails loudly at runtime)
 db_password = "REDACTED_BY_CREDACTOR"
 
-# With --replace-with env, it writes a reference that reads from the environment:
+# credactor --replace-with env --fix-all .   (read it from the environment)
 db_password = os.environ["DB_PASSWORD"]
 ```
 
-> Redaction rewrites files in your **working tree**. If a secret has already been committed, rotate the key and scrub history as well (for example, with `git filter-repo`). Rewriting a file is not a substitute for revoking a leaked credential.
-
----
+> **Redaction cleans your working tree.** It does not revoke the credential and
+> does not touch git history. If a secret was ever committed or shared, rotate
+> it, and rewrite history if you need it gone from there too (for example with
+> `git filter-repo`).
 
 ## Why Credactor
 
-- **Redaction, not just detection.** Most scanners stop at the finding. Credactor replaces the secret in place: a loud `REDACTED_BY_CREDACTOR` sentinel that fails at runtime by default, or a language-aware environment-variable reference (Python, JavaScript/TypeScript, Go, Java/Kotlin, Ruby, PHP, and shell) such as `os.environ["KEY"]`. The replacement is valid code. If the file does not already include the matching import (for example `import os`), add it.
-- **Safe by default.** Atomic writes, automatic `.bak` backups, symlink-boundary and file-permission guards, and full-secret masking in every output. If a safe backup cannot be written, Credactor skips the file rather than rewrite it blind, and a crash mid-write leaves the original intact.
-- **Zero runtime dependencies.** Pure Python 3.11+ standard library, plus an optional extra for non-UTF-8 encodings.
-- **Built for the pipeline.** SARIF output for GitHub Code Scanning, a read-only `--ci` gate with precise exit codes, a pre-commit hook, and ingestion of Gitleaks, TruffleHog or Betterleaks reports. Detect with the scanner you already run, remediate with Credactor.
+- **It fixes, not just flags.** Each finding is replaced in place with a
+  sentinel, your own marker, or an environment-variable lookup in the file's
+  own language.
+- **Careful writes.** Each edit is planned in memory, backed up first (mode
+  `0600`), written to a temp file and renamed into place. A file that changed
+  during the run, a path that leaves the scan root, or a private key block is
+  skipped with a warning, and its finding stays reported.
+- **Works with the scanner you already run.** Feed it a Gitleaks, TruffleHog or
+  Betterleaks report and it fixes their findings and its own in one
+  deduplicated pass.
+- **Built for pipelines.** A read-only `--ci` gate with clear exit codes, SARIF
+  2.1.0 with line and column locations for GitHub Code Scanning, a GitHub Action
+  and a pre-commit hook. Secrets are masked in every report format, and text
+  output is cleaned so a scanned file cannot inject escape sequences or CI
+  workflow commands into your terminal or log.
+- **Releases checked against their source.** Pure Python 3.11+ standard
+  library with no runtime dependencies. Before a release reaches PyPI, every
+  Credactor file in the wheel and sdist is compared byte for byte with the
+  tagged source, and the package metadata must match `pyproject.toml` (see
+  [Supply-chain hardening](#supply-chain-hardening)).
+
+Where it is not the right tool on its own: its built-in rules cover the
+credential formats that leak most often rather than hundreds of providers, and
+it does not check whether a secret is live. A clean run means nothing matched
+its rules, not that the code holds no secrets. Pair it with a dedicated scanner
+for breadth (see [Bring your own scanner](#bring-your-own-scanner)).
 
 ## Install
 
@@ -39,159 +65,334 @@ db_password = os.environ["DB_PASSWORD"]
 pip install credactor
 ```
 
-Requires Python 3.11+. No other dependencies. Runs on Linux, macOS, and
-Windows (CI-tested on Linux and Windows).
+With [uv](https://docs.astral.sh/uv/), install it as a tool, or run it once
+without installing:
 
-On macOS and Linux you can install it with Homebrew instead:
+```bash
+uv tool install credactor
+uvx credactor --dry-run .
+```
+
+Or with Homebrew on macOS and Linux:
 
 ```bash
 brew install rxb06/tap/credactor
 ```
 
-The formula installs into its own virtualenv and includes the optional
-`[encoding]` extra, so a Homebrew install also detects secrets in non-UTF-8
-files. A plain `pip install credactor` leaves that extra out; add it with
-`pip install 'credactor[encoding]'` if you want the same coverage.
-
-From source:
-
-```bash
-git clone https://github.com/rxb06/credactor.git
-cd credactor
-pip install -e .
-```
-
-`credactor` then works from any directory.
+Needs Python 3.11 or newer. Tested in CI on Linux and Windows, Python 3.11 to
+3.13. For files in encodings other than UTF-8, Latin-1 or simple UTF-16, add
+the optional extra: `pip install 'credactor[encoding]'` or
+`uv tool install 'credactor[encoding]'` (the Homebrew formula includes it).
 
 ## Quick start
 
-> Run `--dry-run` first and review the findings before redacting. False positives are possible, and under `--fix-all` a false positive gets rewritten. Suppress known-safe values with `# credactor:ignore` or a `.credactorignore` entry.
+**1. See what it finds.** Nothing is changed.
 
 ```bash
-credactor --dry-run .                 # scan, change nothing
-credactor .                           # scan, then redact interactively (y/n per finding)
-credactor --fix-all .                 # redact everything after one confirmation
-credactor --fix-all --yes .           # redact non-interactively (CI / scripts)
-credactor --ci .                      # read-only gate: exit 1 on findings
-credactor --replace-with env .        # redact to env-var references instead of the sentinel
+credactor --dry-run .
 ```
 
-### Pre-commit hook
+```text
+======================================================================
+  CREDENTIAL SCAN REPORT  --  2 finding(s) in 1 file(s)
+======================================================================
 
-> The hook gates staged content only, so a secret that is already committed is not
-> re-flagged. Use `credactor --scan-history .` to check what is already in the repo.
+  FILE: config.py
+  ────────────────────────────────────────────────────────────
+  Line    3  [HIGH]  [variable:db_password]
+           db_password = "h8Tq[REDACTED]"
+  Line    4  [CRITICAL]  [pattern:AWS access key]
+           aws_key = "AKIA[REDACTED]"
+```
+
+Reports show only the first four characters of each secret.
+
+**2. Fix them.** Review the findings first: `--fix-all` rewrites every one,
+false positives included. To keep one, add `# credactor:ignore` to its line
+(see [Suppress false positives](#suppress-false-positives)) or fix
+interactively and answer `n`. Before each file is changed, a `.bak` copy is
+written beside it so you can undo.
+
+```bash
+credactor .                          # ask y/N for each finding (needs a terminal)
+credactor --fix-all .                # fix all after one confirmation
+credactor --fix-all --yes .          # fix all, no prompt (scripts)
+credactor --replace-with env --fix-all .   # environment lookups instead of the sentinel
+```
+
+Env mode writes the lookup, not the import: add `import os` or your language's
+equivalent if the file lacks it. On Windows Git Bash, run the interactive mode
+as `winpty credactor .`.
+
+**3. Check, then clean up the backups.** Each `.bak` still holds the original
+secret, and Credactor never edits your `.gitignore`, so a plain `git add .`
+would stage it.
+
+```bash
+diff config.py.bak config.py         # check what changed
+cp config.py.bak config.py           # undo
+```
+
+Add `*.bak` and `*.credactor.tmp` to `.gitignore` and delete the backups once
+you are happy. To keep backups out of the tree from the start, pass
+`--secure-backup-dir DIR` (a directory outside the repository) on the fix run.
+`--secure-delete` wipes each backup instead, which leaves git as your only
+undo.
+
+## Commands at a glance
+
+| Command | What it does | Changes files |
+|---|---|---|
+| `credactor --dry-run .` | Report findings | No |
+| `credactor .` | Review and fix one finding at a time | Yes, on `y` |
+| `credactor --fix-all .` | Fix every finding after one confirmation | Yes |
+| `credactor --ci .` | Gate: exit 1 on findings | Never |
+| `credactor --staged --ci .` | Gate only what is staged for commit | Never |
+| `credactor --scan-history .` | Scan the last 100 file-changing commits | Never |
+| `credactor --ci -f sarif . > results.sarif` | SARIF 2.1.0 for Code Scanning | Never |
+| `credactor --ci -f json . > findings.json` | Machine-readable report | Never |
+
+Every flag and combination is in the
+[Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md).
+
+## Use it in pre-commit and CI
+
+### Pre-commit hook
 
 ```yaml
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/rxb06/credactor
-    rev: v2.7.5   # pin to the latest release tag
+    rev: v2.7.5
     hooks:
       - id: credactor
 ```
 
+```bash
+pre-commit install
+```
+
+Every `git commit` then scans the staged content and is blocked if it holds a
+credential. The hook never rewrites files. It needs pre-commit 3.2.0 or newer;
+without the framework, see the
+[standalone hook](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md#standalone-git-hook).
+
 ### GitHub Action
 
 ```yaml
-- uses: rxb06/credactor@v2.7.5
+steps:
+  - uses: actions/checkout@v7
+  - uses: rxb06/credactor@v2.7.5
 ```
 
-The action always passes `--ci`, so it reports and gates but never rewrites the
-checkout. Findings fail the step; set `fail-on-findings: false` to report
-without gating. An error fails the step either way.
-
-Upload to Code Scanning instead of failing on findings:
+The Action always runs with `--ci`, so it never rewrites the checkout. Findings
+fail the step, and so does any error. To report to Code Scanning instead of
+failing:
 
 ```yaml
-- uses: rxb06/credactor@v2.7.5
-  with:
-    format: sarif
-    upload-sarif: true
-    fail-on-findings: false
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@v7
+  - uses: rxb06/credactor@v2.7.5
+    with:
+      format: sarif
+      upload-sarif: true
+      fail-on-findings: false
 ```
 
-The job needs `permissions: security-events: write` for the upload. To use the
-report in a later step, read its path from the step's `report-file` output
-rather than assuming one. See the
-[CI integration guide](docs/ci_integration.md#github-action) for every input,
-including ingestion of Gitleaks, TruffleHog and Betterleaks reports.
+The [CI integration guide](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md)
+lists every Action input and output and covers GitLab CI and plain shell steps.
 
-## Detection
+## Bring your own scanner
 
-Credactor detects the credential types that leak most often, and assigns each a severity so you can triage at a glance.
+Already running Gitleaks, TruffleHog or Betterleaks? Hand Credactor the report
+and it fixes their findings together with its own, deduplicated (on a
+duplicate, the higher severity is kept). Preview with `--dry-run` first, as for
+a native scan.
+
+```bash
+gitleaks dir . -f json -r gl.json
+credactor --from-gitleaks gl.json --fix-all --yes .
+
+trufflehog filesystem . --no-verification --json > th.json
+credactor --from-trufflehog th.json --fix-all --yes .
+
+betterleaks dir . -f json -r bl.json
+credactor --from-betterleaks bl.json --fix-all --yes .
+```
+
+Point Credactor at the same directory the scanner ran on, and regenerate the
+report after the tree changes. A report holds every secret it found in
+plaintext and is not scanned itself (`.json` needs `--scan-json`), so write it
+outside the repository or delete it after the run. A finding Credactor cannot
+place safely (no valid line number, a path under `.git`, a value too short to
+match on its own) stays reported and is never written. Details and supported
+versions are in the
+[Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#external-scanner-ingestion).
+
+## What it detects
 
 | Category | Examples | Severity |
 |---|---|---|
-| Cloud provider keys | AWS (`AKIA…`), GCP (`AIza…`), Stripe (`sk_live_…`), Slack (`xoxb-…`) | Critical |
-| Platform tokens | GitHub (`ghp_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), PyPI (`pypi-`) | Critical |
+| Cloud and SaaS keys | AWS (`AKIA…`, `ASIA…`), GCP (`AIza…`), Stripe live (`sk_live_…`, `rk_live_…`), Slack (`xoxb-…`, `xoxp-…`) | Critical |
+| Platform tokens | GitHub (`ghp_`, `gho_`, `ghs_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), PyPI (`pypi-`) | Critical |
 | Private keys | PEM blocks (`-----BEGIN … PRIVATE KEY-----`, encrypted ones included), PGP private key blocks | Critical |
 | JWTs | `eyJ…` three-segment tokens | High |
 | Connection strings | URLs with inline credentials (`scheme://user:pass@host`) | High |
-| Credential variables | `password = "…"`, `api_key = "…"`, `secret_key = "…"` | High/Medium/Low |
-| XML attributes | `<add key="Password" value="…" />` | High/Medium/Low |
-| High-entropy strings | quoted hex (32–64 chars) / Base64 (60+ chars) | Medium/Low |
+| Credential variables | `password = "…"`, `api_key = "…"`, `secret_key = "…"` | High, Medium or Low |
+| XML attributes | `<add key="Password" value="…" />` | High, Medium or Low |
+| Stripe test keys | `sk_test_…` | Medium |
+| High-entropy strings | quoted hex (32 to 64 characters) or Base64 (60 or more) | Medium or Low |
 
-Deterministic provider tokens (the prefixes above) are flagged regardless of entropy. Heuristic detectors (JWTs, connection strings, hex, Base64) must clear an entropy floor. Standalone hex or Base64 is flagged only when quoted. An unquoted high-entropy value is caught only on a credential-named variable, which spares git SHAs and checksums. For the full detection and severity rules, see the [Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#detection--severity).
+Provider tokens are matched by their format, so they are found even in
+comments and whatever their randomness. Heuristic matches must also look
+random enough, and a bare hex or Base64 value is reported only when it is
+quoted or assigned to a credential-named variable, which spares git SHAs and
+checksums. Placeholders such as `changeme`, environment lookups and template
+references are not flagged.
 
-> Credactor's native rule set is narrower than a dedicated scanner's, and some provider formats (for example SendGrid, Twilio, and Slack webhooks) are not detected. Its edge is remediation: pair it with Gitleaks, TruffleHog or Betterleaks for the broadest detection, or run it on its own.
+**Good to know:**
 
-## Pair it with another scanner, redact the lot
+- **Private keys are reported, never rewritten.** Rotate the key and delete the
+  block by hand; `--fix-all` counts it as failed.
+- **History is read-only and capped.** `--scan-history` covers the 100 most
+  recent file-changing commits, and warns when the repository has more than
+  100 commits.
+- **A fixed set of file types** is scanned: 29 code, config and text
+  extensions plus `.env.*` and SSH key files (`id_rsa` and friends). JSON needs
+  `--scan-json`, and anything else needs `extra_extensions` in
+  `.credactor.toml`. A file you name directly is always scanned.
+- **Gitignored files are skipped when walking a directory**, and that usually
+  includes a local `.env`. The text report lists them, but `-f json` and
+  `-f sarif` say nothing about them. To check one, name it directly:
+  `credactor --dry-run .env`.
+- **Some formats are out of scope natively**, for example SendGrid and Twilio
+  keys and Slack webhooks, as are secrets built at runtime and values under 8
+  characters.
 
-Credactor stands on its own, and it gets stronger in company. Already run Gitleaks, TruffleHog or Betterleaks? Pass their report to Credactor and it redacts the combined set, deduplicated against its own findings (on overlap, the higher severity wins). One remediation pass covers your scan and theirs:
+The full rules are in the
+[Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#detection--severity),
+and the threat model is in the
+[Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md).
 
-```bash
-gitleaks dir . -f json -r gitleaks.json
-credactor --from-gitleaks gitleaks.json --fix-all --yes .
+## How it rewrites
 
-betterleaks dir . -f json -r betterleaks.json
-credactor --from-betterleaks betterleaks.json --fix-all --yes .
+| `--replace-with` | Result | Use it when |
+|---|---|---|
+| `sentinel` (default) | `"REDACTED_BY_CREDACTOR"` | You want anything still using the secret to fail loudly |
+| `env` | `os.environ["DB_PASSWORD"]` | The value should come from the environment |
+| `custom` | `"<your marker>"` via `--replacement` | You have your own convention |
+
+Env mode writes the lookup in the file's language: `os.environ[…]` in Python,
+`process.env[…]` in JavaScript and TypeScript, `ENV[…]` in Ruby, and the native
+form in Go, Java, Kotlin and PHP. Every other file type gets a `${VAR}`
+placeholder, which is a real lookup only where something expands it (a shell
+script, a `.env` loader, many config tools). In C# it stays a plain string,
+and in Terraform it reads as a reference that does not exist, so the config
+fails to validate; use the sentinel for both. The name comes from the finding:
+`db_password` becomes `DB_PASSWORD`, and a known token type gets its own name,
+so an AWS key becomes `AWS_ACCESS_KEY` whatever the variable was called. Where
+a lookup would break the code (inside a larger string, say), the sentinel is
+used instead.
+
+## Suppress false positives
+
+On the line itself, in a `#`, `//`, `/* */` or `<!-- -->` comment:
+
+```python
+example_key = "AKIAIOSFODNN7EXAMPLE"  # credactor:ignore
 ```
 
-`--from-gitleaks` / `--from-trufflehog` / `--from-betterleaks` (or an `[ingest]` table in `.credactor.toml`) require a directory target — point Credactor at the same root the scanner ran against. Report paths resolve against the working directory, and a report is a snapshot: regenerate it after redacting or changing the tree. See the [CI Integration guide](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md).
+Or in a `.credactorignore` at the scan root:
 
-## More features
+```text
+tests/fixtures/*
+app/settings.py:42
+```
 
-- Interactive or batch redaction; a custom replacement string via `--replacement`; `--scan-history` to scan git commit history
-- Secure backups: `--secure-delete` (overwrite and remove the `.bak`; raises the bar against casual recovery, not a forensic guarantee) or `--secure-backup-dir` to store backups outside the repo
-- Inline `# credactor:ignore` and `.credactorignore` allowlists (globs, `file:line`, value literals)
-- Per-repo config via `.credactor.toml`
-- 29 source/config/notes file types out of the box (`.txt` included); `--scan-json` to include JSON; `--fail-on-error` to fail when a file cannot be read
-
-## Scanned file types
-
-> `.py` `.js` `.ts` `.jsx` `.tsx` `.sh` `.bash` `.env` `.cfg` `.ini` `.toml` `.yaml` `.yml` `.rb` `.go` `.java` `.php` `.cs` `.kt` `.tf` `.hcl` `.conf` `.config` `.properties` `.xml` `.pem` `.key` `.crt` `.txt`
-
-Plus `.env.*` / `.env-*` variants (`.env.local`, `.env.production`) and SSH / private-key files (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`), all matched by filename rather than extension. JSON is excluded by default because API responses produce a high false-positive rate; add `--scan-json` to include it. A file named directly on the command line is scanned even if its extension is not in this list.
+An entry can be a glob, a `file:line`, or an exact value. A value that contains
+`.`, `/`, `?` or `*` (a URL, a JWT, Base64) must be written as
+`value:<literal>`, or it is read as a glob and has no effect. Findings from an
+ingested report are filtered by `.credactorignore` only: an inline
+`credactor:ignore` does not stop them. Thresholds, skipped directories and
+extra file types go in a
+[`.credactor.toml`](https://github.com/rxb06/credactor/blob/main/docs/setup.md).
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | No findings, or all resolved |
-| `1` | Unresolved findings |
-| `2` | Error (for example: bad path, dangerous `--replacement`, `--ci --fix-all`, a missing or invalid ingestion report, or `--fail-on-error` with an unreadable file) |
+| `0` | No findings, or all of them fixed |
+| `1` | Findings left unresolved |
+| `2` | Error, such as a bad path, an invalid flag combination, an unreadable report or explicit `--config`, or `--staged` / `--scan-history` outside a git repository |
+
+An unresolved finding never exits 0. A file Credactor could not read is only a
+warning by default, so add `--fail-on-error` to a gate that must read every
+file; it then exits 2. The full list is in the
+[Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md#exit-codes).
 
 ## Supply-chain hardening
 
-A security tool should be safe to install, not only safe to run. Credactor's build and release pipeline is hardened end to end; full detail in the [Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md#supply-chain-hardening).
+A tool that reads every secret in your repository should be safe to install,
+not only safe to run. Several popular packages have shipped malicious releases
+after an attacker got into their build or publishing pipeline: a tampered
+build dependency, a stolen upload token, or a file slipped into the release
+archive. Credactor's release pipeline has a specific check for each of those.
 
-- **Zero runtime dependencies.** A default `pip install credactor` pulls in no third-party packages (only the optional `[encoding]` extra), so there is nothing to vet at install time.
-- **Hash-pinned toolchain.** CI and release builds install from a `--require-hashes` lockfile, build backend included (`python -m build --no-isolation` against a pinned setuptools), so a tampered dependency fails the build.
-- **Artifacts byte-checked against source.** On every push and before every publish, `scripts/audit_wheel.py` compares the wheel and sdist to the committed source byte for byte (sha256 vs `git HEAD`); any added, missing, or altered file fails the gate, so a build step cannot inject code unnoticed. The package metadata must declare exactly the version in `credactor/__init__.py` and the dependencies in `pyproject.toml`.
-- **SHA-pinned, least-privilege CI.** GitHub Actions pin to commit SHAs, and workflow tokens stay narrow — `contents: read` by default, `id-token: write` only for the publish job.
+- **No runtime dependencies.** `pip install credactor` installs Credactor and
+  nothing else (the optional `[encoding]` extra adds `charset-normalizer`), so
+  there is no third-party code to vet at install time.
+- **Every release is checked against its source.** In CI and again before
+  publishing, `scripts/audit_wheel.py` compares every file in the wheel and
+  sdist that comes from the repository byte for byte (sha256) with the
+  committed source, and rejects anything else apart from the package metadata,
+  which must match `pyproject.toml`. An extra or altered module, an injected
+  dependency, a repointed command, or a file that is in the tarball but not in
+  git fails the release.
+- **Hash-pinned builds.** CI and release builds install their tools with
+  `pip install --require-hashes`, build backend included, so a tampered
+  dependency fails the build instead of reaching the package.
+- **No upload token in the pipeline.** Releases go to PyPI through OIDC trusted
+  publishing from a dedicated `pypi` environment, with Sigstore attestations,
+  and only when the package version matches the release tag. The pipeline
+  stores no long-lived PyPI token.
+- **Locked-down CI.** Every GitHub Action is pinned to a commit SHA, workflow
+  tokens default to read-only, checkouts keep no credentials, and Dependabot
+  proposes updates monthly.
+- **The Action installs outside your checkout.** The GitHub Action installs
+  Credactor from the runner's temp directory with pip in isolated mode
+  (`python -I`), then runs the installed command.
+
+These checks show that what is published matches the source committed at the
+release tag. They cannot make that source trustworthy or protect a build
+machine that is already compromised; the
+[Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md#supply-chain-hardening)
+has the full detail and limits.
+
+## Security
+
+Report a vulnerability privately through
+[GitHub Security Advisories](https://github.com/rxb06/credactor/security/advisories/new),
+not a public issue. [SECURITY.md](https://github.com/rxb06/credactor/blob/main/SECURITY.md)
+lists the supported versions, and the
+[Security doc](https://github.com/rxb06/credactor/blob/main/docs/security.md)
+covers the threat model, each hardening measure and the known limits.
 
 ## Docs
 
-| Document | Description |
-|----------|-------------|
-| [Setup Guide](https://github.com/rxb06/credactor/blob/main/docs/setup.md) | Installation, configuration, CI/CD integration |
-| [Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md) | Complete reference: every flag, mode, and combination, replacement and backup behaviour, detection and severity, exit codes, and limitations (behaviour test-verified) |
+| Document | What is in it |
+|---|---|
+| [Manual](https://github.com/rxb06/credactor/blob/main/docs/manual.md) | Every flag, mode and combination, with verified behaviour |
+| [Setup](https://github.com/rxb06/credactor/blob/main/docs/setup.md) | Installation and `.credactor.toml` |
+| [CI integration](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md) | Pre-commit, the GitHub Action, other CI systems, ingestion |
 | [Examples](https://github.com/rxb06/credactor/blob/main/docs/examples.md) | Common workflows with output |
-| [CI Integration](https://github.com/rxb06/credactor/blob/main/docs/ci_integration.md) | Pre-commit hooks, CI pipelines |
-| [Security](https://github.com/rxb06/credactor/blob/main/docs/security.md) | Threat model, hardening measures, known limitations |
+| [Security](https://github.com/rxb06/credactor/blob/main/docs/security.md) | Threat model, hardening, known limits |
+| [Disclaimer](https://github.com/rxb06/credactor/blob/main/docs/DISCLAIMER.md) | Safe usage and warranty |
 | [Changelog](https://github.com/rxb06/credactor/blob/main/CHANGELOG.md) | Version history |
-| [Contributing](https://github.com/rxb06/credactor/blob/main/CONTRIBUTING.md) | Development setup, code style, PR process |
-| [Disclaimer](https://github.com/rxb06/credactor/blob/main/docs/DISCLAIMER.md) | Limitations, safe usage, warranty |
+| [Contributing](https://github.com/rxb06/credactor/blob/main/CONTRIBUTING.md) | Development setup and pull requests |
 
 ## Licence
 

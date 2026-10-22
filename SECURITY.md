@@ -13,10 +13,7 @@ Only the latest minor release receives security patches. We recommend always run
 
 **Please do NOT open a public GitHub issue for security vulnerabilities.**
 
-Report vulnerabilities privately using one of these methods:
-
-1. **GitHub Security Advisories (preferred):** Use the "Report a vulnerability" button on the [Security tab](../../security/advisories/new) of this repository.
-2. **Email:** Send details to the repository maintainer (see the commit history or profile for contact information).
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/rxb06/credactor/security/advisories/new): use the "Report a vulnerability" button on the Security tab of this repository. This is the preferred channel. If you cannot use it, email the maintainer (see the commit history or profile for contact information).
 
 ### What to include
 
@@ -57,19 +54,21 @@ The following are **out of scope**:
 
 ## Disclosure Policy
 
-We follow [coordinated vulnerability disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure). After a fix is released, we will:
+We follow [coordinated vulnerability disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure). Once a fix is ready, we will:
 
-1. Publish a GitHub Security Advisory with full details.
-2. Credit the reporter (unless they prefer anonymity).
-3. Tag the fix commit and release a patched version.
+1. Tag the fix commit and release a patched version.
+2. Publish a GitHub Security Advisory with full details.
+3. Credit the reporter, unless they prefer to stay anonymous.
 
 ## Security Model and Hardening
 
 For the full security model, trust boundaries, hardening measures, and known limitations, see [docs/security.md](docs/security.md).
 
-## Defensive measures ledger (SR-2 Stage A)
+## Defensive measures by ID
 
-This ledger inventories every defensive marker that was originally present as an inline `# SEC-XX:` / `# CVE-XX` / `# HIGH-XX` / `# MED-XX` / `A1`–`A13` / `P2` comment in the source. The three-stage review is now **complete** (see the dated status note at the end of this section): Stage A catalogued every marker, Stage B decided per-row whether the inline comment was **K** (keep, explains an invariant) or **P** (purge from source, motivation now lives only here in the ledger), and Stage C executed the purge. This table is therefore the canonical record of the motivation behind each defence; the inline `# SEC-XX:`-style prefixes have already been removed from source for the P-marked rows.
+This table lists each hardening measure by ID, with a one-line summary and the function or constant that holds it. The SEC IDs are the ones used in [docs/security.md](docs/security.md) and the changelog. These IDs used to appear as comment prefixes in the source; most have been removed, and this table is now the record of why each of those defences exists. Hardening added later (SEC-41 to SEC-68 in 2.7.5) and items that never had an inline marker, such as SEC-08 and SEC-21, are documented only in [docs/security.md](docs/security.md), which is the full list.
+
+Where a defence guards an invariant that is not obvious from the code, the source keeps an explanatory comment next to it.
 
 ### Format
 
@@ -93,7 +92,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | SEC-09 | Atomic backup via `mkstemp` (`O_CREAT\|O_EXCL`) closes the symlink-race TOCTOU gap | `redactor.py` (`_create_backup`, `_create_backup_in_secure_dir`) |
 | SEC-10 | Validate replacement strings for code-injection metacharacters | `config.py` (`Config.validate_replacement`), `cli.py` (`_validate_replacement`), `redactor.py` (`batch_replace_in_file`) |
 | SEC-11 | Strong UI warning for `--fix-all --no-backup` (no recovery path) | `cli.py` (`_handle_fix_all`) |
-| SEC-12 | Bound entropy threshold (0.0–6.0) and min-value-length (1–200) to valid ranges | `config.py` (`ENTROPY_BOUNDS`, `MIN_LEN_BOUNDS`, `_coerce_scalar`) |
+| SEC-12 | Bound entropy threshold (0.0 to 6.0) and min-value-length (1 to 200) to valid ranges | `config.py` (`ENTROPY_BOUNDS`, `MIN_LEN_BOUNDS`, `_coerce_scalar`) |
 | SEC-13 | Warn on overly broad `.credactorignore` patterns (`*`, `**`, `**/*`) | `suppressions.py` (`AllowList._load`) |
 | SEC-13b | Warn on extension-targeting wildcards covering scannable types (e.g. `**/*.py`) | `suppressions.py` (`AllowList._load`) |
 | SEC-14 | Warn that `--replace-with env` changes string literals to function calls | `cli.py` (`_validate_invocation`) |
@@ -137,7 +136,7 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | HIGH-06 | Config file search depth cap (5 levels) to prevent shared-parent capture | `config.py` (`load_config_file`) |
 | MED-01 | Hunk-header parsing uses regex, not naive split on `+` | `walker.py` (`scan_git_history`) |
 
-### Plan-tag series (A-N, P-N)
+### Other IDs (A, P)
 
 | ID | Summary | Primary site(s) |
 |----|---------|-----------------|
@@ -145,9 +144,3 @@ If an ID has multiple sites, the first is the primary defence; the rest are prop
 | A11 | `normcase()` for Windows defence-in-depth in path containment | `utils.py` (`is_within_root`) |
 | A13 | Skip findings whose resolved path is the report file itself (self-corruption guard) | `ingest.py` (`_resolve_external_finding_path`) |
 | P2 | Type-check commit field before slicing (non-string would crash dedup) | `ingest.py` (`_report_commit`) |
-
-### Review methodology (completed)
-
-Each row above was reviewed and marked **K** (keep inline) where the source comment explains a non-obvious invariant *while reading that code*, for example "Append separator AFTER normpath to prevent prefix collision", which would otherwise look redundant. Rows were marked **P** (purge) where the inline comment was motivation/history now captured by this ledger and the source comment added nothing beyond the ticket prefix (e.g. "SEC-04: Resolve path before passing to subprocess", immediately followed by code that resolves the path). An automated sweep then removed the `SEC-XX:` / `CVE-XX:` / etc. prefixes from P-marked sites, preserving any substantive trailing comment text and deleting lines that had none.
-
-**Stage B/C complete 2026-05-24**: 15 invariants retained inline (K); remaining tags purged from source (P). The test suite passed (425 tests at the time of the sweep; it has since grown substantially, all green).

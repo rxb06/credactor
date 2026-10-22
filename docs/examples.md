@@ -5,10 +5,18 @@
 Check for leaks before starting work:
 
 ```bash
-python -m credactor --dry-run /path/to/project
+credactor --dry-run /path/to/project
 ```
 
-Shows findings without touching files.
+Shows findings without touching files. If you installed with pip into the
+active environment, `python -m credactor` works too.
+
+Gitignored files, usually including a local `.env`, are skipped when walking a
+directory. The text report lists them under "not scanned -- covered by
+.gitignore", but `-f json` and `-f sarif` say nothing about them. To check one,
+name it directly: `credactor --dry-run .env`. A clean run means nothing matched
+Credactor's rules, not that the code holds no secrets, and Credactor does not
+check whether a secret is live.
 
 ```
 Scanning: /path/to/project
@@ -37,6 +45,11 @@ Scanning: /path/to/project
            AWS_KEY = "AKIA[REDACTED]"
   Line   15  [HIGH]  [variable:db_password]
            db_password = "xK9#[REDACTED]"
+
+======================================================================
+  ACTION REQUIRED: Rotate/revoke any real credentials above.
+  Use environment variables or a secrets manager instead.
+======================================================================
 ```
 
 ## 2. Interactive cleanup
@@ -44,7 +57,7 @@ Scanning: /path/to/project
 Review each finding and decide:
 
 ```bash
-python -m credactor /path/to/project
+credactor /path/to/project
 ```
 
 ```
@@ -57,14 +70,19 @@ python -m credactor /path/to/project
   -> Replaced.
 ```
 
-Creates `.bak` backups for every modified file.
+Before each file is changed, a `.bak` copy is written beside it. The backup
+holds the original secret in plaintext, and Credactor does not add it to
+`.gitignore`, so a plain `git add .` would stage it. Add `*.bak` and
+`*.credactor.tmp` to `.gitignore` and delete the backups once you have checked
+the result, or pass `--secure-backup-dir DIR` (outside the repository) on the
+fix run.
 
 ## 3. Batch redact
 
 Fix everything in one shot:
 
 ```bash
-python -m credactor --fix-all /path/to/project
+credactor --fix-all /path/to/project
 ```
 
 `--fix-all` asks for one confirmation before it rewrites files:
@@ -74,23 +92,28 @@ python -m credactor --fix-all /path/to/project
   .bak backups will be created (contain original secrets).
   Tip: run with --dry-run first to preview changes.
   Proceed? [y/N]: y
-
+[WARN] Plaintext backup created beside original file.
+  Use --secure-delete to auto-wipe, --secure-backup-dir to store outside repo, or --no-backup to skip.
 ======================================================================
   Summary:  5 replaced  |  0 failed  |  5 total
   Reminder: rotate / revoke any credentials that were just redacted.
+  SECURITY: .bak backup files contain original credentials in PLAINTEXT.
+            Use --secure-backup-dir to store backups outside the repo,
+            or --secure-delete to overwrite backups after verification.
+            At minimum, delete .bak files before committing.
 ======================================================================
 ```
 
 In a script, CI job, or piped run there is no TTY to answer the prompt, so the run aborts. Pass `--yes` / `-y` to skip it:
 
 ```bash
-python -m credactor --fix-all --yes /path/to/project
+credactor --fix-all --yes /path/to/project
 ```
 
 ## 4. Replace with env vars
 
 ```bash
-python -m credactor --fix-all --replace-with env /path/to/project
+credactor --fix-all --replace-with env /path/to/project
 ```
 
 Before:
@@ -107,24 +130,41 @@ AWS_KEY = os.environ["AWS_ACCESS_KEY"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 ```
 
-Language-aware: `.js` gets `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, etc. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
+Language-aware: `.js` and `.ts` get `process.env["AWS_ACCESS_KEY"]`, `.go` gets `os.Getenv("AWS_ACCESS_KEY")`, `.rb` gets `ENV['AWS_ACCESS_KEY']`, Java and Kotlin get `System.getenv(...)`, and PHP gets `getenv(...)`. Every other file type gets a `${AWS_ACCESS_KEY}` placeholder, which is a real lookup only where something expands it (a shell script, a `.env` loader, many config tools). In C# it stays a plain string, and in Terraform it reads as a reference that does not exist, so the config fails to validate; use the sentinel for both.
+
+Env mode writes the lookup, not the import: the Python "After" above only runs if the file already has `import os`, so add it (or your language's equivalent) if it is missing. The env-var name comes from the finding: a recognised provider key (the `AKIA…` pattern) maps to its canonical name (`AWS_ACCESS_KEY`), while a plain credential variable keeps its own name (`DB_PASSWORD`).
 
 ## 5. Pre-commit hook
 
 Scan only staged files:
 
 ```bash
-python -m credactor --staged --ci
+credactor --staged --ci
 ```
 
 `.git/hooks/pre-commit`:
 
 ```bash
 #!/bin/sh
-python -m credactor --staged --ci
+credactor --staged --ci
 ```
 
-Or with the pre-commit framework:
+With the pre-commit framework, use the published hook:
+
+```yaml
+repos:
+  - repo: https://github.com/rxb06/credactor
+    rev: v2.7.5
+    hooks:
+      - id: credactor
+```
+
+Then run `pre-commit install`. The framework installs credactor into its own
+hook environment, so you do not need to install it first. This hook needs
+pre-commit 3.2.0 or newer, and it never rewrites files.
+
+If credactor is already installed (pip, uv tool or Homebrew) and you would
+rather run that copy, use a local hook:
 
 ```yaml
 repos:
@@ -132,16 +172,16 @@ repos:
     hooks:
       - id: credactor
         name: credactor
-        entry: python -m credactor --staged --ci
+        entry: credactor --staged --ci
         language: system
         pass_filenames: false
         always_run: true
 ```
 
-(`language: system` runs your installed credactor — `pip install credactor`
-first. `language: python` would not work for a `repo: local` hook: the
-framework builds an isolated hook venv that does not contain credactor, so
-every commit would fail with `No module named credactor`.)
+(`language: system` runs the `credactor` on your PATH, so install it first with
+pip, uv tool or Homebrew. `language: python` would not work for a
+`repo: local` hook: the framework builds an isolated hook venv that does not
+contain credactor, so every commit would fail.)
 
 Clean output:
 
@@ -164,28 +204,55 @@ Exit 1 blocks the commit.
 
 ## 6. GitHub Actions
 
+The simplest route is the project's own Action. It always runs with `--ci`, so
+it never rewrites the checkout, and it fails the step on findings or errors:
+
+```yaml
+steps:
+  - uses: actions/checkout@v7
+  - uses: rxb06/credactor@v2.7.5
+```
+
+See [ci_integration.md](ci_integration.md) for every Action input and output,
+including SARIF upload with `upload-sarif: true`.
+
+The examples below call the CLI directly. Install it first:
+
+```yaml
+- uses: actions/checkout@v7
+- name: Install Credactor
+  run: pip install credactor
+```
+
 Fail on findings:
 
 ```yaml
 - name: Credential scan
-  run: python -m credactor --ci .
+  run: credactor --ci .
 ```
 
 Strict mode, which also fails if any files could not be scanned:
 
 ```yaml
 - name: Credential scan
-  run: python -m credactor --ci --fail-on-error .
+  run: credactor --ci --fail-on-error .
 ```
 
 Upload SARIF to Code Scanning (includes line and column annotations). Leave
 `--fail-on-error` off here: when it fires the run exits 2 before the report is
 written, and the upload step cannot parse the empty file. Gate on it in a
-separate step if you need it.
+separate step if you need it. The upload step needs write access to security
+events, so give the job this permissions block:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+```
 
 ```yaml
 - name: Credential scan
-  run: python -m credactor --ci --format sarif . > results.sarif
+  run: credactor --ci --format sarif . > results.sarif
   continue-on-error: true
 
 - name: Upload SARIF
@@ -198,7 +265,7 @@ Save JSON as artifact:
 
 ```yaml
 - name: Credential scan
-  run: python -m credactor --ci --format json . > credential-report.json
+  run: credactor --ci --format json . > credential-report.json
 
 - name: Upload report
   uses: actions/upload-artifact@v4
@@ -213,7 +280,7 @@ Save JSON as artifact:
 Find credentials in past commits (even if already removed from working tree):
 
 ```bash
-python -m credactor --scan-history .
+credactor --scan-history .
 ```
 
 ```
@@ -223,7 +290,9 @@ python -m credactor --scan-history .
            AWS_SECRET = "AKIA[REDACTED]"
 ```
 
-Scans last 100 commits. Findings include the commit hash.
+Scans the 100 most recent file-changing commits and warns if the repository has more than 100 commits.
+The scan is read-only: it never rewrites files, even with `--fix-all`. Findings
+include the commit hash.
 
 If you find credentials in history, redacting the working tree isn't enough. Use `git filter-repo` or BFG Repo Cleaner to rewrite history, and rotate the leaked credentials.
 
@@ -238,15 +307,20 @@ def test_api_validates_key():
     assert response.status_code == 200
 ```
 
+The marker works in a `#`, `//`, `/* */` or `<!-- -->` comment on the same
+line. Findings ingested from a Gitleaks, TruffleHog or Betterleaks report
+(Example 13) are filtered by `.credactorignore` only: an inline
+`credactor:ignore` does not stop them.
+
 Allowlist (`.credactorignore`):
 
 ```
-# Test fixtures (glob; note ** behaves like * — fnmatch has no globstar)
+# Test fixtures (glob; note ** behaves like *, since fnmatch has no globstar)
 tests/fixtures/**
 tests/data/*.py
 
 # Known false positive at a specific line
-# (positional only — re-check after large edits, the line can drift)
+# (positional only: re-check after large edits, the line can drift)
 config/defaults.py:42
 
 # Hash that looks like a credential (bare value literal)
@@ -261,14 +335,15 @@ Value-literal and `file:line` suppressions are intentionally noisy. Credactor lo
 
 ## 9. Include JSON files
 
-JSON is excluded by default (API responses cause too many false positives).
+JSON files are skipped when walking a directory (API responses cause too many
+false positives). A `.json` file you name directly is always scanned.
 With `--scan-json`, every collected `.json` file is scanned, in CI, dry-run,
 and interactive mode alike.
 
 ```bash
-python -m credactor --ci --scan-json .     # read-only gate including JSON
-python -m credactor --scan-json .          # interactive: findings go straight
-                                           # to the per-finding Replace? prompt
+credactor --ci --scan-json .     # read-only gate including JSON
+credactor --scan-json .          # interactive: findings go straight
+                                 # to the per-finding Replace? prompt
 ```
 
 ## 10. Team config
@@ -286,7 +361,7 @@ extra_safe_values = ["test_token_abc_123", "mock_api_key_xyz"]
 replacement = "TODO_REPLACE_WITH_ENV_VAR"
 ```
 
-Picked up automatically from the scan target or any parent directory **up to the project root**. A config above the project root is refused unless passed explicitly with `--config` (non-CI).
+Picked up from the scan target or up to 5 parent directories, stopping at the project root. The nearest file wins and is the only one loaded. A config found above the project root is refused: an error is printed and the scan uses defaults. You can load one explicitly with `--config` outside CI, but under `--ci` an outside-root `--config` exits 2. An explicit `--config` that is missing or invalid also exits 2, while a discovered config that fails to parse only warns.
 
 ## 11. XML config files
 
@@ -305,9 +380,9 @@ Detects credentials in XML attributes regardless of attribute order:
   FILE: web.config
   ────────────────────────────────────────────────────────────
   Line    3  [HIGH]  [xml-attr:DatabasePassword]
-           <add key="DatabasePassword" value="s3cr[REDACTED]" />
+               <add key="DatabasePassword" value="s3cr[REDACTED]" />
   Line    4  [HIGH]  [xml-attr:ApiKey]
-           <add value="my-a[REDACTED]" key="ApiKey" />
+               <add value="my-a[REDACTED]" key="ApiKey" />
 ```
 
 ## 12. Private key detection
@@ -329,25 +404,35 @@ Lines inside the block aren't scanned separately.
 
 Redaction **refuses** key blocks (fail closed): `--fix-all` or an interactive
 `y` on this finding warns and counts it unresolved (exit 1), rather than
-rewriting only the header line — which would leave the key material in the
+rewriting only the header line, which would leave the key material in the
 file while the next scan reports it clean. Rotate the key and remove the
 block manually.
 
 ## 13. Ingest external scanner findings
 
-Merge findings from Gitleaks or TruffleHog into Credactor's redaction pipeline, so one tool both detects (across scanners) and redacts. Ingested findings are deduplicated against Credactor's native findings, keeping the higher severity.
+Merge findings from Gitleaks, TruffleHog or Betterleaks into Credactor's redaction pipeline, so one tool both detects (across scanners) and redacts. Ingested findings are deduplicated against Credactor's native findings, keeping the higher severity.
 
 ```bash
 # Run Gitleaks, then redact everything it (and Credactor) found
 gitleaks dir . -f json -r gitleaks.json
-python -m credactor --from-gitleaks gitleaks.json --fix-all --yes .
+credactor --from-gitleaks gitleaks.json --fix-all --yes .
 
 # TruffleHog NDJSON output, report-only gate
 trufflehog filesystem . --no-verification --json > trufflehog.json
-python -m credactor --from-trufflehog trufflehog.json --ci .
+credactor --from-trufflehog trufflehog.json --ci .
+
+# Betterleaks JSON report (use `betterleaks dir`, not `betterleaks detect`)
+betterleaks dir . -f json -r bl.json
+credactor --from-betterleaks bl.json --dry-run .
 ```
 
-The target must be a **directory** (the repository root): file paths in the report are resolved relative to it, so a file target is rejected with exit 2. Ingestion also cannot be combined with `--scan-history`. Multi-line findings (PEM private keys) are never redacted by either path — native ones are refused, ingested ones fail the line-based value match (both warned, exit 1); rotate the key and remove the block manually (see Example 12).
+Preview with `--dry-run` before running `--fix-all`, as for a native scan. A
+report holds every secret it found in plaintext and is not scanned itself
+(`.json` needs `--scan-json`), so write it outside the repository (for example
+`gitleaks dir . -f json -r /tmp/gitleaks.json`) or delete it after the run.
+Regenerate the report whenever the tree changes.
+
+The target must be a **directory** (the repository root): file paths in the report are resolved relative to it, so a file target is rejected with exit 2. Ingestion also cannot be combined with `--scan-history`. Multi-line findings (PEM private keys) are never redacted by either path: native ones are refused, ingested ones fail the line-based value match (both warned, exit 1); rotate the key and remove the block manually (see Example 12).
 
 Pin the report paths in `.credactor.toml` instead of passing the flags:
 
@@ -355,4 +440,8 @@ Pin the report paths in `.credactor.toml` instead of passing the flags:
 [ingest]
 from_gitleaks = "gitleaks.json"
 from_trufflehog = "trufflehog.json"
+from_betterleaks = "bl.json"
 ```
+
+If you pin the report paths here, keep the reports out of version control,
+since they contain the secrets in plaintext.

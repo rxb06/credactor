@@ -77,8 +77,9 @@ other scanners.
   scan target, not for one above it such as macOS's `/tmp`.
 - **An ingested finding without a valid line number is not written.** A
   finding whose line is missing, not a positive JSON integer (a quoted number
-  such as `"3"` does not count), or a boolean is now reported at line 0, counted as unresolved (exit 1) and not written, with
-  a warning. The redactor also refuses line 0 itself.
+  such as `"3"` does not count), or a boolean is now reported at line 0,
+  counted as unresolved (exit 1) and not written, with a warning. The redactor
+  also refuses line 0 itself.
 - **A malformed report record cannot crash the run.** A report secret that is
   not valid Unicode text now makes the record invalid. As a backstop, a record
   whose fields raise a type error while being read is read again from its
@@ -154,11 +155,11 @@ other scanners.
 - **A secret in a file or directory name is masked.** If a value found in the
   run also appears in a path, the path is shown masked in the text, JSON and
   SARIF reports, the list of files skipped by `.gitignore` and the interactive
-  prompt. The text and SARIF reports add
-  a note to rename the file or directory. A masked SARIF path no longer links
-  to the file. Paths and types are masked only with values of at least 8
-  characters that are not a plain number or a plain word, so a password that
-  is also a word does not mask unrelated paths or rule ids.
+  prompt. The text and SARIF reports add a note to rename the file or
+  directory. A masked SARIF path no longer links to the file. Paths and types
+  are masked only with values of at least 8 characters that are not a plain
+  number or a plain word, so a password that is also a word does not mask
+  unrelated paths or rule ids.
 - **Report labels are checked and masked.** A `RuleID` or `DetectorName` in an
   ingested report becomes part of the finding type and, in SARIF, the rule id.
   A label that is not letters, digits, `.`, `_` or `-` (at most 64 characters)
@@ -231,9 +232,9 @@ other scanners.
   approval use, advisory lock included, so every write-path check applies to
   all three at once.
 - **An ingested finding with no valid line number is reported at line 0.**
-  In SARIF such a result names the file with no
-  region, since SARIF lines start at 1. Two copies of one finding, one with a
-  valid line and one without, are no longer merged.
+  In SARIF such a result names the file with no region, since SARIF lines
+  start at 1. Two copies of one finding, one with a valid line and one
+  without, are no longer merged.
 - **SARIF results for multi-line findings have no columns.** The columns were
   offsets into the escaped block, not positions on the source line.
 - **The text report follows `sys.stdout` when it is redirected.**
